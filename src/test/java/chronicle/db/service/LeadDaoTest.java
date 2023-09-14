@@ -1,4 +1,4 @@
-package chronicle.db;
+package chronicle.db.service;
 
 import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 

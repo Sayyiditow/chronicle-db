@@ -1,4 +1,4 @@
-package chronicle.db;
+package chronicle.db.service;
 
 import net.openhft.chronicle.bytes.BytesMarshallable;
 

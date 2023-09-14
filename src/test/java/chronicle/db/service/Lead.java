@@ -1,4 +1,4 @@
-package chronicle.db;
+package chronicle.db.service;
 
 import java.util.List;
 
