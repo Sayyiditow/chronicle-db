@@ -1,0 +1,56 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+ext {
+    tinyLogVersion  = '2.6.2'
+}
+
+repositories {
+    mavenLocal()
+    maven {
+        url = uri('https://repo.maven.apache.org/maven2/')
+    }
+}
+
+dependencies {
+    api 'net.openhft:chronicle-map:3.24ea3'
+    api 'com.jsoniter:jsoniter:0.9.23'
+    api 'org.mapdb:mapdb:3.0.9'
+    api "org.tinylog:tinylog-impl:$tinyLogVersion"
+    api "org.tinylog:tinylog-api:$tinyLogVersion"
+    api "junit:junit:4.13.2"
+}
+
+group = 'chronicle.db'
+version = '0.0.1-RELEASE'
+description = 'chronicle-db'
+java.sourceCompatibility = JavaVersion.VERSION_17
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from(components.java)
+        }
+    }
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
+tasks.withType(Javadoc) {
+    options.encoding = 'UTF-8'
+}
+
+task copyDependencies(type: Copy) {
+    from(configurations.runtimeClasspath)
+    into("build/libs")
+}
+
+build.dependsOn(copyDependencies)
+
+jar {
+    processResources.exclude('*')
+}
