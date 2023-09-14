@@ -43,3 +43,4 @@ target/
 .data
 .gradle
 build
+bin
