@@ -9,6 +9,7 @@ import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -370,5 +371,13 @@ public final class ChronicleUtils {
         }
 
         field.set(object, fieldValue);
+    }
+
+    public void deleteFileIfExists(final String filePath) {
+        try {
+            Files.delete(Paths.get(filePath));
+        } catch (final IOException e) {
+            Logger.info("No such index file {}.", filePath);
+        }
     }
 }

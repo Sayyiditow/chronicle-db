@@ -144,12 +144,13 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
     private void createNewDb(final ConcurrentMap<K, V> db) throws IOException {
         Logger.info("Creating a bigger file, max limit of records reached on {}", name());
         final var currentValues = new ConcurrentHashMap<>(db);
-        Files.delete(Paths.get(dataPath() + "/data/data"));
+        final var dataFile = dataPath() + "/data/data";
+        CHRONICLE_UTILS.deleteFileIfExists(dataFile);
         final var newDb = ChronicleDb.CHRONICLE_DB.createOrGet(name(),
                 entries() * ((db.size() / entries()) + 1) + entries(),
                 averageKey(), averageValue(), dataPath() + "/data/data.tmp");
         newDb.putAll(currentValues);
-        Files.move(Paths.get(dataPath() + "/data/data.tmp"), Paths.get(dataPath() + "/data/data"),
+        Files.move(Paths.get(dataPath() + "/data/data.tmp"), Paths.get(dataFile),
                 StandardCopyOption.REPLACE_EXISTING);
         newDb.close();
     }
@@ -255,8 +256,9 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * 
      */
     default boolean initIndex(final String field) throws IOException {
-        Files.delete(Paths.get(getIndexPath(field)));
-        final var indexDb = MapDb.MAP_DB.db(getIndexPath(field));
+        final String path = getIndexPath(field);
+        CHRONICLE_UTILS.deleteFileIfExists(path);
+        final var indexDb = MapDb.MAP_DB.db(path);
         final var index = (ConcurrentMap<String, Map<Object, List<K>>>) indexDb.hashMap("map").createOrOpen();
         final var db = db();
         CHRONICLE_UTILS.index(db, name(), field, index, "data");

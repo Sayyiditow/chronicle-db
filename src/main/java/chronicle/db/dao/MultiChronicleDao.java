@@ -4,8 +4,6 @@ import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -559,10 +557,11 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * 
      */
     default boolean initIndex(final String field) throws IOException {
-        Files.delete(Paths.get(getIndexPath(field)));
+        final String path = getIndexPath(field);
+        CHRONICLE_UTILS.deleteFileIfExists(path);
         final var files = getFiles();
         var updated = false;
-        final var indexDb = MapDb.MAP_DB.db(getIndexPath(field));
+        final var indexDb = MapDb.MAP_DB.db(path);
         final var index = (ConcurrentMap<String, Map<Object, List<K>>>) indexDb.hashMap("map").createOrOpen();
 
         if (multiThreaded(files)) {
