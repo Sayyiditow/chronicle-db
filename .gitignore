@@ -41,3 +41,5 @@ target/
 *.iml
 .settings
 .data
+.gradle
+build
