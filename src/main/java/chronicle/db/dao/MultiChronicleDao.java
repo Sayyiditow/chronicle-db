@@ -2,6 +2,7 @@ package chronicle.db.dao;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
+import static chronicle.db.service.MapDb.MAP_DB;
 
 import java.io.IOException;
 import java.util.HashSet;
@@ -20,10 +21,8 @@ import org.tinylog.Logger;
 
 import chronicle.db.entity.Search;
 import chronicle.db.service.HandleConsumer;
-import chronicle.db.service.MapDb;
 import net.openhft.chronicle.map.ChronicleMap;
 
-@SuppressWarnings({ "unchecked" })
 /**
  *
  * @param <K> Type of the unique identifier
@@ -552,38 +551,26 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * Only runs to initialize an index on the field first time
      * 
      * @param field the enum field of the V value object
-     * @return boolean value if index is initialized
      * @throws IOException
      * 
      */
-    default boolean initIndex(final String field) throws IOException {
-        final String path = getIndexPath(field);
-        CHRONICLE_UTILS.deleteFileIfExists(path);
+    default void initIndex(final String[] fields) throws IOException {
         final var files = getFiles();
-        var updated = false;
-        final var indexDb = MapDb.MAP_DB.db(path);
-        final var index = (ConcurrentMap<String, Map<Object, List<K>>>) indexDb.hashMap("map").createOrOpen();
 
         if (multiThreaded(files)) {
             files.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(f -> {
                 final var db = db(f);
-                CHRONICLE_UTILS.index(db, name(), field, index, f);
+                BaseDao.super.initIndex(fields, db);
                 db.close();
             }));
-            updated = index.size() != 0;
-            indexDb.close();
-            return updated;
         }
 
-        for (final String file : files) {
-            final var db = db(file);
-            CHRONICLE_UTILS.index(db, name(), field, index, file);
+        for (final String f : files) {
+            final var db = db(f);
+            BaseDao.super.initIndex(fields, db);
             db.close();
         }
-        updated = index.size() != 0;
-        indexDb.close();
 
-        return updated;
     }
 
     private ConcurrentMap<String, Map<Object, List<K>>> fileAtIndex(
@@ -605,8 +592,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
         final var map = new ConcurrentHashMap<K, V>();
-        final DB indexDb = MapDb.MAP_DB.db(getIndexPath(search.field()));
-        final var index = (ConcurrentMap<String, Map<Object, List<K>>>) indexDb.hashMap("map").createOrOpen();
+        final DB indexDb = MAP_DB.db(getIndexPath(search.field()));
+        final ConcurrentMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
         final var recordsAtMap = fileAtIndex(index, search.searchTerm());
 
         if (recordsAtMap.size() > 2) {
@@ -629,8 +616,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final var map = new ConcurrentHashMap<K, V>();
-        final DB indexDb = MapDb.MAP_DB.db(getIndexPath(search.field()));
-        final var index = (ConcurrentMap<String, Map<Object, List<K>>>) indexDb.hashMap("map").createOrOpen();
+        final DB indexDb = MAP_DB.db(getIndexPath(search.field()));
+        final ConcurrentMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
         final var recordsAtMap = fileAtIndex(index, search.searchTerm());
 
         if (recordsAtMap.size() > 2) {

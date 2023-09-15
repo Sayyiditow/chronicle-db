@@ -80,7 +80,7 @@ public class LeadDaoTest {
     public void index() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException {
         final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
-        dao.initIndex("fullName");
+        dao.initIndex(new String[] { "fullName" });
     }
 
     @Test

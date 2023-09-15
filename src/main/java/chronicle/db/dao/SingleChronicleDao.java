@@ -1,6 +1,7 @@
 package chronicle.db.dao;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
+import static chronicle.db.service.MapDb.MAP_DB;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -18,10 +19,8 @@ import org.tinylog.Logger;
 
 import chronicle.db.entity.Search;
 import chronicle.db.service.ChronicleDb;
-import chronicle.db.service.MapDb;
 import net.openhft.chronicle.map.ChronicleMap;
 
-@SuppressWarnings("unchecked")
 /**
  *
  * @param <K> Type of the unique identifier
@@ -251,29 +250,21 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * Only runs to initialize an index on the field first time
      * 
      * @param field the field of the V value object
-     * @return boolean value if index is initialized
      * @throws IOException
      * 
      */
-    default boolean initIndex(final String field) throws IOException {
-        final String path = getIndexPath(field);
-        CHRONICLE_UTILS.deleteFileIfExists(path);
-        final var indexDb = MapDb.MAP_DB.db(path);
-        final var index = (ConcurrentMap<String, Map<Object, List<K>>>) indexDb.hashMap("map").createOrOpen();
+    default void initIndex(final String[] fields) throws IOException {
         final var db = db();
-        CHRONICLE_UTILS.index(db, name(), field, index, "data");
-        final boolean updated = index.keySet().size() != 0;
-        indexDb.close();
+        BaseDao.super.initIndex(fields, db);
         db.close();
-        return updated;
     }
 
     /**
      * Refer to @BaseDao.super.indexedSearch
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
-        final DB indexDb = MapDb.MAP_DB.db(getIndexPath(search.field()));
-        final var index = (ConcurrentMap<String, Map<Object, List<K>>>) indexDb.hashMap("map").createOrOpen();
+        final DB indexDb = MAP_DB.db(getIndexPath(search.field()));
+        final ConcurrentMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
         final var result = BaseDao.super.indexedSearch(search, db(), index.get("data"));
         indexDb.close();
         return result;
@@ -283,8 +274,8 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * Refer to @BaseDao.super.indexedSearch
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
-        final DB indexDb = MapDb.MAP_DB.db(getIndexPath(search.field()));
-        final var index = (ConcurrentMap<String, Map<Object, List<K>>>) indexDb.hashMap("map").createOrOpen();
+        final DB indexDb = MAP_DB.db(getIndexPath(search.field()));
+        final ConcurrentMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
         final var result = BaseDao.super.indexedSearch(search, db(), index.get("data"), limit);
         indexDb.close();
         return result;

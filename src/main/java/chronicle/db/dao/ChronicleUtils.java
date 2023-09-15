@@ -190,8 +190,7 @@ public final class ChronicleUtils {
             final K value) throws IOException {
         final String filePath = dataPath + "/indexes/" + field;
         final DB indexDb = MAP_DB.db(filePath);
-        final ConcurrentMap<Object, List<K>> index = (ConcurrentMap<Object, List<K>>) indexDb.hashMap("map")
-                .createOrOpen();
+        final ConcurrentMap<Object, List<K>> index = MAP_DB.getMapDb(indexDb);
         final List<K> keys = index.get(indexKey);
 
         if (keys.remove(value)) {
@@ -217,8 +216,7 @@ public final class ChronicleUtils {
             final K value) throws IOException {
         final String filePath = dataPath + "/indexes/" + field;
         final DB indexDb = MAP_DB.db(filePath);
-        final ConcurrentMap<Object, List<K>> index = (ConcurrentMap<Object, List<K>>) indexDb.hashMap("map")
-                .createOrOpen();
+        final ConcurrentMap<Object, List<K>> index = MAP_DB.getMapDb(indexDb);
         List<K> keys = index.get(indexKey);
         if (Objects.isNull(keys)) {
             keys = new ArrayList<>();
