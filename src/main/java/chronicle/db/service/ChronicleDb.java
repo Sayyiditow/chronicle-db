@@ -87,6 +87,21 @@ public final class ChronicleDb {
         return c;
     }
 
+    public Constructor<?> getObjectConstructor(final String objectClassName, final int paramCount)
+            throws ClassNotFoundException {
+        final var objClass = Class.forName(objectClassName);
+
+        final Constructor<?>[] constructors = objClass.getDeclaredConstructors();
+        Constructor<?> c = null;
+        for (final Constructor<?> con : constructors) {
+            if (con.getParameterCount() == paramCount) {
+                c = con;
+            }
+        }
+
+        return c;
+    }
+
     /**
      * Gets the multichronicle dao object to run different methods such as CRUD
      * reflectively
