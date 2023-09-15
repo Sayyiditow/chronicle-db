@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentMap;
 
 import org.mapdb.DB;
+import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
 import chronicle.db.entity.CsvObject;
@@ -151,7 +152,7 @@ public final class ChronicleUtils {
      * 
      */
     public <K, V> void index(final ConcurrentMap<K, V> db, final String dbName, final String field,
-            final ConcurrentMap<String, Map<Object, List<K>>> index, final String fileName)
+            final HTreeMap<String, Map<Object, List<K>>> index, final String fileName)
             throws IOException {
         Logger.info("Indexing {} db using {}.", dbName, field);
         final var copy = new HashMap<Object, List<K>>();

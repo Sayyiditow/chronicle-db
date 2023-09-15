@@ -1,7 +1,6 @@
 package chronicle.db.dao;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
-import static chronicle.db.service.MapDb.MAP_DB;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -143,14 +142,18 @@ interface BaseDao<K, V> {
 
     private void addSearchedValues(final List<K> keys, final ChronicleMap<K, V> db, final ConcurrentMap<K, V> match) {
         for (final var key : keys) {
-            match.put(key, db.getUsing(key, using()));
+            final var value = db.getUsing(key, using());
+            if (value != null)
+                match.put(key, value);
         }
     }
 
     private void addSearchedValues(final List<K> keys, final ChronicleMap<K, V> db, final ConcurrentMap<K, V> match,
             final int limit) {
         for (final var key : keys) {
-            match.put(key, db.getUsing(key, using()));
+            final var value = db.getUsing(key, using());
+            if (value != null)
+                match.put(key, value);
 
             if (match.size() == limit) {
                 break;
@@ -411,24 +414,6 @@ interface BaseDao<K, V> {
                 subsetOfValues(fields, entry, map);
             }
             return map;
-        }
-    }
-
-    /**
-     * Only runs to initialize an index on the field first time
-     * 
-     * @param field the field of the V value object
-     * @throws IOException
-     * 
-     */
-    default void initIndex(final String[] fields, final ChronicleMap<K, V> db) throws IOException {
-        for (final var field : fields) {
-            final String path = getIndexPath(field);
-            CHRONICLE_UTILS.deleteFileIfExists(path);
-            final var indexDb = MAP_DB.db(path);
-            final ConcurrentMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
-            CHRONICLE_UTILS.index(db, name(), field, index, "data");
-            indexDb.close();
         }
     }
 }

@@ -1,9 +1,8 @@
 package chronicle.db.service;
 
-import java.util.concurrent.ConcurrentMap;
-
 import org.mapdb.DB;
 import org.mapdb.DBMaker;
+import org.mapdb.HTreeMap;
 
 @SuppressWarnings("unchecked")
 public final class MapDb {
@@ -19,7 +18,7 @@ public final class MapDb {
                 .make();
     }
 
-    public <K, V> ConcurrentMap<K, V> getMapDb(final DB db) {
-        return (ConcurrentMap<K, V>) db.hashMap("map").createOrOpen();
+    public <K, V> HTreeMap<K, V> getMapDb(final DB db) {
+        return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
     }
 }

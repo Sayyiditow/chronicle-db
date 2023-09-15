@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import org.mapdb.DB;
+import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
 import chronicle.db.entity.Search;
@@ -255,7 +256,14 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default void initIndex(final String[] fields) throws IOException {
         final var db = db();
-        BaseDao.super.initIndex(fields, db);
+        for (final var field : fields) {
+            final String path = getIndexPath(field);
+            CHRONICLE_UTILS.deleteFileIfExists(path);
+            final var indexDb = MAP_DB.db(path);
+            final HTreeMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
+            CHRONICLE_UTILS.index(db, name(), field, index, "data");
+            indexDb.close();
+        }
         db.close();
     }
 
@@ -264,7 +272,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
         final DB indexDb = MAP_DB.db(getIndexPath(search.field()));
-        final ConcurrentMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
+        final HTreeMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
         final var result = BaseDao.super.indexedSearch(search, db(), index.get("data"));
         indexDb.close();
         return result;
@@ -275,7 +283,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final DB indexDb = MAP_DB.db(getIndexPath(search.field()));
-        final ConcurrentMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
+        final HTreeMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
         final var result = BaseDao.super.indexedSearch(search, db(), index.get("data"), limit);
         indexDb.close();
         return result;
