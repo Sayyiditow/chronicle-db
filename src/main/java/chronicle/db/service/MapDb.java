@@ -16,6 +16,7 @@ public final class MapDb {
                 .fileDB(filePath)
                 .fileMmapEnable()
                 .fileLockDisable()
+                .closeOnJvmShutdown()
                 .make();
     }
 
