@@ -479,13 +479,22 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         final var files = getFiles();
 
         if (multiThreaded(files)) {
-            files.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
-                final var db = db(file);
-                for (final var entry : db.entrySet()) {
-                    CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+            files.parallelStream().forEach(file -> {
+                try (var db = db(file)) {
+                    for (final var entry : db.entrySet()) {
+                        try {
+                            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                        } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
+                                | SecurityException e) {
+                            Logger.error("No such field: {} exists on searching. {}", search.field(), e);
+                            break;
+                        }
+                    }
+                    db.close();
+                } catch (final IOException e) {
+                    Logger.error("Db does not exist: {}.", file);
                 }
-                db.close();
-            }));
+            });
 
             return map;
         }
@@ -493,7 +502,13 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         for (final String file : files) {
             final var db = db(file);
             for (final var entry : db.entrySet()) {
-                CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                try {
+                    CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
+                        | SecurityException e) {
+                    Logger.error("No such field: {} exists on searching. {}", search.field(), e);
+                    break;
+                }
             }
             db.close();
         }
@@ -517,7 +532,13 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             files.parallelStream().allMatch(file -> {
                 try (final var db = db(file)) {
                     for (final var entry : db.entrySet()) {
-                        CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                        try {
+                            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                        } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
+                                | SecurityException e) {
+                            Logger.error("No such field: {} exists on searching. {}", search.field(), e);
+                            break;
+                        }
                         if (map.size() == limit)
                             break;
                     }
@@ -535,7 +556,13 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             for (final String file : files) {
                 final var db = db(file);
                 for (final var entry : db.entrySet()) {
-                    CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                    try {
+                        CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                    } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
+                            | SecurityException e) {
+                        Logger.error("No such field: {} exists on searching. {}", search.field(), e);
+                        break;
+                    }
                     if (map.size() == limit)
                         break;
                 }

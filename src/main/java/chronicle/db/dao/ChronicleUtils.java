@@ -75,69 +75,63 @@ public final class ChronicleUtils {
         return files;
     }
 
-    public <K, V> void search(final Search search, final K key, final V value, final ConcurrentMap<K, V> map) {
-        Field field = null;
+    public <K, V> void search(final Search search, final K key, final V value, final ConcurrentMap<K, V> map)
+            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
+        final Field field = value.getClass().getField(search.field());
+        if (Objects.nonNull(field)) {
+            final Object searchTerm = search.searchTerm();
+            final Object currentValue = field.get(value);
 
-        try {
-            field = value.getClass().getField(search.field());
-            if (Objects.nonNull(field)) {
-                final Object searchTerm = search.searchTerm();
-                final Object currentValue = field.get(value);
-
-                switch (search.searchType()) {
-                    case EQUAL:
-                        if (currentValue.equals(searchTerm))
-                            map.put(key, value);
-                        break;
-                    case NOT_EQUAL:
-                        if (!currentValue.equals(searchTerm))
-                            map.put(key, value);
-                        break;
-                    case LESS:
-                        if (new BigDecimal(currentValue.toString())
-                                .compareTo(new BigDecimal(searchTerm.toString())) < 0)
-                            map.put(key, value);
-                        break;
-                    case GREATER:
-                        if (new BigDecimal(currentValue.toString())
-                                .compareTo(new BigDecimal(searchTerm.toString())) > 0)
-                            map.put(key, value);
-                        break;
-                    case LESS_OR_EQUAL:
-                        if (new BigDecimal(currentValue.toString())
-                                .compareTo(new BigDecimal(searchTerm.toString())) <= 0)
-                            map.put(key, value);
-                        break;
-                    case GREATER_OR_EQUAL:
-                        if (new BigDecimal(currentValue.toString())
-                                .compareTo(new BigDecimal(searchTerm.toString())) >= 0)
-                            map.put(key, value);
-                        break;
-                    case LIKE:
-                        if (String.valueOf(currentValue).contains(String.valueOf(searchTerm)))
-                            map.put(key, value);
-                        break;
-                    case NOT_LIKE:
-                        if (!String.valueOf(currentValue).contains(String.valueOf(searchTerm)))
-                            map.put(key, value);
-                        break;
-                    case CONTAINS:
-                        if (Collections.singleton(currentValue).contains(searchTerm))
-                            map.put(key, value);
-                        break;
-                    case STARTS_WITH:
-                        if (String.valueOf(currentValue).startsWith(String.valueOf(searchTerm)))
-                            map.put(key, value);
-                        break;
-                    case ENDS_WITH:
-                        if (String.valueOf(currentValue).endsWith(String.valueOf(searchTerm)))
-                            map.put(key, value);
-                        break;
-                }
+            switch (search.searchType()) {
+                case EQUAL:
+                    if (currentValue.equals(searchTerm))
+                        map.put(key, value);
+                    break;
+                case NOT_EQUAL:
+                    if (!currentValue.equals(searchTerm))
+                        map.put(key, value);
+                    break;
+                case LESS:
+                    if (new BigDecimal(currentValue.toString())
+                            .compareTo(new BigDecimal(searchTerm.toString())) < 0)
+                        map.put(key, value);
+                    break;
+                case GREATER:
+                    if (new BigDecimal(currentValue.toString())
+                            .compareTo(new BigDecimal(searchTerm.toString())) > 0)
+                        map.put(key, value);
+                    break;
+                case LESS_OR_EQUAL:
+                    if (new BigDecimal(currentValue.toString())
+                            .compareTo(new BigDecimal(searchTerm.toString())) <= 0)
+                        map.put(key, value);
+                    break;
+                case GREATER_OR_EQUAL:
+                    if (new BigDecimal(currentValue.toString())
+                            .compareTo(new BigDecimal(searchTerm.toString())) >= 0)
+                        map.put(key, value);
+                    break;
+                case LIKE:
+                    if (String.valueOf(currentValue).contains(String.valueOf(searchTerm)))
+                        map.put(key, value);
+                    break;
+                case NOT_LIKE:
+                    if (!String.valueOf(currentValue).contains(String.valueOf(searchTerm)))
+                        map.put(key, value);
+                    break;
+                case CONTAINS:
+                    if (Collections.singleton(currentValue).contains(searchTerm))
+                        map.put(key, value);
+                    break;
+                case STARTS_WITH:
+                    if (String.valueOf(currentValue).startsWith(String.valueOf(searchTerm)))
+                        map.put(key, value);
+                    break;
+                case ENDS_WITH:
+                    if (String.valueOf(currentValue).endsWith(String.valueOf(searchTerm)))
+                        map.put(key, value);
+                    break;
             }
-
-        } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException | SecurityException e) {
-            Logger.error("No such field exists when calling search for chronicle map {}. {}", search.field(), e);
         }
     }
 
@@ -172,6 +166,7 @@ public final class ChronicleUtils {
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when indexing {}. {}", field, dbName, e);
+                break;
             }
         }
 

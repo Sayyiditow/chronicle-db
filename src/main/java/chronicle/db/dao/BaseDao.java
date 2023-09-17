@@ -90,7 +90,12 @@ interface BaseDao<K, V> {
         final ConcurrentMap<K, V> map = new ConcurrentHashMap<>();
 
         for (final var entry : db.entrySet()) {
-            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+            try {
+                CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+            } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException | SecurityException e) {
+                Logger.error("No such field: {} exists when searching. {}", search.field(), e);
+                break;
+            }
         }
 
         return map;
@@ -108,7 +113,12 @@ interface BaseDao<K, V> {
         final ConcurrentMap<K, V> map = new ConcurrentHashMap<>();
 
         for (final var entry : db.entrySet()) {
-            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+            try {
+                CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+            } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException | SecurityException e) {
+                Logger.error("No such field: {} exists when searching. {}", search.field(), e);
+                break;
+            }
             if (map.size() == limit) {
                 break;
             }
@@ -384,7 +394,7 @@ interface BaseDao<K, V> {
                     valueMap.put(f, field.get(entry.getValue()));
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-                Logger.error("No such field exists {} when making a subset of {}. {}", f,
+                Logger.error("No such field: {} when making a subset of {}. {}", f,
                         entry.getValue().getClass().getSimpleName(), e);
             }
         }
