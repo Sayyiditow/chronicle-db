@@ -15,6 +15,7 @@ public final class MapDb {
         return DBMaker
                 .fileDB(filePath)
                 .fileMmapEnable()
+                .fileLockDisable()
                 .make();
     }
 
