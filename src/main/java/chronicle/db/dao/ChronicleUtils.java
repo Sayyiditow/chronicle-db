@@ -179,10 +179,9 @@ public final class ChronicleUtils {
      * @param dataPath the folder path
      * @param field    the value object field enum
      * @param indexKey the key of the index
-     * @return boolean value true or false if updated
      * @throws IOException
      */
-    private <K> boolean removeFromIndex(final String dataPath, final String field, final Object indexKey,
+    private <K> void removeFromIndex(final String dataPath, final String field, final Object indexKey,
             final K value) throws IOException {
         final String filePath = dataPath + "/indexes/" + field;
         final DB indexDb = MAP_DB.db(filePath);
@@ -192,11 +191,8 @@ public final class ChronicleUtils {
         if (keys.remove(value)) {
             index.put(indexKey, keys);
             indexDb.close();
-            return true;
         }
         indexDb.close();
-
-        return false;
     }
 
     /**
@@ -205,10 +201,9 @@ public final class ChronicleUtils {
      * @param dataPath the folder path
      * @param field    the value object field enum
      * @param indexKey the key of the index
-     * @return boolean value true or false if updated
      * @throws IOException
      */
-    private <K> boolean addToIndex(final String dataPath, final String field, final Object indexKey,
+    private <K> void addToIndex(final String dataPath, final String field, final Object indexKey,
             final K value) throws IOException {
         final String filePath = dataPath + "/indexes/" + field;
         final DB indexDb = MAP_DB.db(filePath);
@@ -221,11 +216,8 @@ public final class ChronicleUtils {
         if (keys.add(value)) {
             index.put(indexKey, keys);
             indexDb.close();
-            return true;
         }
         indexDb.close();
-
-        return false;
     }
 
     public <K, V> void removeFromIndex(final String dbName, final String dataPath, final List<String> indexFileNames,
@@ -237,11 +229,11 @@ public final class ChronicleUtils {
                 field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
                     indexKey = field.get(value);
+                    removeFromIndex(dataPath, file, indexKey, key);
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when removing from index {}. {}", file, dbName, e);
             }
-            removeFromIndex(dataPath, file, indexKey, key);
         }
     }
 
@@ -254,11 +246,11 @@ public final class ChronicleUtils {
                 field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
                     indexKey = field.get(value);
+                    addToIndex(dataPath, file, indexKey, key);
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when adding to index {}. {}", file, dbName, e);
             }
-            addToIndex(dataPath, file, indexKey, key);
         }
     }
 
