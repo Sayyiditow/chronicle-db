@@ -151,24 +151,26 @@ interface BaseDao<K, V> {
     }
 
     private void addSearchedValues(final List<K> keys, final ChronicleMap<K, V> db, final ConcurrentMap<K, V> match) {
-        for (final var key : keys) {
-            final var value = db.getUsing(key, using());
-            if (value != null)
-                match.put(key, value);
-        }
+        if (keys != null)
+            for (final var key : keys) {
+                final var value = db.getUsing(key, using());
+                if (value != null)
+                    match.put(key, value);
+            }
     }
 
     private void addSearchedValues(final List<K> keys, final ChronicleMap<K, V> db, final ConcurrentMap<K, V> match,
             final int limit) {
-        for (final var key : keys) {
-            final var value = db.getUsing(key, using());
-            if (value != null)
-                match.put(key, value);
+        if (keys != null)
+            for (final var key : keys) {
+                final var value = db.getUsing(key, using());
+                if (value != null)
+                    match.put(key, value);
 
-            if (match.size() == limit) {
-                break;
+                if (match.size() == limit) {
+                    break;
+                }
             }
-        }
     }
 
     /**
