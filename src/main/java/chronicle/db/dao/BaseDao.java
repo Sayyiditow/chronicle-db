@@ -415,17 +415,9 @@ interface BaseDao<K, V> {
             final List<String> fields) {
         final var map = new ConcurrentHashMap<K, LinkedHashMap<String, Object>>();
 
-        // parallel stream only if the size is > 100,000
-        if (initialMap.size() > 100000) {
-            initialMap.entrySet().parallelStream().forEach(entry -> {
-                subsetOfValues(fields, entry, map);
-            });
-            return map;
-        } else {
-            for (final var entry : initialMap.entrySet()) {
-                subsetOfValues(fields, entry, map);
-            }
-            return map;
+        for (final var entry : initialMap.entrySet()) {
+            subsetOfValues(fields, entry, map);
         }
+        return map;
     }
 }
