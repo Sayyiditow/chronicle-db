@@ -15,6 +15,7 @@ import net.openhft.chronicle.map.ChronicleMap;
  * Using this DB requires to use Value interfaces from Chronical Map:
  * https://github.com/OpenHFT/Chronicle-Values
  */
+@SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
     private ChronicleDb() {
     }
@@ -32,7 +33,6 @@ public final class ChronicleDb {
      *                   for complex structures)
      * @throws IOException
      */
-    @SuppressWarnings("unchecked")
     public <K, V> ChronicleMap<K, V> createOrGet(final String name, final long entries,
             final K averageKey, final V averageValue, final String filePath) throws IOException {
         final File file = new File(filePath);
@@ -88,6 +88,30 @@ public final class ChronicleDb {
     }
 
     /**
+     * Constructs the class using reflection
+     */
+    public Object constructObject(final String objectClassName, final Object[] values) throws ClassNotFoundException,
+            InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
+        final var con = getObjectConstructor(objectClassName);
+        final var params = con.getParameterTypes();
+        final Object[] preparedValues = new Object[params.length];
+
+        if (params.length != values.length) {
+            Logger.error("Length of parameters supplied does not match.");
+            return null;
+        }
+
+        for (int i = 0; i < params.length; i++) {
+            if (params[i].isEnum())
+                preparedValues[i] = Enum.valueOf((Class<Enum>) params[i], "ACTIVE");
+            else
+                preparedValues[i] = values[i];
+        }
+
+        return con.newInstance(preparedValues);
+    }
+
+    /**
      * Gets the multichronicle dao object to run different methods such as CRUD
      * reflectively
      * 
@@ -98,7 +122,6 @@ public final class ChronicleDb {
      * @throws InvocationTargetException
      * @throws InstantiationException
      */
-    @SuppressWarnings({ "rawtypes" })
     public MultiChronicleDao getMultiChronicleDao(final String daoClassName, final String dataPath)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException {
@@ -117,7 +140,6 @@ public final class ChronicleDb {
      * @throws InvocationTargetException
      * @throws InstantiationException
      */
-    @SuppressWarnings({ "rawtypes" })
     public SingleChronicleDao getSingleChronicleDao(final String daoClassName, final String dataPath)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException {
