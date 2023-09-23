@@ -19,7 +19,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentMap;
 
-import org.mapdb.DB;
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
@@ -176,20 +175,23 @@ public final class ChronicleUtils {
     /**
      * Update the index
      * 
-     * @param dataPath the folder path
-     * @param field    the value object field enum
-     * @param indexKey the key of the index
+     * @param dbFileName the file where the data is stored
+     * @param dataPath   the folder path
+     * @param field      the value object field enum
+     * @param indexKey   the key of the index
      * @throws IOException
      */
-    private <K> void removeFromIndex(final String dataPath, final String field, final Object indexKey,
+    private <K> void removeFromIndex(final String dbFileName, final String dataPath, final String field,
+            final Object indexKey,
             final K value) throws IOException {
         final String filePath = dataPath + "/indexes/" + field;
-        final DB indexDb = MAP_DB.db(filePath);
-        final ConcurrentMap<Object, List<K>> index = MAP_DB.getMapDb(indexDb);
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(filePath);
+        final var index = indexDb.get(dbFileName);
         final List<K> keys = index.get(indexKey);
 
         if (keys.remove(value)) {
             index.put(indexKey, keys);
+            indexDb.put(dbFileName, index);
             indexDb.close();
         }
         indexDb.close();
@@ -198,16 +200,18 @@ public final class ChronicleUtils {
     /**
      * Update the index
      * 
-     * @param dataPath the folder path
-     * @param field    the value object field enum
-     * @param indexKey the key of the index
+     * @param dbFileName the file where the data is stored
+     * @param dataPath   the folder path
+     * @param field      the value object field enum
+     * @param indexKey   the key of the index
      * @throws IOException
      */
-    private <K> void addToIndex(final String dataPath, final String field, final Object indexKey,
+    private <K> void addToIndex(final String dbFileName, final String dataPath, final String field,
+            final Object indexKey,
             final K value) throws IOException {
         final String filePath = dataPath + "/indexes/" + field;
-        final DB indexDb = MAP_DB.db(filePath);
-        final ConcurrentMap<Object, List<K>> index = MAP_DB.getMapDb(indexDb);
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(filePath);
+        final var index = indexDb.get(dbFileName);
         List<K> keys = index.get(indexKey);
         if (Objects.isNull(keys)) {
             keys = new ArrayList<>();
@@ -215,13 +219,14 @@ public final class ChronicleUtils {
 
         if (keys.add(value)) {
             index.put(indexKey, keys);
+            indexDb.put(dbFileName, index);
             indexDb.close();
         }
         indexDb.close();
     }
 
-    public <K, V> void removeFromIndex(final String dbName, final String dataPath, final List<String> indexFileNames,
-            final K key, final V value) throws IOException {
+    public <K, V> void removeFromIndex(final String dbFileName, final String dbName, final String dataPath,
+            final List<String> indexFileNames, final K key, final V value) throws IOException {
         for (final String file : indexFileNames) {
             Field field = null;
             Object indexKey = null;
@@ -229,7 +234,7 @@ public final class ChronicleUtils {
                 field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
                     indexKey = field.get(value);
-                    removeFromIndex(dataPath, file, indexKey, key);
+                    removeFromIndex(dbFileName, dataPath, file, indexKey, key);
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when removing from index {}. {}", file, dbName, e);
@@ -237,8 +242,8 @@ public final class ChronicleUtils {
         }
     }
 
-    public <K, V> void addToIndex(final String dbName, final String dataPath, final List<String> indexFileNames,
-            final K key, final V value) throws IOException {
+    public <K, V> void addToIndex(final String dbFileName, final String dbName, final String dataPath,
+            final List<String> indexFileNames, final K key, final V value) throws IOException {
         for (final String file : indexFileNames) {
             Field field = null;
             Object indexKey = null;
@@ -246,7 +251,7 @@ public final class ChronicleUtils {
                 field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
                     indexKey = field.get(value);
-                    addToIndex(dataPath, file, indexKey, key);
+                    addToIndex(dbFileName, dataPath, file, indexKey, key);
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when adding to index {}. {}", file, dbName, e);

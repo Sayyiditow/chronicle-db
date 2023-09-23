@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
-import org.mapdb.DB;
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
@@ -53,12 +52,12 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
     }
 
     /**
-     * Get the db object
+     * Get the db object, you must close the map manually
      * 
      * @param path the file name
      * @throws IOException
      */
-    private ChronicleMap<K, V> db(final String path) throws IOException {
+    default ChronicleMap<K, V> db(final String path) throws IOException {
         return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(), dataPath() + "/data/" + path);
     }
 
@@ -239,7 +238,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             if (updated) {
                 CHRONICLE_UTILS.successDeleteLog(name(), key);
                 if (containsIndexes()) {
-                    CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), key, value);
+                    CHRONICLE_UTILS.removeFromIndex(file, name(), dataPath(), indexFileNames(), key, value);
                 }
             }
         }
@@ -301,7 +300,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                 if (Objects.nonNull(value)) {
                     deleted += 1;
                     if (containsIndexes()) {
-                        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), key, value);
+                        CHRONICLE_UTILS.removeFromIndex(file, name(), dataPath(), indexFileNames(), key, value);
                     }
                 }
             }
@@ -359,7 +358,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         db.close();
 
         if (updated && containsIndexes()) {
-            CHRONICLE_UTILS.addToIndex(name(), dataPath(), indexFileNames(), key, value);
+            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), key, value);
         }
         return updated;
     }
@@ -403,7 +402,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         db.close();
         if (containsIndexes()) {
             for (final var entry : map.entrySet()) {
-                CHRONICLE_UTILS.addToIndex(name(), dataPath(), indexFileNames(), entry.getKey(), entry.getValue());
+                CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), entry.getKey(),
+                        entry.getValue());
             }
         }
     }
@@ -588,18 +588,17 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         for (final var field : fields) {
             final String path = getIndexPath(field);
             CHRONICLE_UTILS.deleteFileIfExists(path);
-            final var indexDb = MAP_DB.db(path);
-            final HTreeMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
+            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(path);
             if (multiThreaded(files)) {
                 files.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(f -> {
                     final var db = db(f);
-                    CHRONICLE_UTILS.index(db, name(), field, index, f);
+                    CHRONICLE_UTILS.index(db, name(), field, indexDb, f);
                     db.close();
                 }));
             } else
                 for (final String f : files) {
                     final var db = db(f);
-                    CHRONICLE_UTILS.index(db, name(), field, index, f);
+                    CHRONICLE_UTILS.index(db, name(), field, indexDb, f);
                     db.close();
                 }
             indexDb.close();
@@ -626,9 +625,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
         final var map = new ConcurrentHashMap<K, V>();
-        final DB indexDb = MAP_DB.db(getIndexPath(search.field()));
-        final HTreeMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
-        final var recordsAtMap = fileAtIndex(index, search.searchTerm());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(search.field());
+        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
 
         if (recordsAtMap.size() > 3) {
             recordsAtMap.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
@@ -650,9 +648,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final var map = new ConcurrentHashMap<K, V>();
-        final DB indexDb = MAP_DB.db(getIndexPath(search.field()));
-        final HTreeMap<String, Map<Object, List<K>>> index = MAP_DB.getMapDb(indexDb);
-        final var recordsAtMap = fileAtIndex(index, search.searchTerm());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(search.field());
+        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
 
         if (recordsAtMap.size() > 2) {
             recordsAtMap.entrySet().parallelStream().allMatch(entry -> {
