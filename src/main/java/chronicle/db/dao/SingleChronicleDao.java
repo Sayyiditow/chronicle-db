@@ -263,7 +263,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * Refer to @BaseDao.super.indexedSearch
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
         final var result = BaseDao.super.indexedSearch(search, db(), indexDb.get("data"));
         indexDb.close();
         return result;
@@ -273,7 +273,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * Refer to @BaseDao.super.indexedSearch
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
         final var result = BaseDao.super.indexedSearch(search, db(), indexDb.get("data"), limit);
         indexDb.close();
         return result;

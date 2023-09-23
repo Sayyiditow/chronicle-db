@@ -184,8 +184,7 @@ public final class ChronicleUtils {
     private <K> void removeFromIndex(final String dbFileName, final String dataPath, final String field,
             final Object indexKey,
             final K value) throws IOException {
-        final String filePath = dataPath + "/indexes/" + field;
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(filePath);
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + field);
         final var index = indexDb.get(dbFileName);
         final List<K> keys = index.get(indexKey);
 
@@ -209,8 +208,7 @@ public final class ChronicleUtils {
     private <K> void addToIndex(final String dbFileName, final String dataPath, final String field,
             final Object indexKey,
             final K value) throws IOException {
-        final String filePath = dataPath + "/indexes/" + field;
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(filePath);
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + field);
         final var index = indexDb.get(dbFileName);
         List<K> keys = index.get(indexKey);
         if (Objects.isNull(keys)) {
