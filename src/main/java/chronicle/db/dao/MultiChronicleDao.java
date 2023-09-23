@@ -625,7 +625,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
         final var map = new ConcurrentHashMap<K, V>();
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
         final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
 
         if (recordsAtMap.size() > 3) {
@@ -648,7 +648,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final var map = new ConcurrentHashMap<K, V>();
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
         final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
 
         if (recordsAtMap.size() > 2) {
