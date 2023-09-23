@@ -103,7 +103,7 @@ public final class ChronicleDb {
 
         for (int i = 0; i < params.length; i++) {
             if (params[i].isEnum())
-                preparedValues[i] = Enum.valueOf((Class<Enum>) params[i], "ACTIVE");
+                preparedValues[i] = Enum.valueOf((Class<Enum>) params[i], values[i].toString());
             else
                 preparedValues[i] = values[i];
         }
