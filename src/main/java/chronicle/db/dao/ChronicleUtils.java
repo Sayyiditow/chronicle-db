@@ -369,4 +369,25 @@ public final class ChronicleUtils {
             Logger.info("No such index file {}.", filePath);
         }
     }
+
+    public String[] copyArray(final String[] prefix, final String[] toCopy) {
+        final int prefixLength = prefix.length;
+        final int newLength = toCopy.length;
+        final String[] copied = new String[prefixLength + newLength];
+        System.arraycopy(prefix, 0, copied, 0, prefixLength);
+        System.arraycopy(toCopy, 0, copied, prefixLength, newLength);
+
+        return copied;
+    }
+
+    public Map<String, Object> objectToMap(final Object object, final String objectName) throws IllegalAccessException {
+        final Map<String, Object> map = new HashMap<>();
+        final Field[] fields = object.getClass().getDeclaredFields();
+
+        for (final Field field : fields) {
+            map.put(objectName + "." + field.getName(), field.get(object));
+        }
+
+        return map;
+    }
 }

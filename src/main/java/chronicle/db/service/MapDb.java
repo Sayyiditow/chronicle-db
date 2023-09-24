@@ -2,6 +2,7 @@ package chronicle.db.service;
 
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
+import org.tinylog.Logger;
 
 @SuppressWarnings("unchecked")
 public final class MapDb {
@@ -20,6 +21,7 @@ public final class MapDb {
                 .fileLockDisable()
                 .closeOnJvmShutdown()
                 .make();
+        Logger.info("Opening index file at: {}", filePath);
         return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
     }
 }

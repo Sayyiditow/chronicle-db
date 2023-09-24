@@ -145,8 +145,7 @@ interface BaseDao<K, V> {
      * @return map of the index
      * @throws IOException
      */
-    default String getIndexPath(final String field)
-            throws IOException {
+    default String getIndexPath(final String field) {
         return dataPath() + "/indexes/" + field;
     }
 
