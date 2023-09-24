@@ -253,7 +253,7 @@ public final class ChronicleDb {
      */
     public CsvObject joinToCsv(final ChronicleMap<Object, Object> objectA, final ChronicleMap<Object, Object> objectB,
             final Object objectAUsing, final Object objectBUsing, final String foreignKeyField,
-            final String objectADataPath, final String objectAName, final String objectBName)
+            final String objectADataPath)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         final String indexPath = objectADataPath + "/indexes/" + foreignKeyField;
@@ -269,13 +269,7 @@ public final class ChronicleDb {
         final Method headersMethodA = valueA.getClass().getDeclaredMethod("headers");
         final Method headersMethodB = valueB.getClass().getDeclaredMethod("headers");
         final String[] headerListA = (String[]) headersMethodA.invoke(valueA);
-        for (int i = 0; i < headerListA.length; i++) {
-            headerListA[i] = objectAName + "." + headerListA[i];
-        }
         final String[] headerListB = (String[]) headersMethodB.invoke(valueB);
-        for (int i = 0; i < headerListB.length; i++) {
-            headerListB[i] = objectAName + "." + headerListB[i];
-        }
         final String[] headers = CHRONICLE_UTILS.copyArray(headerListA, headerListB);
         final List<Object[]> rowList = new ArrayList<>();
 
