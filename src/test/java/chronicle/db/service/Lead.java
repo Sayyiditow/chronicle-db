@@ -35,14 +35,14 @@ public class Lead implements BytesMarshallable, ICsv<String> {
 
     @Override
     public Object[] row(final String key) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'row'");
+        return new Object[] { key, fullName, linkedin, facebook, twitter, email, mobilePhone, jobTitle, location,
+                emails.toString() };
     }
 
     @Override
     public String[] headers() {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'headers'");
+        return new String[] { "ID", "Full Name", "LinkedIn", "Facebook", "Twitter", "Email", "Mobile Phone",
+                "Job Title", "Location", "Emails" };
     }
 
 }
