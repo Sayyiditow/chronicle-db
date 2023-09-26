@@ -23,6 +23,7 @@ import org.tinylog.Logger;
 import chronicle.db.dao.MultiChronicleDao;
 import chronicle.db.dao.SingleChronicleDao;
 import chronicle.db.entity.CsvObject;
+import chronicle.db.entity.Join;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -162,17 +163,17 @@ public final class ChronicleDb {
     }
 
     private void loopJoinToMap(final Entry<String, Map<Object, List<Object>>> e,
-            final ChronicleMap<Object, Object> objectA, final ChronicleMap<Object, Object> objectB,
-            final Object objectAUsing, final Object objectBUsing,
-            final ConcurrentMap<String, Map<String, Object>> joinedMap,
-            final String objectAName, final String objectBName) throws IllegalAccessException {
+            final ChronicleMap<Object, Object> primaryObject, final ChronicleMap<Object, Object> foreignObject,
+            final Object primaryUsing, final Object foreignUsing,
+            final String primaryObjectName, final String foreignObjectName,
+            final ConcurrentMap<String, Map<String, Object>> joinedMap) throws IllegalAccessException {
         for (final var keyEntry : e.getValue().entrySet()) {
-            final Object b = objectB.getUsing(keyEntry.getKey(), objectBUsing);
+            final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
             for (final var key : keyEntry.getValue()) {
-                final Object a = objectA.getUsing(key, objectAUsing);
-                final var valueMap = CHRONICLE_UTILS.objectToMap(a, objectAName);
-                valueMap.putAll(CHRONICLE_UTILS.objectToMap(b, objectBName));
-                joinedMap.put(keyEntry.getKey().toString() + key.toString(), valueMap);
+                final Object foreign = foreignObject.getUsing(key, foreignUsing);
+                final var valueMap = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName);
+                valueMap.putAll(CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName));
+                joinedMap.putIfAbsent(keyEntry.getKey().toString() + key.toString(), valueMap);
             }
         }
     }
@@ -190,51 +191,53 @@ public final class ChronicleDb {
      * @throws IllegalArgumentException
      * @throws IllegalAccessException
      */
-    public ConcurrentMap<String, Map<String, Object>> joinToMap(final ChronicleMap<Object, Object> objectA,
-            final ChronicleMap<Object, Object> objectB, final Object objectAUsing, final Object objectBUsing,
-            final String foreignKeyField, final String objectADataPath, final String objectAName,
-            final String objectBName)
+    public ConcurrentMap<String, Map<String, Object>> joinToMap(final List<Join> joins)
             throws NoSuchMethodException, SecurityException, IllegalAccessException,
             IllegalArgumentException, InvocationTargetException {
-        final String indexPath = objectADataPath + "/indexes/" + foreignKeyField;
-
-        if (!Files.exists(Paths.get(indexPath))) {
-            Logger.error("Index is missing for the foreign key: {}.", foreignKeyField);
-            return null;
-        }
-
-        final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(indexPath);
         final ConcurrentMap<String, Map<String, Object>> joinedMap = new ConcurrentHashMap<>();
 
-        if (indexDb.keySet().size() > 3) {
-            indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
-                loopJoinToMap(e, objectA, objectB, objectAUsing, objectBUsing, joinedMap, objectAName, objectBName);
-            }));
+        for (final var join : joins) {
+            if (!Files.exists(Paths.get(join.foreignKeyIndexPath))) {
+                Logger.error("Index is missing for the foreign key: {}.", join.foreignKeyIndexPath);
+                return null;
+            }
+
+            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(join.foreignKeyIndexPath);
+
+            if (indexDb.keySet().size() > 3)
+                indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
+                    loopJoinToMap(e, join.primaryObject, join.foreignObject, join.primaryUsing, join.foreignUsing,
+                            join.foreignObjectName, join.primaryObjectName, joinedMap);
+                }));
+            else
+                for (final var e : indexDb.entrySet()) {
+                    loopJoinToMap(e, join.primaryObject, join.foreignObject, join.primaryUsing, join.foreignUsing,
+                            join.foreignObjectName, join.primaryObjectName, joinedMap);
+                }
             indexDb.close();
-            return joinedMap;
         }
 
-        for (final var e : indexDb.entrySet()) {
-            loopJoinToMap(e, objectA, objectB, objectAUsing, objectBUsing, joinedMap, objectAName, objectBName);
-        }
-        indexDb.close();
         return joinedMap;
     }
 
     private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
-            final ChronicleMap<Object, Object> objectA, final ChronicleMap<Object, Object> objectB,
-            final Object objectAUsing, final Object objectBUsing, final List<Object[]> rowList)
+            final ChronicleMap<Object, Object> primaryObject, final ChronicleMap<Object, Object> foreignObject,
+            final Object primaryUsing, final Object foreignUsing, final List<Object[]> rowList)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         for (final var keyEntry : e.getValue().entrySet()) {
-            final Object b = objectB.getUsing(keyEntry.getKey(), objectBUsing);
-            final Method rowMethodB = b.getClass().getDeclaredMethod("row", Object.class);
+            System.out.println(primaryObject.values().toArray()[0].toString());
+            final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
+            final Method primaryRowMethod = primary.getClass().getDeclaredMethod("row", Object.class);
+            final var primaryRow = (Object[]) primaryRowMethod.invoke(primary, keyEntry.getKey());
             for (final var key : keyEntry.getValue()) {
-                final Object a = objectA.getUsing(key, objectAUsing);
-                final Method rowMethodA = a.getClass().getDeclaredMethod("row", Object.class);
-                rowList.add((Object[]) rowMethodA.invoke(a, key));
+                final Object foreign = foreignObject.getUsing(key, foreignUsing);
+                final Method foreignRowMethod = foreign.getClass().getDeclaredMethod("row", Object.class);
+                final var foreignRow = (Object[]) foreignRowMethod.invoke(foreign, key);
+                rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
             }
-            rowList.add((Object[]) rowMethodB.invoke(b, keyEntry.getKey()));
+            if (rowList.size() > 1)
+                return;
         }
     }
 
@@ -251,40 +254,40 @@ public final class ChronicleDb {
      * @throws IllegalArgumentException
      * @throws IllegalAccessException
      */
-    public CsvObject joinToCsv(final ChronicleMap<Object, Object> objectA, final ChronicleMap<Object, Object> objectB,
-            final Object objectAUsing, final Object objectBUsing, final String foreignKeyField,
-            final String objectADataPath)
+    public CsvObject joinToCsv(final List<Join> joins)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
-        final String indexPath = objectADataPath + "/indexes/" + foreignKeyField;
-
-        if (!Files.exists(Paths.get(indexPath))) {
-            Logger.error("Index is missing for the foreign key: {}.", foreignKeyField);
-            return null;
-        }
-
-        final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(indexPath);
-        final var valueA = objectA.values().toArray()[0];
-        final var valueB = objectB.values().toArray()[0];
-        final Method headersMethodA = valueA.getClass().getDeclaredMethod("headers");
-        final Method headersMethodB = valueB.getClass().getDeclaredMethod("headers");
-        final String[] headerListA = (String[]) headersMethodA.invoke(valueA);
-        final String[] headerListB = (String[]) headersMethodB.invoke(valueB);
-        final String[] headers = CHRONICLE_UTILS.copyArray(headerListA, headerListB);
+        String[] headers = new String[0];
         final List<Object[]> rowList = new ArrayList<>();
 
-        if (indexDb.keySet().size() > 3) {
-            indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
-                loopJoinToCsv(e, objectA, objectB, objectAUsing, objectBUsing, rowList);
-            }));
-            indexDb.close();
-            return new CsvObject(headers, rowList);
-        }
+        for (final var join : joins) {
+            if (!Files.exists(Paths.get(join.foreignKeyIndexPath))) {
+                Logger.error("Index is missing for the foreign key: {}.", join.foreignKeyIndexPath);
+                return null;
+            }
 
-        for (final var e : indexDb.entrySet()) {
-            loopJoinToCsv(e, objectA, objectB, objectAUsing, objectBUsing, rowList);
+            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(join.foreignKeyIndexPath);
+            final var primaryValue = join.primaryObject.values().toArray()[0];
+            final var foreignValue = join.foreignObject.values().toArray()[0];
+            final Method primaryHeaderMethod = primaryValue.getClass().getDeclaredMethod("header");
+            final Method foreignHeaderMethod = foreignValue.getClass().getDeclaredMethod("header");
+            final String[] headerListA = (String[]) primaryHeaderMethod.invoke(primaryValue);
+            final String[] headerListB = (String[]) foreignHeaderMethod.invoke(foreignValue);
+            headers = CHRONICLE_UTILS.copyArray(headerListA, headerListB);
+
+            if (indexDb.keySet().size() > 3)
+                indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
+                    loopJoinToCsv(e, join.primaryObject, join.foreignObject, join.primaryUsing, join.foreignUsing,
+                            rowList);
+                }));
+            else
+                for (final var e : indexDb.entrySet()) {
+                    loopJoinToCsv(e, join.primaryObject, join.foreignObject, join.primaryUsing, join.foreignUsing,
+                            rowList);
+                }
+
+            indexDb.close();
         }
-        indexDb.close();
         return new CsvObject(headers, rowList);
     }
 }

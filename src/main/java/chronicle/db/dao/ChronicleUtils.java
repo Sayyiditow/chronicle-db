@@ -271,7 +271,7 @@ public final class ChronicleUtils {
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         final V value = map.values().iterator().next();
-        final Method headersMethod = value.getClass().getDeclaredMethod("headers");
+        final Method headersMethod = value.getClass().getDeclaredMethod("header");
         final Method rowMethod = value.getClass().getDeclaredMethod("row", Object.class);
         final String[] headerList = (String[]) headersMethod.invoke(value);
         final List<Object[]> rowList = new ArrayList<>();
@@ -297,7 +297,7 @@ public final class ChronicleUtils {
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         final V value = map.values().iterator().next().values().iterator().next();
-        final Method headersMethod = value.getClass().getDeclaredMethod("headers");
+        final Method headersMethod = value.getClass().getDeclaredMethod("header");
         final Method rowMethod = value.getClass().getDeclaredMethod("row", Object.class);
         final String[] headerList = (String[]) headersMethod.invoke(value);
         final List<Object[]> rowList = new ArrayList<>();
@@ -370,10 +370,20 @@ public final class ChronicleUtils {
         }
     }
 
+    public Object[] copyArray(final Object[] prefix, final Object[] toCopy) {
+        final int prefixLength = prefix.length;
+        final int newLength = toCopy.length;
+        final var copied = new Object[prefixLength + newLength];
+        System.arraycopy(prefix, 0, copied, 0, prefixLength);
+        System.arraycopy(toCopy, 0, copied, prefixLength, newLength);
+
+        return copied;
+    }
+
     public String[] copyArray(final String[] prefix, final String[] toCopy) {
         final int prefixLength = prefix.length;
         final int newLength = toCopy.length;
-        final String[] copied = new String[prefixLength + newLength];
+        final var copied = new String[prefixLength + newLength];
         System.arraycopy(prefix, 0, copied, 0, prefixLength);
         System.arraycopy(toCopy, 0, copied, prefixLength, newLength);
 

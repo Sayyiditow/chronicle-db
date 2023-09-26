@@ -40,7 +40,7 @@ public class Lead implements BytesMarshallable, ICsv<String> {
     }
 
     @Override
-    public String[] headers() {
+    public String[] header() {
         return new String[] { "ID", "Full Name", "LinkedIn", "Facebook", "Twitter", "Email", "Mobile Phone",
                 "Job Title", "Location", "Emails" };
     }

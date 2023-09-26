@@ -1,7 +1,7 @@
 package chronicle.db.entity;
 
 public interface ICsv<K> {
-    String[] headers();
+    String[] header();
 
     Object[] row(final K key);
 }
