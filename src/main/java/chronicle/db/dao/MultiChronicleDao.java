@@ -29,7 +29,7 @@ import net.openhft.chronicle.map.ChronicleMap;
  * @param <V> Type of the single element
  */
 public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
-    private List<String> getFiles() {
+    default List<String> getFiles() {
         return ChronicleUtils.getFileList(dataPath() + "/data");
     }
 
