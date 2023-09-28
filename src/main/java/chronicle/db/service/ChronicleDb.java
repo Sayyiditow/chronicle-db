@@ -171,31 +171,36 @@ public final class ChronicleDb {
     private void loopJoinToMap(final Entry<String, Map<Object, List<Object>>> e,
             final ChronicleMap<Object, Object> primaryObject, final ChronicleMap<Object, Object> foreignObject,
             final Object primaryUsing, final Object foreignUsing, final String primaryObjectName,
-            final String foreignObjectName, final ConcurrentMap<String, Map<String, Object>> joinedMap,
-            final ConcurrentMap<String, String> keysHolder)
+            final String foreignObjectName, final ConcurrentMap<String, Map<String, Object>> joinedMap)
             throws IllegalAccessException {
         for (final var keyEntry : e.getValue().entrySet()) {
             if (keyEntry.getKey() != null) {
                 final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
-                final String prevPrimaryKey = keysHolder.get(keyEntry.getKey().toString());
+                final var primaryValue = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName);
+                final var primaryPrev = joinedMap.get(keyEntry.getKey().toString());
+
                 for (final var key : keyEntry.getValue()) {
                     final Object foreign = foreignObject.getUsing(key, foreignUsing);
-                    final var valueMap = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName);
-                    valueMap.putAll(CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName));
-                    final String prevForeignKey = keysHolder.get(key.toString());
-                    final String rowKey = prevPrimaryKey != null ? prevPrimaryKey + key.toString()
-                            : prevForeignKey != null ? prevForeignKey + keyEntry.getKey().toString()
-                                    : keyEntry.getKey().toString() + key.toString();
-                    final var existingValue = prevPrimaryKey != null ? joinedMap.get(prevPrimaryKey)
-                            : prevForeignKey != null ? joinedMap.get(prevForeignKey) : null;
-                    if (existingValue != null) {
-                        valueMap.putAll(existingValue);
+                    final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName);
+
+                    if (primaryPrev != null) {
+                        primaryPrev.putAll(primaryValue);
+                        primaryPrev.putAll(foreignValue);
+                        joinedMap.put(key.toString(), primaryPrev);
+                    } else {
+                        final var foreignPrev = joinedMap.get(key.toString());
+                        if (foreignPrev != null) {
+                            foreignPrev.putAll(primaryValue);
+                            foreignPrev.putAll(foreignValue);
+                            joinedMap.put(key.toString(), foreignPrev);
+                        } else {
+                            primaryValue.putAll(foreignValue);
+                            joinedMap.put(key.toString(), primaryValue);
+                        }
                     }
-                    joinedMap.put(rowKey, valueMap);
-                    keysHolder.put(keyEntry.getKey().toString(), rowKey);
-                    keysHolder.put(key.toString(), rowKey);
                 }
             }
+            joinedMap.keySet().remove(keyEntry.getKey().toString());
         }
     }
 
@@ -216,7 +221,6 @@ public final class ChronicleDb {
             throws NoSuchMethodException, SecurityException, IllegalAccessException,
             IllegalArgumentException, InvocationTargetException {
         final ConcurrentMap<String, Map<String, Object>> joinedMap = new ConcurrentHashMap<>();
-        final ConcurrentMap<String, String> keysHolder = new ConcurrentHashMap<>();
 
         for (final var join : joins) {
             if (!Files.exists(Paths.get(join.foreignKeyIndexPath))) {
@@ -229,17 +233,19 @@ public final class ChronicleDb {
             if (indexDb.keySet().size() > 3)
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
                     for (final var entry : join.primaryObject.entrySet()) {
-                        loopJoinToMap(e, join.primaryObject.get(entry.getKey()), join.foreignObject.get(e.getKey()),
+                        loopJoinToMap(e, join.primaryObject.get(entry.getKey()),
+                                join.foreignObject.get(e.getKey()),
                                 join.primaryUsing, join.foreignUsing, join.primaryObjectName, join.foreignObjectName,
-                                joinedMap, keysHolder);
+                                joinedMap);
                     }
                 }));
             else
                 for (final var e : indexDb.entrySet()) {
                     for (final var entry : join.primaryObject.entrySet()) {
-                        loopJoinToMap(e, join.primaryObject.get(entry.getKey()), join.foreignObject.get(e.getKey()),
+                        loopJoinToMap(e, join.primaryObject.get(entry.getKey()),
+                                join.foreignObject.get(e.getKey()),
                                 join.primaryUsing, join.foreignUsing, join.primaryObjectName, join.foreignObjectName,
-                                joinedMap, keysHolder);
+                                joinedMap);
                     }
                 }
             indexDb.close();
@@ -263,17 +269,12 @@ public final class ChronicleDb {
                     final Object foreign = foreignObject.getUsing(keyEntry.getValue().get(i), foreignUsing);
                     final Method foreignRowMethod = foreign.getClass().getDeclaredMethod("row", Object.class);
                     final var foreignRow = (Object[]) foreignRowMethod.invoke(foreign, keyEntry.getValue().get(i));
-                    switch (joinMode) {
-                        case PRIMARY:
-                            rowList.add(i, CHRONICLE_UTILS.copyArray(rowList.get(i), primaryRow));
-                            break;
-                        case FOREIGN:
-                            rowList.add(i, CHRONICLE_UTILS.copyArray(rowList.get(i), foreignRow));
-                            break;
-                        default:
-                            rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
-                            break;
-                    }
+                    if (joinMode.equals(JoinMode.PRIMARY))
+                        rowList.add(i, CHRONICLE_UTILS.copyArray(rowList.get(i), primaryRow));
+                    else if (joinMode.equals(JoinMode.FOREIGN))
+                        rowList.add(i, CHRONICLE_UTILS.copyArray(rowList.get(i), foreignRow));
+                    else
+                        rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
                 }
             }
         }
