@@ -11,6 +11,7 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -184,14 +185,12 @@ public final class ChronicleDb {
                     final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName);
 
                     if (primaryPrev != null) {
-                        primaryPrev.putAll(primaryValue);
                         primaryPrev.putAll(foreignValue);
                         joinedMap.put(key.toString(), primaryPrev);
                     } else {
                         final var foreignPrev = joinedMap.get(key.toString());
                         if (foreignPrev != null) {
                             foreignPrev.putAll(primaryValue);
-                            foreignPrev.putAll(foreignValue);
                             joinedMap.put(key.toString(), foreignPrev);
                         } else {
                             primaryValue.putAll(foreignValue);
@@ -200,7 +199,6 @@ public final class ChronicleDb {
                     }
                 }
             }
-            joinedMap.keySet().remove(keyEntry.getKey().toString());
         }
     }
 
@@ -221,6 +219,7 @@ public final class ChronicleDb {
             throws NoSuchMethodException, SecurityException, IllegalAccessException,
             IllegalArgumentException, InvocationTargetException {
         final ConcurrentMap<String, Map<String, Object>> joinedMap = new ConcurrentHashMap<>();
+        final var toRemove = new HashSet<>();
 
         for (final var join : joins) {
             if (!Files.exists(Paths.get(join.foreignKeyIndexPath))) {
@@ -237,6 +236,7 @@ public final class ChronicleDb {
                                 join.foreignObject.get(e.getKey()),
                                 join.primaryUsing, join.foreignUsing, join.primaryObjectName, join.foreignObjectName,
                                 joinedMap);
+                        toRemove.addAll(join.primaryObject.get(entry.getKey()).keySet());
                     }
                 }));
             else
@@ -246,11 +246,13 @@ public final class ChronicleDb {
                                 join.foreignObject.get(e.getKey()),
                                 join.primaryUsing, join.foreignUsing, join.primaryObjectName, join.foreignObjectName,
                                 joinedMap);
+                        toRemove.addAll(join.primaryObject.get(entry.getKey()).keySet());
                     }
                 }
             indexDb.close();
         }
 
+        joinedMap.keySet().removeAll(toRemove);
         return joinedMap;
     }
 
