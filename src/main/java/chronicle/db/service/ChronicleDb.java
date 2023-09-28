@@ -269,6 +269,7 @@ public final class ChronicleDb {
                             break;
                         case FOREIGN:
                             rowList.add(i, CHRONICLE_UTILS.copyArray(rowList.get(i), foreignRow));
+                            break;
                         default:
                             rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
                             break;
