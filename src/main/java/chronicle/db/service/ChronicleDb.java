@@ -36,12 +36,6 @@ public final class ChronicleDb {
     private ChronicleDb() {
     }
 
-    private enum JoinMode {
-        FIRST,
-        PRIMARY,
-        FOREIGN
-    }
-
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
 
     /**
@@ -260,24 +254,38 @@ public final class ChronicleDb {
     private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
             final ChronicleMap<Object, Object> primaryObject, final ChronicleMap<Object, Object> foreignObject,
             final Object primaryUsing, final Object foreignUsing, final List<Object[]> rowList,
-            final JoinMode joinMode)
+            final ConcurrentMap<String, Integer> indexMap)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         for (final var keyEntry : e.getValue().entrySet()) {
             if (keyEntry.getKey() != null) {
-                final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
-                final Method primaryRowMethod = primary.getClass().getDeclaredMethod("row", Object.class);
-                final var primaryRow = (Object[]) primaryRowMethod.invoke(primary, keyEntry.getKey());
+                final Integer primaryIndex = indexMap.get(keyEntry.getKey().toString());
+                final var primaryPrev = primaryIndex != null ? rowList.get(primaryIndex) : null;
+
                 for (int i = 0; i < keyEntry.getValue().size(); i++) {
-                    final Object foreign = foreignObject.getUsing(keyEntry.getValue().get(i), foreignUsing);
-                    final Method foreignRowMethod = foreign.getClass().getDeclaredMethod("row", Object.class);
-                    final var foreignRow = (Object[]) foreignRowMethod.invoke(foreign, keyEntry.getValue().get(i));
-                    if (joinMode.equals(JoinMode.PRIMARY))
-                        rowList.add(i, CHRONICLE_UTILS.copyArray(rowList.get(i), primaryRow));
-                    else if (joinMode.equals(JoinMode.FOREIGN))
-                        rowList.add(i, CHRONICLE_UTILS.copyArray(rowList.get(i), foreignRow));
-                    else
-                        rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
+                    if (primaryPrev != null) {
+                        final Object foreign = foreignObject.getUsing(keyEntry.getValue().get(i), foreignUsing);
+                        final var foreignRow = (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
+                                .invoke(foreign, keyEntry.getValue().get(i));
+                        rowList.set(primaryIndex, CHRONICLE_UTILS.copyArray(primaryPrev, foreignRow));
+                        indexMap.put(keyEntry.getValue().get(i).toString(), primaryIndex);
+                    } else {
+                        final Integer foreignIndex = indexMap.get(keyEntry.getValue().get(i).toString());
+                        final var foreignPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
+                        final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
+                        final var primaryRow = (Object[]) primary.getClass().getDeclaredMethod("row", Object.class)
+                                .invoke(primary, keyEntry.getKey());
+                        if (foreignPrev != null) {
+                            indexMap.put(keyEntry.getValue().get(i).toString(), foreignIndex);
+                            rowList.set(foreignIndex, CHRONICLE_UTILS.copyArray(foreignPrev, primaryRow));
+                        } else {
+                            final Object foreign = foreignObject.getUsing(keyEntry.getValue().get(i), foreignUsing);
+                            final var foreignRow = (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
+                                    .invoke(foreign, keyEntry.getValue().get(i));
+                            rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
+                            indexMap.put(keyEntry.getValue().get(i).toString(), rowList.size() - 1);
+                        }
+                    }
                 }
             }
         }
@@ -310,7 +318,7 @@ public final class ChronicleDb {
             InvocationTargetException {
         final var headers = new ArrayList<String>();
         final var rowList = new ArrayList<Object[]>();
-        final var joinedObjNames = new ArrayList<String>();
+        final ConcurrentMap<String, Integer> indexMap = new ConcurrentHashMap<>();
 
         for (final var join : joins) {
             if (!Files.exists(Paths.get(join.foreignKeyIndexPath))) {
@@ -329,29 +337,23 @@ public final class ChronicleDb {
             final String[] headerListB = (String[]) foreignHeaderMethod.invoke(foreignValue);
             addHeaders(headerListA, join.primaryObjectName, headers);
             addHeaders(headerListB, join.foreignObjectName, headers);
-            final JoinMode mode = joinedObjNames.indexOf(join.primaryObjectName) == -1
-                    && joinedObjNames.indexOf(join.foreignObjectName) == -1 ? JoinMode.FIRST
-                            : joinedObjNames.indexOf(join.primaryObjectName) == -1 ? JoinMode.PRIMARY
-                                    : JoinMode.FOREIGN;
 
             if (indexDb.keySet().size() > 3)
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
                     for (final var entry : join.primaryObject.entrySet()) {
                         loopJoinToCsv(e, join.primaryObject.get(entry.getKey()), join.foreignObject.get(e.getKey()),
-                                join.primaryUsing, join.foreignUsing, rowList, mode);
+                                join.primaryUsing, join.foreignUsing, rowList, indexMap);
                     }
                 }));
             else
                 for (final var e : indexDb.entrySet()) {
                     for (final var entry : join.primaryObject.entrySet()) {
                         loopJoinToCsv(e, join.primaryObject.get(entry.getKey()), join.foreignObject.get(e.getKey()),
-                                join.primaryUsing, join.foreignUsing, rowList, mode);
+                                join.primaryUsing, join.foreignUsing, rowList, indexMap);
                     }
                 }
 
             indexDb.close();
-            joinedObjNames.add(join.primaryObjectName);
-            joinedObjNames.add(join.foreignObjectName);
         }
 
         return new CsvObject(headers.toArray(new String[0]), rowList);
