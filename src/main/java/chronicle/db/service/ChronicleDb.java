@@ -176,23 +176,24 @@ public final class ChronicleDb {
             throws IllegalAccessException {
         for (final var keyEntry : e.getValue().entrySet()) {
             if (keyEntry.getKey() != null) {
-                final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
-                final var primaryValue = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName);
                 final var primaryPrev = joinedMap.get(keyEntry.getKey().toString());
 
                 for (final var key : keyEntry.getValue()) {
-                    final Object foreign = foreignObject.getUsing(key, foreignUsing);
-                    final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName);
-
                     if (primaryPrev != null) {
+                        final Object foreign = foreignObject.getUsing(key, foreignUsing);
+                        final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName);
                         primaryPrev.putAll(foreignValue);
                         joinedMap.put(key.toString(), primaryPrev);
                     } else {
+                        final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
+                        final var primaryValue = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName);
                         final var foreignPrev = joinedMap.get(key.toString());
                         if (foreignPrev != null) {
                             foreignPrev.putAll(primaryValue);
                             joinedMap.put(key.toString(), foreignPrev);
                         } else {
+                            final Object foreign = foreignObject.getUsing(key, foreignUsing);
+                            final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName);
                             primaryValue.putAll(foreignValue);
                             joinedMap.put(key.toString(), primaryValue);
                         }
