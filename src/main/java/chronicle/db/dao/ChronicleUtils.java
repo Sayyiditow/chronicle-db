@@ -380,9 +380,11 @@ public final class ChronicleUtils {
         return copied;
     }
 
-    public Map<String, Object> objectToMap(final Object object, final String objectName) throws IllegalAccessException {
+    public Map<String, Object> objectToMap(final Object object, final String objectName, final Object key)
+            throws IllegalAccessException {
         final Map<String, Object> map = new HashMap<>();
         final Field[] fields = object.getClass().getDeclaredFields();
+        map.put(objectName + ".key", key);
 
         for (final Field field : fields) {
             map.put(objectName + "." + field.getName(), field.get(object));

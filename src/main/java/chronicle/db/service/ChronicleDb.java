@@ -175,19 +175,20 @@ public final class ChronicleDb {
                 for (final var key : keyEntry.getValue()) {
                     if (primaryPrev != null) {
                         final Object foreign = foreignObject.getUsing(key, foreignUsing);
-                        final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName);
+                        final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName, key);
                         primaryPrev.putAll(foreignValue);
                         joinedMap.put(key.toString(), primaryPrev);
                     } else {
                         final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
-                        final var primaryValue = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName);
+                        final var primaryValue = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName,
+                                keyEntry.getKey());
                         final var foreignPrev = joinedMap.get(key.toString());
                         if (foreignPrev != null) {
                             foreignPrev.putAll(primaryValue);
                             joinedMap.put(key.toString(), foreignPrev);
                         } else {
                             final Object foreign = foreignObject.getUsing(key, foreignUsing);
-                            final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName);
+                            final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName, key);
                             primaryValue.putAll(foreignValue);
                             joinedMap.put(key.toString(), primaryValue);
                         }
