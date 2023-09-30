@@ -11,6 +11,7 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -176,8 +177,9 @@ public final class ChronicleDb {
                     if (primaryPrev != null) {
                         final Object foreign = foreignObject.getUsing(key, foreignUsing);
                         final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName, key);
-                        primaryPrev.putAll(foreignValue);
-                        joinedMap.put(key, primaryPrev);
+                        final var primaryValue = new HashMap<>(primaryPrev);
+                        primaryValue.putAll(foreignValue);
+                        joinedMap.put(key, primaryValue);
                     } else {
                         final Object primary = primaryObject.getUsing(keyEntry.getKey(), primaryUsing);
                         final var primaryValue = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName,
