@@ -214,7 +214,7 @@ public final class ChronicleDb {
     public ConcurrentMap<Object, Map<String, Object>> joinToMap(final List<Join> joins)
             throws NoSuchMethodException, SecurityException, IllegalAccessException,
             IllegalArgumentException, InvocationTargetException {
-        final ConcurrentMap<Object, Map<String, Object>> joinedMap = new ConcurrentHashMap<>();
+        final var joinedMap = new ConcurrentHashMap<Object, Map<String, Object>>();
         final var toRemove = new HashSet<>();
 
         for (final var join : joins) {
