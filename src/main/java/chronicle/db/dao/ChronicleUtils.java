@@ -349,6 +349,12 @@ public final class ChronicleUtils {
         return new CsvObject(headers, rowList);
     }
 
+    public <V> void partialUpdateSetter(final V object, final String fieldName, final Object fieldValue)
+            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
+        final var field = object.getClass().getField(fieldName);
+        field.set(object, fieldValue);
+    }
+
     public <V> void partialUpdateSetter(final V object, final String fieldName, final Object fieldValue,
             final Class<?> enumClass)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
@@ -356,10 +362,7 @@ public final class ChronicleUtils {
         if (enumClass != null) {
             field.set(object,
                     Enum.valueOf((Class<? extends Enum>) enumClass, fieldValue.toString()));
-            return;
         }
-
-        field.set(object, fieldValue);
     }
 
     public void deleteFileIfExists(final String filePath) {
