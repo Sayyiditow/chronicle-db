@@ -4,9 +4,9 @@ import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
-import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -192,72 +192,61 @@ interface BaseDao<K, V> {
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
-        final var keys = index.get(search.searchTerm());
+        final var keys = new ArrayList<K>();
 
         switch (search.searchType()) {
             case EQUAL:
-                addSearchedValues(keys, db, match);
+                addSearchedValues(index.get(search.searchTerm()), db, match);
                 break;
             case NOT_EQUAL:
                 index.keySet().remove(search.searchTerm());
-                for (final var list : index.values()) {
-                    addSearchedValues(list, db, match);
+                for (final var list : index.entrySet()) {
+                    addSearchedValues(list.getValue(), db, match);
                 }
                 break;
             case LESS:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (new BigDecimal(entry.getKey().toString())
-                            .compareTo(new BigDecimal(search.searchTerm().toString())) < 0)
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), search.searchTerm()) < 0)
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
                 break;
             case GREATER:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (new BigDecimal(entry.getKey().toString())
-                            .compareTo(new BigDecimal(search.searchTerm().toString())) > 0)
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), search.searchTerm()) > 0)
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
                 break;
             case LESS_OR_EQUAL:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (new BigDecimal(entry.getKey().toString())
-                            .compareTo(new BigDecimal(search.searchTerm().toString())) <= 0)
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), search.searchTerm()) <= 0)
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
                 break;
             case GREATER_OR_EQUAL:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (new BigDecimal(entry.getKey().toString())
-                            .compareTo(new BigDecimal(search.searchTerm().toString())) >= 0)
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), search.searchTerm()) >= 0)
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
                 break;
             case LIKE:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (String.valueOf(entry.getKey()).contains(String.valueOf(search.searchTerm())))
+                    if (CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), search.searchTerm()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
                 break;
             case NOT_LIKE:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (!String.valueOf(entry.getKey()).contains(String.valueOf(search.searchTerm())))
+                    if (!CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), search.searchTerm()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
                 break;
             case CONTAINS:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
                     if (Collections.singleton(entry.getKey()).contains(search.searchTerm()))
                         keys.addAll(entry.getValue());
@@ -265,7 +254,6 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match);
                 break;
             case STARTS_WITH:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
                     if (String.valueOf(entry.getKey()).startsWith(String.valueOf(search.searchTerm())))
                         keys.addAll(entry.getValue());
@@ -273,7 +261,6 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match);
                 break;
             case ENDS_WITH:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
                     if (String.valueOf(entry.getKey()).endsWith(String.valueOf(search.searchTerm())))
                         keys.addAll(entry.getValue());
@@ -297,72 +284,61 @@ interface BaseDao<K, V> {
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
-        final var keys = index.get(search.searchTerm());
+        final var keys = new ArrayList<K>();
 
         switch (search.searchType()) {
             case EQUAL:
-                addSearchedValues(keys, db, match, limit);
+                addSearchedValues(index.get(search.searchTerm()), db, match, limit);
                 break;
             case NOT_EQUAL:
                 index.keySet().remove(search.searchTerm());
-                for (final var list : index.values()) {
-                    addSearchedValues(list, db, match, limit);
+                for (final var list : index.entrySet()) {
+                    addSearchedValues(list.getValue(), db, match, limit);
                 }
                 break;
             case LESS:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (new BigDecimal(entry.getKey().toString())
-                            .compareTo(new BigDecimal(search.searchTerm().toString())) < 0)
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), search.searchTerm()) < 0)
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match, limit);
                 break;
             case GREATER:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (new BigDecimal(entry.getKey().toString())
-                            .compareTo(new BigDecimal(search.searchTerm().toString())) > 0)
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), search.searchTerm()) > 0)
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match, limit);
                 break;
             case LESS_OR_EQUAL:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (new BigDecimal(entry.getKey().toString())
-                            .compareTo(new BigDecimal(search.searchTerm().toString())) <= 0)
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), search.searchTerm()) <= 0)
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match, limit);
                 break;
             case GREATER_OR_EQUAL:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (new BigDecimal(entry.getKey().toString())
-                            .compareTo(new BigDecimal(search.searchTerm().toString())) >= 0)
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), search.searchTerm()) >= 0)
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match, limit);
                 break;
             case LIKE:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (String.valueOf(entry.getKey()).contains(String.valueOf(search.searchTerm())))
+                    if (CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), search.searchTerm()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match, limit);
                 break;
             case NOT_LIKE:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
-                    if (!String.valueOf(entry.getKey()).contains(String.valueOf(search.searchTerm())))
+                    if (!CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), search.searchTerm()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match, limit);
                 break;
             case CONTAINS:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
                     if (Collections.singleton(entry.getKey()).contains(search.searchTerm()))
                         keys.addAll(entry.getValue());
@@ -370,7 +346,6 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match, limit);
                 break;
             case STARTS_WITH:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
                     if (String.valueOf(entry.getKey()).startsWith(String.valueOf(search.searchTerm())))
                         keys.addAll(entry.getValue());
@@ -378,7 +353,6 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match, limit);
                 break;
             case ENDS_WITH:
-                keys.clear();
                 for (final var entry : index.entrySet()) {
                     if (String.valueOf(entry.getKey()).endsWith(String.valueOf(search.searchTerm())))
                         keys.addAll(entry.getValue());

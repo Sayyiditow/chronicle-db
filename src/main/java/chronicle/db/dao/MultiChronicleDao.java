@@ -476,16 +476,18 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @return a map of the fitting values
      * @throws IOException
      */
-    default ConcurrentMap<K, V> search(final Search search) throws IOException {
-        final var map = new ConcurrentHashMap<K, V>();
+    default ConcurrentMap<String, ConcurrentMap<K, V>> search(final Search search) throws IOException {
+        final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
         final var files = getFiles();
 
         if (multiThreaded(files)) {
             files.parallelStream().forEach(file -> {
                 try (var db = db(file)) {
+                    final var currentFileMap = new ConcurrentHashMap<K, V>();
                     for (final var entry : db.entrySet()) {
                         try {
-                            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), currentFileMap);
+                            map.put(file, currentFileMap);
                         } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
                                 | SecurityException e) {
                             Logger.error("No such field: {} exists on searching. {}", search.field(), e);
@@ -503,9 +505,11 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
 
         for (final String file : files) {
             final var db = db(file);
+            final var currentFileMap = new ConcurrentHashMap<K, V>();
             for (final var entry : db.entrySet()) {
                 try {
-                    CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                    CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), currentFileMap);
+                    map.put(file, currentFileMap);
                 } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
                         | SecurityException e) {
                     Logger.error("No such field: {} exists on searching. {}", search.field(), e);
@@ -525,17 +529,19 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @return a map of the fitting values
      * @throws IOException
      */
-    default ConcurrentMap<K, V> search(final Search search, final int limit)
+    default ConcurrentMap<String, ConcurrentMap<K, V>> search(final Search search, final int limit)
             throws IOException {
-        final var map = new ConcurrentHashMap<K, V>();
+        final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
         final var files = getFiles();
 
         if (multiThreaded(files)) {
             files.parallelStream().allMatch(file -> {
                 try (final var db = db(file)) {
+                    final var currentFileMap = new ConcurrentHashMap<K, V>();
                     for (final var entry : db.entrySet()) {
                         try {
-                            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), currentFileMap);
+                            map.put(file, currentFileMap);
                         } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
                                 | SecurityException e) {
                             Logger.error("No such field: {} exists on searching. {}", search.field(), e);
@@ -557,9 +563,11 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         } else {
             for (final String file : files) {
                 final var db = db(file);
+                final var currentFileMap = new ConcurrentHashMap<K, V>();
                 for (final var entry : db.entrySet()) {
                     try {
-                        CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
+                        CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), currentFileMap);
+                        map.put(file, currentFileMap);
                     } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
                             | SecurityException e) {
                         Logger.error("No such field: {} exists on searching. {}", search.field(), e);
@@ -608,45 +616,31 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
 
     }
 
-    private ConcurrentMap<String, Map<Object, List<K>>> fileAtIndex(
-            final ConcurrentMap<String, Map<Object, List<K>>> index, final Object searchTerm) {
-        final ConcurrentMap<String, Map<Object, List<K>>> recordsAtMap = new ConcurrentHashMap<>();
-
-        for (final var entry : index.entrySet()) {
-            final var value = entry.getValue().get(searchTerm);
-            if (value != null) {
-                recordsAtMap.put(entry.getKey(), entry.getValue());
-            }
-        }
-
-        return recordsAtMap;
-    }
-
     /**
      * Refer to @BaseDao.super.indexedSearch
      * 
      * @throws SecurityException
      * @throws NoSuchFieldException
      */
-    default ConcurrentMap<K, V> indexedSearch(final Search search)
+    default ConcurrentMap<String, ConcurrentMap<K, V>> indexedSearch(final Search search)
             throws IOException, NoSuchFieldException, SecurityException {
-        final var map = new ConcurrentHashMap<K, V>();
+        final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
+        final var files = getFiles();
 
-        if (recordsAtMap.size() > 3) {
-            recordsAtMap.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
-                final var db = db(entry.getKey());
-                map.putAll(BaseDao.super.indexedSearch(search, db, entry.getValue()));
+        if (multiThreaded(files)) {
+            files.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
+                final var db = db(file);
+                map.put(file, BaseDao.super.indexedSearch(search, db, indexDb.get(file)));
                 db.close();
             }));
             indexDb.close();
             return map;
         }
 
-        for (final var entry : recordsAtMap.entrySet()) {
-            final var db = db(entry.getKey());
-            map.putAll(BaseDao.super.indexedSearch(search, db, entry.getValue()));
+        for (final var file : files) {
+            final var db = db(file);
+            map.put(file, BaseDao.super.indexedSearch(search, db, indexDb.get(file)));
             db.close();
         }
         indexDb.close();
@@ -659,20 +653,20 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws SecurityException
      * @throws NoSuchFieldException
      */
-    default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit)
+    default ConcurrentMap<String, ConcurrentMap<K, V>> indexedSearch(final Search search, final int limit)
             throws IOException, NoSuchFieldException, SecurityException {
-        final var map = new ConcurrentHashMap<K, V>();
+        final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
+        final var files = getFiles();
 
-        if (recordsAtMap.size() > 2) {
-            recordsAtMap.entrySet().parallelStream().allMatch(entry -> {
+        if (multiThreaded(files)) {
+            files.parallelStream().allMatch(file -> {
                 try {
-                    final var db = db(entry.getKey());
-                    map.putAll(BaseDao.super.indexedSearch(search, db, entry.getValue(), limit));
+                    final var db = db(file);
+                    map.put(file, BaseDao.super.indexedSearch(search, db, indexDb.get(file), limit));
                     db.close();
                 } catch (final IOException e) {
-                    CHRONICLE_UTILS.dbFetchError(name(), entry.getKey());
+                    CHRONICLE_UTILS.dbFetchError(name(), file);
                 }
                 return map.size() == limit;
             });
@@ -682,9 +676,9 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                     Map.Entry::getValue));
         }
 
-        for (final var entry : recordsAtMap.entrySet()) {
-            final var db = db(entry.getKey());
-            map.putAll(BaseDao.super.indexedSearch(search, db, entry.getValue(), limit));
+        for (final var file : files) {
+            final var db = db(file);
+            map.put(file, BaseDao.super.indexedSearch(search, db, indexDb.get(file), limit));
             db.close();
             if (map.size() == limit)
                 break;
@@ -700,22 +694,23 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws SecurityException
      * @throws NoSuchFieldException
      */
-    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search)
+    default ConcurrentMap<String, ConcurrentMap<K, V>> indexedSearch(
+            final ConcurrentMap<String, ConcurrentMap<K, V>> db, final Search search)
             throws IOException, NoSuchFieldException, SecurityException {
-        final var map = new ConcurrentHashMap<K, V>();
+        final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
+        final var files = db.keySet().stream().collect(Collectors.toList());
 
-        if (recordsAtMap.size() > 3) {
-            recordsAtMap.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
-                map.putAll(BaseDao.super.indexedSearch(search, db, entry.getValue()));
+        if (multiThreaded(files)) {
+            files.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
+                map.put(file, BaseDao.super.indexedSearch(search, db.get(file), indexDb.get(file)));
             }));
             indexDb.close();
             return map;
         }
 
-        for (final var entry : recordsAtMap.entrySet()) {
-            map.putAll(BaseDao.super.indexedSearch(search, db, entry.getValue()));
+        for (final var file : files) {
+            map.put(file, BaseDao.super.indexedSearch(search, db.get(file), indexDb.get(file)));
         }
         indexDb.close();
         return map;
@@ -728,18 +723,19 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws NoSuchFieldException
      * @throws IOException
      */
-    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search, final int limit)
+    default ConcurrentMap<String, ConcurrentMap<K, V>> indexedSearch(
+            final ConcurrentMap<String, ConcurrentMap<K, V>> db, final Search search, final int limit)
             throws NoSuchFieldException, SecurityException, IOException {
-        final var map = new ConcurrentHashMap<K, V>();
+        final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
+        final var files = db.keySet().stream().collect(Collectors.toList());
 
-        if (recordsAtMap.size() > 2) {
-            recordsAtMap.entrySet().parallelStream().allMatch(entry -> {
+        if (multiThreaded(files)) {
+            files.parallelStream().allMatch(file -> {
                 try {
-                    map.putAll(BaseDao.super.indexedSearch(search, db, entry.getValue(), limit));
+                    map.put(file, BaseDao.super.indexedSearch(search, db.get(file), indexDb.get(file), limit));
                 } catch (final IOException e) {
-                    CHRONICLE_UTILS.dbFetchError(name(), entry.getKey());
+                    CHRONICLE_UTILS.dbFetchError(name(), file);
                 }
                 return map.size() == limit;
             });
@@ -749,8 +745,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                     Map.Entry::getValue));
         }
 
-        for (final var entry : recordsAtMap.entrySet()) {
-            map.putAll(BaseDao.super.indexedSearch(search, db, entry.getValue(), limit));
+        for (final var file : files) {
+            map.put(file, BaseDao.super.indexedSearch(search, db.get(file), indexDb.get(file), limit));
             if (map.size() == limit)
                 break;
         }

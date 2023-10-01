@@ -74,13 +74,13 @@ public final class ChronicleUtils {
         return files;
     }
 
-    private int compare(final Object obj1, final Object obj2) {
+    public int compare(final Object obj1, final Object obj2) {
         final BigDecimal decimal1 = new BigDecimal(String.valueOf(obj1));
         final BigDecimal decimal2 = new BigDecimal(String.valueOf(obj2));
         return decimal1.compareTo(decimal2);
     }
 
-    private boolean containsIgnoreCase(final Object str, final Object searchTerm) {
+    public boolean containsIgnoreCase(final Object str, final Object searchTerm) {
         return String.valueOf(str).toLowerCase().contains(String.valueOf(searchTerm).toLowerCase());
     }
 
