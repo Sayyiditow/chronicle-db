@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -102,7 +103,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         if (updated) {
             CHRONICLE_UTILS.successDeleteLog(name(), key);
             if (containsIndexes()) {
-                CHRONICLE_UTILS.removeFromIndex("data", name(), dataPath(), indexFileNames(), key, value);
+                CHRONICLE_UTILS.removeFromIndex("data", name(), dataPath(), indexFileNames(), Map.of(key, value));
             }
         }
         db.close();
@@ -120,12 +121,13 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
     default boolean delete(final Set<K> keys) throws IOException {
         final var db = db();
         CHRONICLE_UTILS.deleteAllLog(name());
+        final Map<K, V> updatedMap = new HashMap<>();
 
         if (containsIndexes()) {
             for (final K key : keys) {
                 final var value = db.getUsing(key, using());
                 if (Objects.nonNull(value)) {
-                    CHRONICLE_UTILS.removeFromIndex("data", name(), dataPath(), indexFileNames(), key, value);
+                    updatedMap.put(key, value);
                 }
             }
         }
@@ -134,6 +136,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
 
         if (updated) {
             CHRONICLE_UTILS.successDeleteLog(name(), keys);
+        }
+
+        if (containsIndexes()) {
+            CHRONICLE_UTILS.removeFromIndex("data", name(), dataPath(), indexFileNames(), updatedMap);
         }
         db.close();
 
@@ -172,7 +178,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         final var updated = Objects.nonNull(db.put(key, value));
 
         if (updated && containsIndexes()) {
-            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames(), key, value);
+            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames(), Map.of(key, value));
         }
 
         db.close();
@@ -196,12 +202,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
 
         for (final var entry : map.entrySet()) {
             db = createNewDb(db);
-            final var updated = Objects.nonNull(db.put(entry.getKey(), entry.getValue()));
-
-            if (updated && containsIndexes()) {
-                CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames(), entry.getKey(),
-                        entry.getValue());
-            }
+            db.put(entry.getKey(), entry.getValue());
+        }
+        if (containsIndexes()) {
+            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames(), map);
         }
 
         db.close();

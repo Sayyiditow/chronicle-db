@@ -5,6 +5,7 @@ import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import static chronicle.db.service.MapDb.MAP_DB;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -238,7 +239,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             if (updated) {
                 CHRONICLE_UTILS.successDeleteLog(name(), key);
                 if (containsIndexes()) {
-                    CHRONICLE_UTILS.removeFromIndex(file, name(), dataPath(), indexFileNames(), key, value);
+                    CHRONICLE_UTILS.removeFromIndex(file, name(), dataPath(), indexFileNames(), Map.of(key, value));
                 }
             }
         }
@@ -292,6 +293,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         var deleted = 0;
         final var db = db(file);
         final int size = db.size();
+        final Map<K, V> updated = new HashMap<>();
 
         if (size != 0) {
             CHRONICLE_UTILS.deleteAllLog(name() + " at file " + file);
@@ -299,14 +301,16 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                 final var value = db.getUsing(key, using());
                 if (Objects.nonNull(value)) {
                     deleted += 1;
-                    if (containsIndexes()) {
-                        CHRONICLE_UTILS.removeFromIndex(file, name(), dataPath(), indexFileNames(), key, value);
-                    }
+                    updated.put(key, value);
                 }
             }
             if (deleted != 0) {
                 db.keySet().removeAll(keys);
             }
+        }
+        
+        if (containsIndexes()) {
+            CHRONICLE_UTILS.removeFromIndex(file, name(), dataPath(), indexFileNames(), updated);
         }
         db.close();
 
@@ -358,7 +362,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         db.close();
 
         if (updated && containsIndexes()) {
-            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), key, value);
+            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), Map.of(key, value));
         }
         return updated;
     }
@@ -401,10 +405,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         db.putAll(map);
         db.close();
         if (containsIndexes()) {
-            for (final var entry : map.entrySet()) {
-                CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), entry.getKey(),
-                        entry.getValue());
-            }
+            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), map);
         }
     }
 
