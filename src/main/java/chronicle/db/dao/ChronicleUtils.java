@@ -84,11 +84,18 @@ public final class ChronicleUtils {
         return String.valueOf(str).toLowerCase().contains(String.valueOf(searchTerm).toLowerCase());
     }
 
+    public Enum toEnum(final Class<?> enumClass, final Object value) {
+        return Enum.valueOf((Class<Enum>) enumClass, value.toString());
+    }
+
     public <K, V> void search(final Search search, final K key, final V value, final ConcurrentMap<K, V> map)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
         final Field field = value.getClass().getField(search.field());
+
         if (Objects.nonNull(field)) {
-            final Object searchTerm = search.searchTerm();
+            final Object searchTerm = field.getClass().isEnum()
+                    ? toEnum(field.getType(), search.searchTerm())
+                    : search.searchTerm();
             final Object currentValue = field.get(value);
 
             if (Objects.nonNull(currentValue)) {

@@ -268,8 +268,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var result = BaseDao.super.indexedSearch(search, db(), indexDb.get("data"));
+        final var db = db();
+        final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"));
         indexDb.close();
+        db.close();
         return result;
     }
 
@@ -278,7 +280,30 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var result = BaseDao.super.indexedSearch(search, db(), indexDb.get("data"), limit);
+        final var db = db();
+        final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"), limit);
+        indexDb.close();
+        db.close();
+        return result;
+    }
+
+    /**
+     * Refer to @BaseDao.super.indexedSearch
+     */
+    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search) throws IOException {
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"));
+        indexDb.close();
+        return result;
+    }
+
+    /**
+     * Refer to @BaseDao.super.indexedSearch
+     */
+    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search, final int limit)
+            throws IOException {
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"), limit);
         indexDb.close();
         return result;
     }

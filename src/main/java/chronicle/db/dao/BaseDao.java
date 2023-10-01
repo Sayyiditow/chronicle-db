@@ -20,7 +20,6 @@ import org.tinylog.Logger;
 import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.entity.Search;
-import net.openhft.chronicle.map.ChronicleMap;
 
 /**
  *
@@ -158,20 +157,20 @@ interface BaseDao<K, V> {
         return dataPath() + "/indexes/" + field;
     }
 
-    private void addSearchedValues(final List<K> keys, final ChronicleMap<K, V> db, final ConcurrentMap<K, V> match) {
+    private void addSearchedValues(final List<K> keys, final ConcurrentMap<K, V> db, final ConcurrentMap<K, V> match) {
         if (keys != null)
             for (final var key : keys) {
-                final var value = db.getUsing(key, using());
+                final var value = db.get(key);
                 if (value != null)
                     match.put(key, value);
             }
     }
 
-    private void addSearchedValues(final List<K> keys, final ChronicleMap<K, V> db, final ConcurrentMap<K, V> match,
+    private void addSearchedValues(final List<K> keys, final ConcurrentMap<K, V> db, final ConcurrentMap<K, V> match,
             final int limit) {
         if (keys != null)
             for (final var key : keys) {
-                final var value = db.getUsing(key, using());
+                final var value = db.get(key);
                 if (value != null)
                     match.put(key, value);
 
@@ -190,7 +189,7 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
-    default ConcurrentMap<K, V> indexedSearch(final Search search, final ChronicleMap<K, V> db,
+    default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
         final var keys = index.get(search.searchTerm());
@@ -283,7 +282,6 @@ interface BaseDao<K, V> {
                 break;
         }
 
-        db.close();
         return match;
     }
 
@@ -296,7 +294,7 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
-    default ConcurrentMap<K, V> indexedSearch(final Search search, final ChronicleMap<K, V> db,
+    default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
         final var keys = index.get(search.searchTerm());
@@ -389,7 +387,6 @@ interface BaseDao<K, V> {
                 break;
         }
 
-        db.close();
         return match;
     }
 
