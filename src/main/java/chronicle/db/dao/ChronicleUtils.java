@@ -172,7 +172,8 @@ public final class ChronicleUtils {
             try {
                 f = entry.getValue().getClass().getField(field);
                 if (Objects.nonNull(field)) {
-                    final Object currentValue = f.get(entry.getValue());
+                    final Object currentValue = !f.getType().isEnum() ? f.get(entry.getValue())
+                            : f.get(entry.getValue()).toString();
                     List<K> keys = copy.get(currentValue);
                     if (Objects.isNull(keys)) {
                         keys = new ArrayList<>();
@@ -210,7 +211,8 @@ public final class ChronicleUtils {
                 for (final var entry : values.entrySet()) {
                     field = entry.getValue().getClass().getField(file);
                     if (Objects.nonNull(field)) {
-                        indexKey = field.get(entry.getValue());
+                        indexKey = !field.getType().isEnum() ? field.get(entry.getValue())
+                                : field.get(entry.getValue()).toString();
                     }
                     final List<K> keys = index.get(indexKey);
                     if (keys.remove(entry.getKey())) {
@@ -246,7 +248,8 @@ public final class ChronicleUtils {
                 for (final var entry : values.entrySet()) {
                     field = entry.getValue().getClass().getField(file);
                     if (Objects.nonNull(field)) {
-                        indexKey = field.get(entry.getValue());
+                        indexKey = !field.getType().isEnum() ? field.get(entry.getValue())
+                                : field.get(entry.getValue()).toString();
                     }
 
                     List<K> keys = index.get(indexKey);

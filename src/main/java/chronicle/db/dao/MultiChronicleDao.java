@@ -622,6 +622,12 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         return recordsAtMap;
     }
 
+    private Object convertSearchValue(final String fieldName, final Object value)
+            throws NoSuchFieldException, SecurityException {
+        final var searchFieldType = averageValue().getClass().getField(fieldName).getType();
+        return searchFieldType.isEnum() ? value.toString() : value;
+    }
+
     /**
      * Refer to @BaseDao.super.indexedSearch
      * 
@@ -632,11 +638,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<K, V>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var searchField = averageValue().getClass().getField(search.field());
-        final var isSearchFieldEnum = searchField.getClass().isEnum();
-        final var recordsAtMap = fileAtIndex(indexDb,
-                isSearchFieldEnum ? CHRONICLE_UTILS.toEnum(searchField.getType(), search.searchTerm())
-                        : search.searchTerm());
+        final var recordsAtMap = fileAtIndex(indexDb, convertSearchValue(search.field(), search.searchTerm()));
 
         if (recordsAtMap.size() > 3) {
             recordsAtMap.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
@@ -667,11 +669,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<K, V>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var searchField = averageValue().getClass().getField(search.field());
-        final var isSearchFieldEnum = searchField.getClass().isEnum();
-        final var recordsAtMap = fileAtIndex(indexDb,
-                isSearchFieldEnum ? CHRONICLE_UTILS.toEnum(searchField.getType(), search.searchTerm())
-                        : search.searchTerm());
+        final var recordsAtMap = fileAtIndex(indexDb, convertSearchValue(search.field(), search.searchTerm()));
 
         if (recordsAtMap.size() > 2) {
             recordsAtMap.entrySet().parallelStream().allMatch(entry -> {
@@ -704,11 +702,15 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
 
     /**
      * Refer to @BaseDao.super.indexedSearch
+     * 
+     * @throws SecurityException
+     * @throws NoSuchFieldException
      */
-    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search) throws IOException {
+    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search)
+            throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<K, V>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
+        final var recordsAtMap = fileAtIndex(indexDb, convertSearchValue(search.field(), search.searchTerm()));
 
         if (recordsAtMap.size() > 3) {
             recordsAtMap.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
@@ -727,12 +729,16 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
 
     /**
      * Refer to @BaseDao.super.indexedSearch
+     * 
+     * @throws SecurityException
+     * @throws NoSuchFieldException
+     * @throws IOException
      */
     default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search, final int limit)
-            throws IOException {
+            throws NoSuchFieldException, SecurityException, IOException {
         final var map = new ConcurrentHashMap<K, V>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
+        final var recordsAtMap = fileAtIndex(indexDb, convertSearchValue(search.field(), search.searchTerm()));
 
         if (recordsAtMap.size() > 2) {
             recordsAtMap.entrySet().parallelStream().allMatch(entry -> {
