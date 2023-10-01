@@ -74,6 +74,16 @@ public final class ChronicleUtils {
         return files;
     }
 
+    private int compare(final Object obj1, final Object obj2) {
+        final BigDecimal decimal1 = new BigDecimal(String.valueOf(obj1));
+        final BigDecimal decimal2 = new BigDecimal(String.valueOf(obj2));
+        return decimal1.compareTo(decimal2);
+    }
+
+    private boolean containsIgnoreCase(final Object str, final Object searchTerm) {
+        return String.valueOf(str).toLowerCase().contains(String.valueOf(searchTerm).toLowerCase());
+    }
+
     public <K, V> void search(final Search search, final K key, final V value, final ConcurrentMap<K, V> map)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
         final Field field = value.getClass().getField(search.field());
@@ -81,55 +91,55 @@ public final class ChronicleUtils {
             final Object searchTerm = search.searchTerm();
             final Object currentValue = field.get(value);
 
-            switch (search.searchType()) {
-                case EQUAL:
-                    if (currentValue.equals(searchTerm))
-                        map.put(key, value);
-                    break;
-                case NOT_EQUAL:
-                    if (!currentValue.equals(searchTerm))
-                        map.put(key, value);
-                    break;
-                case LESS:
-                    if (new BigDecimal(currentValue.toString())
-                            .compareTo(new BigDecimal(searchTerm.toString())) < 0)
-                        map.put(key, value);
-                    break;
-                case GREATER:
-                    if (new BigDecimal(currentValue.toString())
-                            .compareTo(new BigDecimal(searchTerm.toString())) > 0)
-                        map.put(key, value);
-                    break;
-                case LESS_OR_EQUAL:
-                    if (new BigDecimal(currentValue.toString())
-                            .compareTo(new BigDecimal(searchTerm.toString())) <= 0)
-                        map.put(key, value);
-                    break;
-                case GREATER_OR_EQUAL:
-                    if (new BigDecimal(currentValue.toString())
-                            .compareTo(new BigDecimal(searchTerm.toString())) >= 0)
-                        map.put(key, value);
-                    break;
-                case LIKE:
-                    if (String.valueOf(currentValue).contains(String.valueOf(searchTerm)))
-                        map.put(key, value);
-                    break;
-                case NOT_LIKE:
-                    if (!String.valueOf(currentValue).contains(String.valueOf(searchTerm)))
-                        map.put(key, value);
-                    break;
-                case CONTAINS:
-                    if (Collections.singleton(currentValue).contains(searchTerm))
-                        map.put(key, value);
-                    break;
-                case STARTS_WITH:
-                    if (String.valueOf(currentValue).startsWith(String.valueOf(searchTerm)))
-                        map.put(key, value);
-                    break;
-                case ENDS_WITH:
-                    if (String.valueOf(currentValue).endsWith(String.valueOf(searchTerm)))
-                        map.put(key, value);
-                    break;
+            if (Objects.nonNull(currentValue)) {
+                switch (search.searchType()) {
+                    case EQUAL:
+                        if (currentValue.equals(searchTerm))
+                            map.put(key, value);
+                        break;
+                    case NOT_EQUAL:
+                        if (!currentValue.equals(searchTerm))
+                            map.put(key, value);
+                        break;
+                    case LESS:
+                        if (compare(currentValue, searchTerm) < 0)
+                            map.put(key, value);
+                        break;
+                    case GREATER:
+                        if (compare(currentValue, searchTerm) > 0)
+                            map.put(key, value);
+                        break;
+                    case LESS_OR_EQUAL:
+                        if (compare(currentValue, searchTerm) <= 0)
+                            map.put(key, value);
+                        break;
+                    case GREATER_OR_EQUAL:
+                        if (compare(currentValue, searchTerm) >= 0)
+                            map.put(key, value);
+                        break;
+                    case LIKE:
+                        if (containsIgnoreCase(currentValue, searchTerm))
+                            map.put(key, value);
+                        break;
+                    case NOT_LIKE:
+                        if (!containsIgnoreCase(currentValue, searchTerm))
+                            map.put(key, value);
+                        break;
+                    case CONTAINS:
+                        if (Collections.singleton(currentValue).contains(searchTerm))
+                            map.put(key, value);
+                        break;
+                    case STARTS_WITH:
+                        if (String.valueOf(currentValue).toLowerCase()
+                                .startsWith(String.valueOf(searchTerm).toLowerCase()))
+                            map.put(key, value);
+                        break;
+                    case ENDS_WITH:
+                        if (String.valueOf(currentValue).toLowerCase()
+                                .endsWith(String.valueOf(searchTerm).toLowerCase()))
+                            map.put(key, value);
+                        break;
+                }
             }
         }
     }
