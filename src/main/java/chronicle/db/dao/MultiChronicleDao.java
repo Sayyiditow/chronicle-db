@@ -59,7 +59,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default ChronicleMap<K, V> db(final String path) throws IOException {
-        return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(), dataPath() + "/data/" + path);
+        return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(), dataPath() + "/data/" + path, bloatFactor());
     }
 
     /**

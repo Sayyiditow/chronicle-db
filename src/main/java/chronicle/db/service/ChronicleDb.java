@@ -27,6 +27,7 @@ import chronicle.db.dao.SingleChronicleDao;
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Join;
 import net.openhft.chronicle.map.ChronicleMap;
+import net.openhft.chronicle.map.ChronicleMapBuilder;
 
 /**
  * Using this DB requires to use Value interfaces from Chronical Map:
@@ -51,19 +52,20 @@ public final class ChronicleDb {
      * @throws IOException
      */
     public <K, V> ChronicleMap<K, V> createOrGet(final String name, final long entries,
-            final K averageKey, final V averageValue, final String filePath) throws IOException {
+            final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
+            throws IOException {
         final File file = new File(filePath);
         final Class<K> keyClass = (Class<K>) averageKey.getClass();
         final Class<V> valueClass = (Class<V>) averageValue.getClass();
 
         if (file.exists()) {
             Logger.info("Fetching Chronicle DB at: {}", filePath);
-            return ChronicleMap.of(keyClass, valueClass).createPersistedTo(file);
+            return ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
         }
 
         Logger.info("Creating Chronicle DB at: {}", filePath);
-        return ChronicleMap.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
-                .averageValue(averageValue).createPersistedTo(file);
+        return ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
+                .averageValue(averageValue).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
     }
 
     /**

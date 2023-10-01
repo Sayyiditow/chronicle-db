@@ -36,7 +36,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ChronicleMap<K, V> db() throws IOException {
         return ChronicleDb.CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
-                dataPath() + "/data/data");
+                dataPath() + "/data/data", bloatFactor());
     }
 
     /**
@@ -155,7 +155,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             CHRONICLE_UTILS.deleteFileIfExists(dataFile);
             db = ChronicleDb.CHRONICLE_DB.createOrGet(name(),
                     entries() * ((currentValues.size() / entries()) + 1) + entries(),
-                    averageKey(), averageValue(), dataPath() + "/data/data.tmp");
+                    averageKey(), averageValue(), dataPath() + "/data/data.tmp", bloatFactor());
             db.putAll(currentValues);
             Files.move(Paths.get(dataPath() + "/data/data.tmp"), Paths.get(dataFile),
                     StandardCopyOption.REPLACE_EXISTING);

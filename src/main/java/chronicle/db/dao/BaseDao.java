@@ -67,6 +67,15 @@ interface BaseDao<K, V> {
     TypeLiteral<V> jsonType();
 
     /**
+     * The bloatFactor is used when the file contents can grow much more than the
+     * average value,
+     * defaults to 1
+     */
+    default double bloatFactor() {
+        return 1;
+    }
+
+    /**
      * Create the folders required on init
      */
     default void createDataDirs() {
