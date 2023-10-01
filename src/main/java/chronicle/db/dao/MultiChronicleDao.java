@@ -622,12 +622,6 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         return recordsAtMap;
     }
 
-    private Object convertSearchValue(final String fieldName, final Object value)
-            throws NoSuchFieldException, SecurityException {
-        final var searchFieldType = averageValue().getClass().getField(fieldName).getType();
-        return searchFieldType.isEnum() ? value.toString() : value;
-    }
-
     /**
      * Refer to @BaseDao.super.indexedSearch
      * 
@@ -638,7 +632,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<K, V>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, convertSearchValue(search.field(), search.searchTerm()));
+        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
 
         if (recordsAtMap.size() > 3) {
             recordsAtMap.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
@@ -669,7 +663,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<K, V>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, convertSearchValue(search.field(), search.searchTerm()));
+        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
 
         if (recordsAtMap.size() > 2) {
             recordsAtMap.entrySet().parallelStream().allMatch(entry -> {
@@ -710,7 +704,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<K, V>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, convertSearchValue(search.field(), search.searchTerm()));
+        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
 
         if (recordsAtMap.size() > 3) {
             recordsAtMap.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
@@ -738,7 +732,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             throws NoSuchFieldException, SecurityException, IOException {
         final var map = new ConcurrentHashMap<K, V>();
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
-        final var recordsAtMap = fileAtIndex(indexDb, convertSearchValue(search.field(), search.searchTerm()));
+        final var recordsAtMap = fileAtIndex(indexDb, search.searchTerm());
 
         if (recordsAtMap.size() > 2) {
             recordsAtMap.entrySet().parallelStream().allMatch(entry -> {
