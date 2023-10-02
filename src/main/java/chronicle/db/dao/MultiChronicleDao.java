@@ -38,7 +38,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         return files.size() > 2;
     }
 
-    default String getInsertFile(final int records) throws IOException {
+    private String getInsertFile(final int records) throws IOException {
         final var files = getFiles();
 
         if (files.size() == 0)
