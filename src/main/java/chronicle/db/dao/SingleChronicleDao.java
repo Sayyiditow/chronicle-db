@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentMap;
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
+import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
 import chronicle.db.service.ChronicleDb;
 import net.openhft.chronicle.map.ChronicleMap;
@@ -171,13 +172,13 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @return true if updated else false
      * @throws IOException
      */
-    default boolean put(final K key, final V value) throws IOException {
+    default PutStatus put(final K key, final V value) throws IOException {
         // create a bigger file if records in db are equal to multiple of entries()
         final var db = createNewDb(db());
         Logger.info("Inserting into {} using key {}.", name(), key);
-        final var updated = Objects.nonNull(db.put(key, value));
+        final var updated = Objects.isNull(db.put(key, value)) ? PutStatus.INSERTED : PutStatus.UPDATED;
 
-        if (updated && containsIndexes()) {
+        if (containsIndexes()) {
             CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames(), Map.of(key, value));
         }
 

@@ -20,6 +20,7 @@ import java.util.stream.Collectors;
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
+import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
 import chronicle.db.service.HandleConsumer;
 import net.openhft.chronicle.map.ChronicleMap;
@@ -358,14 +359,14 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      * @returns true/false
      */
-    default boolean put(final K key, final V value, final String file) throws IOException {
+    default PutStatus put(final K key, final V value, final String file) throws IOException {
         Logger.info("Inserting into {} at file {} using key {}.", name(), file, key);
 
         final var db = db(file);
-        final var updated = Objects.nonNull(db.put(key, value));
+        final var updated = Objects.isNull(db.put(key, value)) ? PutStatus.INSERTED : PutStatus.UPDATED;
         db.close();
 
-        if (updated && containsIndexes()) {
+        if (containsIndexes()) {
             CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), Map.of(key, value));
         }
         return updated;
@@ -379,7 +380,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @return true if updated else false
      * @throws IOException
      */
-    default boolean put(final K key, final V value) throws IOException {
+    default PutStatus put(final K key, final V value) throws IOException {
         final var getMap = get(key);
 
         if (getMap.size() != 0) {
