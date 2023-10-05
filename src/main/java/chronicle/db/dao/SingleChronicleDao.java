@@ -178,7 +178,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         Logger.info("Inserting into {} using key {}.", name(), key);
         final var updated = Objects.isNull(db.put(key, value)) ? PutStatus.INSERTED : PutStatus.UPDATED;
 
-        if (containsIndexes()) {
+        if (indexFileNames != null) {
             CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames, Map.of(key, value));
         }
 
@@ -212,7 +212,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             db = createNewDb(db);
             db.put(entry.getKey(), entry.getValue());
         }
-        if (containsIndexes()) {
+        if (indexFileNames != null) {
             CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames, map);
         }
 

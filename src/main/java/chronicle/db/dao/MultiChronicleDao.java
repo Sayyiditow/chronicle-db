@@ -367,7 +367,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         final var updated = Objects.isNull(db.put(key, value)) ? PutStatus.INSERTED : PutStatus.UPDATED;
         db.close();
 
-        if (containsIndexes()) {
+        if (indexFileNames != null) {
             CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames, Map.of(key, value));
         }
         return updated;
@@ -425,7 +425,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         db.putAll(map);
         db.close();
 
-        if (containsIndexes()) {
+        if (indexFileNames != null) {
             CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames, map);
         }
     }
