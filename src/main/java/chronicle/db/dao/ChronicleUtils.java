@@ -190,6 +190,32 @@ public final class ChronicleUtils {
         index.put(fileName, copy);
     }
 
+    private <K, V> void removeFromIndex(final String dbFileName, final String dbName, final String dataPath,
+            final Map<K, V> values, final String file) {
+        Field field = null;
+        Object indexKey = null;
+        try {
+            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
+            final var index = indexDb.get(dbFileName);
+
+            for (final var entry : values.entrySet()) {
+                field = entry.getValue().getClass().getField(file);
+                if (Objects.nonNull(field)) {
+                    indexKey = !field.getType().isEnum() ? field.get(entry.getValue())
+                            : field.get(entry.getValue()).toString();
+                }
+                final List<K> keys = index.get(indexKey);
+                if (keys.remove(entry.getKey())) {
+                    index.put(indexKey, keys);
+                    indexDb.put(dbFileName, index);
+                }
+            }
+            indexDb.close();
+        } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+            Logger.error("No such field exists {} when removing from index {}. {}", file, dbName, e);
+        }
+    }
+
     /**
      * Update the index
      * 
@@ -201,29 +227,46 @@ public final class ChronicleUtils {
      */
     public <K, V> void removeFromIndex(final String dbFileName, final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values) throws IOException {
-        for (final String file : indexFileNames) {
-            Field field = null;
-            Object indexKey = null;
-            try {
-                final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
-                final var index = indexDb.get(dbFileName);
+        if (indexFileNames.size() > 3)
+            indexFileNames.parallelStream().forEach(file -> {
+                removeFromIndex(dbFileName, dbName, dataPath, values, file);
+            });
+        else
+            for (final String file : indexFileNames) {
+                removeFromIndex(dbFileName, dbName, dataPath, values, file);
+            }
+    }
 
-                for (final var entry : values.entrySet()) {
-                    field = entry.getValue().getClass().getField(file);
-                    if (Objects.nonNull(field)) {
-                        indexKey = !field.getType().isEnum() ? field.get(entry.getValue())
-                                : field.get(entry.getValue()).toString();
-                    }
-                    final List<K> keys = index.get(indexKey);
-                    if (keys.remove(entry.getKey())) {
+    private <K, V> void addToIndex(final String dbFileName, final String dbName, final String dataPath,
+            final Map<K, V> values, final String file) {
+        Field field = null;
+        Object indexKey = null;
+        try {
+            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
+            final var index = indexDb.get(dbFileName);
+
+            for (final var entry : values.entrySet()) {
+                field = entry.getValue().getClass().getField(file);
+                if (Objects.nonNull(field)) {
+                    indexKey = !field.getType().isEnum() ? field.get(entry.getValue())
+                            : field.get(entry.getValue()).toString();
+                }
+
+                List<K> keys = index.get(indexKey);
+                if (Objects.isNull(keys)) {
+                    keys = new ArrayList<>();
+                }
+
+                if (!keys.contains(entry.getKey())) {
+                    if (keys.add(entry.getKey())) {
                         index.put(indexKey, keys);
                         indexDb.put(dbFileName, index);
                     }
                 }
-                indexDb.close();
-            } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-                Logger.error("No such field exists {} when removing from index {}. {}", file, dbName, e);
             }
+            indexDb.close();
+        } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+            Logger.error("No such field exists {} when adding to index {}. {}", file, dbName, e);
         }
     }
 
@@ -238,37 +281,14 @@ public final class ChronicleUtils {
      */
     public <K, V> void addToIndex(final String dbFileName, final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values) throws IOException {
-        for (final String file : indexFileNames) {
-            Field field = null;
-            Object indexKey = null;
-            try {
-                final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
-                final var index = indexDb.get(dbFileName);
-
-                for (final var entry : values.entrySet()) {
-                    field = entry.getValue().getClass().getField(file);
-                    if (Objects.nonNull(field)) {
-                        indexKey = !field.getType().isEnum() ? field.get(entry.getValue())
-                                : field.get(entry.getValue()).toString();
-                    }
-
-                    List<K> keys = index.get(indexKey);
-                    if (Objects.isNull(keys)) {
-                        keys = new ArrayList<>();
-                    }
-
-                    if (!keys.contains(entry.getKey())) {
-                        if (keys.add(entry.getKey())) {
-                            index.put(indexKey, keys);
-                            indexDb.put(dbFileName, index);
-                        }
-                    }
-                }
-                indexDb.close();
-            } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-                Logger.error("No such field exists {} when adding to index {}. {}", file, dbName, e);
+        if (indexFileNames.size() > 3)
+            indexFileNames.parallelStream().forEach(file -> {
+                addToIndex(dbFileName, dbName, dataPath, values, file);
+            });
+        else
+            for (final String file : indexFileNames) {
+                addToIndex(dbFileName, dbName, dataPath, values, file);
             }
-        }
     }
 
     /**
