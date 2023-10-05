@@ -176,14 +176,19 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         // create a bigger file if records in db are equal to multiple of entries()
         final var db = createNewDb(db());
         Logger.info("Inserting into {} using key {}.", name(), key);
-        final var updated = Objects.isNull(db.put(key, value)) ? PutStatus.INSERTED : PutStatus.UPDATED;
+        final var prevValue = db.put(key, value);
+        final var updated = prevValue != null;
+        final var prevValueMap = new HashMap<K, V>();
+        if (updated)
+            prevValueMap.put(key, prevValue);
+        db.close();
 
         if (indexFileNames != null) {
-            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames, Map.of(key, value));
+            CHRONICLE_UTILS.updateIndex("data", name(), dataPath(), indexFileNames, Map.of(key, value),
+                    Map.of(key, prevValue));
         }
 
-        db.close();
-        return updated;
+        return updated ? PutStatus.UPDATED : PutStatus.INSERTED;
     }
 
     /**
@@ -207,16 +212,20 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
 
         Logger.info("Inserting multiple values into {}.", name());
         var db = db();
+        final var prevValues = new HashMap<K, V>();
 
         for (final var entry : map.entrySet()) {
             db = createNewDb(db);
-            db.put(entry.getKey(), entry.getValue());
+            final var updated = db.put(entry.getKey(), entry.getValue());
+            if (updated != null)
+                prevValues.put(entry.getKey(), updated);
         }
+        db.close();
+
         if (indexFileNames != null) {
-            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames, map);
+            CHRONICLE_UTILS.updateIndex("data", name(), dataPath(), indexFileNames, map, prevValues);
         }
 
-        db.close();
     }
 
     /**

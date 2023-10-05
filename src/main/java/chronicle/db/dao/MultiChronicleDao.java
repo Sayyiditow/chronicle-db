@@ -364,13 +364,17 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         Logger.info("Inserting into {} at file {} using key {}.", name(), file, key);
 
         final var db = db(file);
-        final var updated = Objects.isNull(db.put(key, value)) ? PutStatus.INSERTED : PutStatus.UPDATED;
+        final var prevValue = db.put(key, value);
+        final var updated = prevValue != null;
+        final var prevValueMap = new HashMap<>();
+        if (updated)
+            prevValueMap.put(key, prevValue);
         db.close();
 
         if (indexFileNames != null) {
-            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames, Map.of(key, value));
+            CHRONICLE_UTILS.updateIndex(file, name(), dataPath(), indexFileNames, Map.of(key, value), prevValueMap);
         }
-        return updated;
+        return updated ? PutStatus.UPDATED : PutStatus.INSERTED;
     }
 
     /**
@@ -418,15 +422,19 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             Logger.error("Insert size bigger than entry size.");
             return;
         }
-
-        final var db = db(file);
-
         Logger.info("Inserting multiple values into {}.", name());
-        db.putAll(map);
+        final var db = db(file);
+        final var prevValues = new HashMap<K, V>();
+
+        for (final var entry : map.entrySet()) {
+            final var updated = db.put(entry.getKey(), entry.getValue());
+            if (updated != null)
+                prevValues.put(entry.getKey(), updated);
+        }
         db.close();
 
         if (indexFileNames != null) {
-            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames, map);
+            CHRONICLE_UTILS.updateIndex(file, name(), dataPath(), indexFileNames, map, prevValues);
         }
     }
 

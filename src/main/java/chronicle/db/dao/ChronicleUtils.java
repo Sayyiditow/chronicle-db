@@ -199,10 +199,11 @@ public final class ChronicleUtils {
             final var index = indexDb.get(dbFileName);
 
             for (final var entry : values.entrySet()) {
-                field = entry.getValue().getClass().getField(file);
+                final var value = entry.getValue();
+                field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
-                    indexKey = !field.getType().isEnum() ? field.get(entry.getValue())
-                            : field.get(entry.getValue()).toString();
+                    indexKey = !field.getType().isEnum() ? field.get(value)
+                            : field.get(value).toString();
                 }
                 final List<K> keys = index.get(indexKey);
                 if (keys.remove(entry.getKey())) {
@@ -237,19 +238,35 @@ public final class ChronicleUtils {
             }
     }
 
-    private <K, V> void addToIndex(final String dbFileName, final String dbName, final String dataPath,
-            final Map<K, V> values, final String file) {
+    private <K, V> void updateIndex(final String dbFileName, final String dbName, final String dataPath,
+            final Map<K, V> values, final String file, final Map<K, V> prevValues) {
         Field field = null;
         Object indexKey = null;
         try {
             final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
             final var index = indexDb.get(dbFileName);
 
-            for (final var entry : values.entrySet()) {
-                field = entry.getValue().getClass().getField(file);
+            // remove from the index first
+            for (final var entry : prevValues.entrySet()) {
+                final var value = entry.getValue();
+                field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
-                    indexKey = !field.getType().isEnum() ? field.get(entry.getValue())
-                            : field.get(entry.getValue()).toString();
+                    indexKey = !field.getType().isEnum() ? field.get(value)
+                            : field.get(value).toString();
+                }
+                final List<K> keys = index.get(indexKey);
+                if (keys.remove(entry.getKey())) {
+                    index.put(indexKey, keys);
+                    indexDb.put(dbFileName, index);
+                }
+            }
+
+            for (final var entry : values.entrySet()) {
+                final var value = entry.getValue();
+                field = value.getClass().getField(file);
+                if (Objects.nonNull(field)) {
+                    indexKey = !field.getType().isEnum() ? field.get(value)
+                            : field.get(value).toString();
                 }
 
                 List<K> keys = index.get(indexKey);
@@ -271,7 +288,7 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Update the index
+     * Update indexes by removing first then adding them
      * 
      * @param dbFileName     the file where the data is stored
      * @param dataPath       the folder path
@@ -279,15 +296,16 @@ public final class ChronicleUtils {
      * @param indexFileNames index files
      * @throws IOException
      */
-    public <K, V> void addToIndex(final String dbFileName, final String dbName, final String dataPath,
-            final List<String> indexFileNames, final Map<K, V> values) throws IOException {
+    public <K, V> void updateIndex(final String dbFileName, final String dbName, final String dataPath,
+            final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues)
+            throws IOException {
         if (indexFileNames.size() > 2)
             indexFileNames.parallelStream().forEach(file -> {
-                addToIndex(dbFileName, dbName, dataPath, values, file);
+                updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
             });
         else
             for (final String file : indexFileNames) {
-                addToIndex(dbFileName, dbName, dataPath, values, file);
+                updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
             }
     }
 
