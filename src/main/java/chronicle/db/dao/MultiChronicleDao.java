@@ -359,7 +359,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      * @returns true/false
      */
-    default PutStatus put(final K key, final V value, final String file) throws IOException {
+    default PutStatus put(final K key, final V value, final String file, final List<String> indexFileNames)
+            throws IOException {
         Logger.info("Inserting into {} at file {} using key {}.", name(), file, key);
 
         final var db = db(file);
@@ -367,9 +368,16 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         db.close();
 
         if (containsIndexes()) {
-            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), Map.of(key, value));
+            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames, Map.of(key, value));
         }
         return updated;
+    }
+
+    /**
+     * Refers to the method above
+     */
+    default PutStatus put(final K key, final V value, final String file) throws IOException {
+        return put(key, value, file, indexFileNames());
     }
 
     /**
@@ -380,15 +388,22 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @return true if updated else false
      * @throws IOException
      */
-    default PutStatus put(final K key, final V value) throws IOException {
+    default PutStatus put(final K key, final V value, final List<String> indexFileNames) throws IOException {
         final var getMap = get(key);
 
         if (getMap.size() != 0) {
             final var file = getMap.keySet().iterator().next();
-            return put(key, value, file);
+            return put(key, value, file, indexFileNames);
         }
 
-        return put(key, value, getInsertFile(1));
+        return put(key, value, getInsertFile(1), indexFileNames);
+    }
+
+    /**
+     * Refers to the method above
+     */
+    default PutStatus put(final K key, final V value) throws IOException {
+        return put(key, value, indexFileNames());
     }
 
     /**
@@ -398,7 +413,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param file the file name
      * @throws IOException
      */
-    default void put(final Map<K, V> map, final String file) throws IOException {
+    default void put(final Map<K, V> map, final String file, final List<String> indexFileNames) throws IOException {
         if (map.size() > entries()) {
             Logger.error("Insert size bigger than entry size.");
             return;
@@ -409,9 +424,17 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         Logger.info("Inserting multiple values into {}.", name());
         db.putAll(map);
         db.close();
+
         if (containsIndexes()) {
-            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames(), map);
+            CHRONICLE_UTILS.addToIndex(file, name(), dataPath(), indexFileNames, map);
         }
+    }
+
+    /**
+     * Refers to the method above
+     */
+    default void put(final Map<K, V> map, final String file) throws IOException {
+        put(map, file, indexFileNames());
     }
 
     /**
@@ -422,7 +445,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param updateExisting if we should update or just insert.
      * @throws IOException
      */
-    default void put(final Map<K, V> map, final boolean updateExisting) throws IOException {
+    default void put(final Map<K, V> map, final boolean updateExisting, final List<String> indexFileNames)
+            throws IOException {
         // check for existing records to update them
         if (updateExisting) {
             final var existingRecords = get(map.keySet());
@@ -448,11 +472,18 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             map.keySet().removeAll(toRemove);
 
             for (final var entry : existingRecords.entrySet()) {
-                put(entry.getValue(), entry.getKey());
+                put(entry.getValue(), entry.getKey(), indexFileNames);
             }
         }
 
-        put(map, getInsertFile(map.keySet().size()));
+        put(map, getInsertFile(map.keySet().size()), indexFileNames);
+    }
+
+    /**
+     * Refers to the method above
+     */
+    default void put(final Map<K, V> map, final boolean updateExisting) throws IOException {
+        put(map, updateExisting, indexFileNames());
     }
 
     /**
@@ -617,7 +648,20 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                 }
             indexDb.close();
         }
+    }
 
+    /**
+     * Delete and rerun all indexes. Faster when inserting a lot of records.
+     * 
+     * @throws IOException
+     */
+    default void refreshIndexes() throws IOException {
+        final var available = indexFileNames();
+        available.forEach(f -> {
+            CHRONICLE_UTILS.deleteFileIfExists(f);
+        });
+
+        initIndex(available.toArray(new String[0]));
     }
 
     /**

@@ -172,18 +172,25 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @return true if updated else false
      * @throws IOException
      */
-    default PutStatus put(final K key, final V value) throws IOException {
+    default PutStatus put(final K key, final V value, final List<String> indexFileNames) throws IOException {
         // create a bigger file if records in db are equal to multiple of entries()
         final var db = createNewDb(db());
         Logger.info("Inserting into {} using key {}.", name(), key);
         final var updated = Objects.isNull(db.put(key, value)) ? PutStatus.INSERTED : PutStatus.UPDATED;
 
         if (containsIndexes()) {
-            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames(), Map.of(key, value));
+            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames, Map.of(key, value));
         }
 
         db.close();
         return updated;
+    }
+
+    /**
+     * Refer to method above
+     */
+    default PutStatus put(final K key, final V value) throws IOException {
+        return put(key, value, indexFileNames());
     }
 
     /**
@@ -192,7 +199,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @param map the map to add
      * @throws IOException
      */
-    default void put(final Map<K, V> map) throws IOException {
+    default void put(final Map<K, V> map, final List<String> indexFileNames) throws IOException {
         if (map.size() > entries()) {
             Logger.error("Insert size bigger than entry size.");
             return;
@@ -206,10 +213,17 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             db.put(entry.getKey(), entry.getValue());
         }
         if (containsIndexes()) {
-            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames(), map);
+            CHRONICLE_UTILS.addToIndex("data", name(), dataPath(), indexFileNames, map);
         }
 
         db.close();
+    }
+
+    /**
+     * Refer to method above
+     */
+    default void put(final Map<K, V> map) throws IOException {
+        put(map, indexFileNames());
     }
 
     /**
@@ -262,6 +276,20 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             indexDb.close();
         }
         db.close();
+    }
+
+    /**
+     * Delete and rerun all indexes. Faster when inserting a lot of records.
+     * 
+     * @throws IOException
+     */
+    default void refreshIndexes() throws IOException {
+        final var available = indexFileNames();
+        available.forEach(f -> {
+            CHRONICLE_UTILS.deleteFileIfExists(f);
+        });
+
+        initIndex(available.toArray(new String[0]));
     }
 
     /**
