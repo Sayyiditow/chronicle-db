@@ -228,7 +228,7 @@ public final class ChronicleUtils {
      */
     public <K, V> void removeFromIndex(final String dbFileName, final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values) throws IOException {
-        if (indexFileNames.size() > 2)
+        if (indexFileNames.size() > 1)
             indexFileNames.parallelStream().forEach(file -> {
                 removeFromIndex(dbFileName, dbName, dataPath, values, file);
             });
@@ -299,7 +299,7 @@ public final class ChronicleUtils {
     public <K, V> void updateIndex(final String dbFileName, final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues)
             throws IOException {
-        if (indexFileNames.size() > 2)
+        if (indexFileNames.size() > 1)
             indexFileNames.parallelStream().forEach(file -> {
                 updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
             });
