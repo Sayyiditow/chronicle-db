@@ -147,6 +147,20 @@ interface BaseDao<K, V> {
     }
 
     /**
+     * Delete and rerun all indexes. Faster when inserting a lot of records.
+     * 
+     * @throws IOException
+     */
+    default String[] deleteIndexes() throws IOException {
+        final var available = indexFileNames();
+        available.forEach(f -> {
+            CHRONICLE_UTILS.deleteFileIfExists(f);
+        });
+
+        return available.toArray(new String[0]);
+    }
+
+    /**
      * Get the index map to use
      * 
      * @param field the field of the V value object

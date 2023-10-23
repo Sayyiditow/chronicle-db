@@ -664,12 +664,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default void refreshIndexes() throws IOException {
-        final var available = indexFileNames();
-        available.forEach(f -> {
-            CHRONICLE_UTILS.deleteFileIfExists(f);
-        });
-
-        initIndex(available.toArray(new String[0]));
+        initIndex(deleteIndexes());
     }
 
     /**

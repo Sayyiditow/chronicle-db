@@ -357,7 +357,7 @@ public final class ChronicleUtils {
         if (map.size() > 2) {
             map.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
                 for (final var e : entry.getValue().entrySet()) {
-                    rowList.add((Object[]) rowMethod.invoke(e.getValue(), e.getKey()));
+                    rowList.add((Object[]) rowMethod.invoke(e.getValue(), entry.getKey(), e.getKey()));
                 }
             }));
             return new CsvObject(headerList, rowList);
@@ -365,7 +365,7 @@ public final class ChronicleUtils {
 
         for (final var entry : map.entrySet()) {
             for (final var e : entry.getValue().entrySet()) {
-                rowList.add((Object[]) rowMethod.invoke(e.getValue(), e.getKey()));
+                rowList.add((Object[]) rowMethod.invoke(e.getValue(), entry.getKey(), e.getKey()));
             }
         }
 
