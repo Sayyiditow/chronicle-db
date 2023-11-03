@@ -1,5 +1,7 @@
 package chronicle.db.entity;
 
+import com.jsoniter.annotation.JsonCreator;
+
 public record Search(String field, SearchType searchType, Object searchTerm) {
     public enum SearchType {
         EQUAL,
@@ -15,6 +17,7 @@ public record Search(String field, SearchType searchType, Object searchTerm) {
         ENDS_WITH
     }
 
+    @JsonCreator
     public Search(final String field, final SearchType searchType, final Object searchTerm) {
         this.field = field;
         this.searchType = searchType;
