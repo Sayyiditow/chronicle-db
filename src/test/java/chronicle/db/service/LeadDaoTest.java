@@ -16,7 +16,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import com.jsoniter.JsonIterator;
 import com.jsoniter.output.JsonStream;

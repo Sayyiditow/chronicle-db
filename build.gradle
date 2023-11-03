@@ -18,7 +18,7 @@ dependencies {
     api 'org.mapdb:mapdb:3.0.10'
     api "org.tinylog:tinylog-impl:$tinyLogVersion"
     api "org.tinylog:tinylog-api:$tinyLogVersion"
-    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.0'
+    api "junit:junit:4.13.2"
     runtimeOnly "org.tinylog:slf4j-tinylog:$tinyLogVersion"
     testImplementation 'org.apache.logging.log4j:log4j-1.2-api:2.21.1'
 }
