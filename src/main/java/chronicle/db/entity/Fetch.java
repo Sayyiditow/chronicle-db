@@ -4,17 +4,18 @@ import java.util.HashSet;
 
 import com.jsoniter.annotation.JsonCreator;
 
-public record Fetch(String objectName, String dataPath, HashSet<?> keys, Search search,
-        String[] subsetFields, Object key, int limit) {
+public record Fetch(String objectName, String dataPath, Object key, HashSet<?> keys, Search search, int limit,
+        String[] subsetFields, String[] subsetFieldHeaders) {
     @JsonCreator
-    public Fetch(final String objectName, final String dataPath, final HashSet<?> keys,
-            final Search search, final String[] subsetFields, final Object key, final int limit) {
+    public Fetch(final String objectName, final String dataPath, final Object key, final HashSet<?> keys,
+            final Search search, final int limit, final String[] subsetFields, final String[] subsetFieldHeaders) {
         this.objectName = objectName;
         this.dataPath = dataPath;
+        this.key = key;
         this.keys = keys;
+        this.limit = limit;
         this.search = search;
         this.subsetFields = subsetFields;
-        this.key = key;
-        this.limit = limit;
+        this.subsetFieldHeaders = subsetFieldHeaders;
     }
 }
