@@ -378,7 +378,7 @@ interface BaseDao<K, V> {
         return match;
     }
 
-    private void subsetOfValues(final List<String> fields, final Map.Entry<K, V> entry,
+    private void subsetOfValues(final String[] fields, final Map.Entry<K, V> entry,
             final ConcurrentMap<K, LinkedHashMap<String, Object>> map) {
         Field field = null;
         final var valueMap = new LinkedHashMap<String, Object>();
@@ -405,7 +405,7 @@ interface BaseDao<K, V> {
      * @param fields     the required fields
      */
     default ConcurrentMap<K, LinkedHashMap<String, Object>> subsetOfValues(final ConcurrentMap<K, V> initialMap,
-            final List<String> fields) {
+            final String[] fields) {
         final var map = new ConcurrentHashMap<K, LinkedHashMap<String, Object>>();
 
         for (final var entry : initialMap.entrySet()) {
