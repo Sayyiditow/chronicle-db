@@ -183,7 +183,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             prevValueMap.put(key, prevValue);
         db.close();
 
-        if (indexFileNames != null) {
+        if (indexFileNames.size() != 0) {
             CHRONICLE_UTILS.updateIndex("data", name(), dataPath(), indexFileNames, Map.of(key, value),
                     Map.of(key, prevValue));
         }
@@ -222,7 +222,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         }
         db.close();
 
-        if (indexFileNames != null) {
+        if (indexFileNames.size() != 0) {
             CHRONICLE_UTILS.updateIndex("data", name(), dataPath(), indexFileNames, map, prevValues);
         }
 
