@@ -404,17 +404,11 @@ public final class ChronicleUtils {
     public <V> void partialUpdateSetter(final V object, final String fieldName, final Object fieldValue)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
         final var field = object.getClass().getField(fieldName);
-        field.set(object, fieldValue);
-    }
-
-    public <V> void partialUpdateSetter(final V object, final String fieldName, final Object fieldValue,
-            final Class<?> enumClass)
-            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
-        final var field = object.getClass().getField(fieldName);
-        if (enumClass != null) {
-            field.set(object,
-                    Enum.valueOf((Class<? extends Enum>) enumClass, fieldValue.toString()));
-        }
+        final var type = field.getType();
+        if (type.isEnum())
+            field.set(object, toEnum(type, fieldValue));
+        else
+            field.set(object, fieldValue);
     }
 
     public void deleteFileIfExists(final String filePath) {
