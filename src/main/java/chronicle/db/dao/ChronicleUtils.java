@@ -322,17 +322,20 @@ public final class ChronicleUtils {
     public <K, V> CsvObject formatSingleChronicleDataToCsv(final ConcurrentMap<K, V> map)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
-        final V value = map.values().iterator().next();
-        final Method headersMethod = value.getClass().getDeclaredMethod("header");
-        final Method rowMethod = value.getClass().getDeclaredMethod("row", Object.class);
-        final String[] headerList = (String[]) headersMethod.invoke(value);
-        final List<Object[]> rowList = new ArrayList<>();
+        if (map.size() != 0) {
+            final V value = map.values().iterator().next();
+            final Method headersMethod = value.getClass().getDeclaredMethod("header");
+            final Method rowMethod = value.getClass().getDeclaredMethod("row", Object.class);
+            final String[] headerList = (String[]) headersMethod.invoke(value);
+            final List<Object[]> rowList = new ArrayList<>();
 
-        for (final var entry : map.entrySet()) {
-            rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
+            for (final var entry : map.entrySet()) {
+                rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
+            }
+
+            return new CsvObject(headerList, rowList);
         }
-
-        return new CsvObject(headerList, rowList);
+        return new CsvObject(new String[] {}, new ArrayList<>());
     }
 
     /**
@@ -348,28 +351,31 @@ public final class ChronicleUtils {
     public static <K, V> CsvObject formatMultiChronicleDataToCsv(final ConcurrentMap<String, ConcurrentMap<K, V>> map)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
-        final V value = map.values().iterator().next().values().iterator().next();
-        final Method headersMethod = value.getClass().getDeclaredMethod("header");
-        final Method rowMethod = value.getClass().getDeclaredMethod("row", Object.class);
-        final String[] headerList = (String[]) headersMethod.invoke(value);
-        final List<Object[]> rowList = new ArrayList<>();
+        if (map.size() != 0) {
+            final V value = map.values().iterator().next().values().iterator().next();
+            final Method headersMethod = value.getClass().getDeclaredMethod("header");
+            final Method rowMethod = value.getClass().getDeclaredMethod("row", Object.class);
+            final String[] headerList = (String[]) headersMethod.invoke(value);
+            final List<Object[]> rowList = new ArrayList<>();
 
-        if (map.size() > 2) {
-            map.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
+            if (map.size() > 2) {
+                map.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
+                    for (final var e : entry.getValue().entrySet()) {
+                        rowList.add((Object[]) rowMethod.invoke(e.getValue(), entry.getKey(), e.getKey()));
+                    }
+                }));
+                return new CsvObject(headerList, rowList);
+            }
+
+            for (final var entry : map.entrySet()) {
                 for (final var e : entry.getValue().entrySet()) {
                     rowList.add((Object[]) rowMethod.invoke(e.getValue(), entry.getKey(), e.getKey()));
                 }
-            }));
+            }
+
             return new CsvObject(headerList, rowList);
         }
-
-        for (final var entry : map.entrySet()) {
-            for (final var e : entry.getValue().entrySet()) {
-                rowList.add((Object[]) rowMethod.invoke(e.getValue(), entry.getKey(), e.getKey()));
-            }
-        }
-
-        return new CsvObject(headerList, rowList);
+        return new CsvObject(new String[] {}, new ArrayList<>());
     }
 
     /**
