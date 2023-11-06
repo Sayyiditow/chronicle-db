@@ -164,77 +164,82 @@ public final class ChronicleDb {
     }
 
     private void setSingleChronicleRecords(final String daoClassName, final String dataPath,
-            final Map<String, ChronicleMap<Object, Object>> records, final String foreignKeyName,
-            final Map<String, Object> mapOfObjects)
+            final Map<String, Map<String, ChronicleMap<Object, Object>>> records, final String foreignKeyName,
+            final Map<String, Map<String, Object>> mapOfObjects)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
         final var dao = CHRONICLE_DB.getSingleChronicleDao(daoClassName, dataPath);
-        records.put("data", dao.db());
-
-        mapOfObjects.put("foreignKeyIndexPath", dao.getIndexPath(foreignKeyName));
-        mapOfObjects.put("using", dao.using());
-        mapOfObjects.put("name", dao.name());
+        if (records.get(daoClassName) == null) {
+            records.put(daoClassName, Map.of("data", dao.db()));
+        }
+        mapOfObjects.put(daoClassName, new HashMap<>() {
+            {
+                put("foreignKeyIndexPath", dao.getIndexPath(foreignKeyName));
+                put("using", dao.using());
+                put("name", dao.name());
+            }
+        });
     }
 
     private void setMultiChronicleRecords(final String daoClassName, final String dataPath,
-            final Map<String, ChronicleMap<Object, Object>> records, final String foreignKeyName,
-            final Map<String, Object> mapOfObjects)
+            final Map<String, Map<String, ChronicleMap<Object, Object>>> records, final String foreignKeyName,
+            final Map<String, Map<String, Object>> mapOfObjects)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
-        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName,
-                dataPath);
-        final List<String> files = dao.getFiles();
+        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, dataPath);
+        if (records.get(daoClassName) == null) {
+            final List<String> files = dao.getFiles();
 
-        for (final var file : files) {
-            records.put(file, dao.db(file));
+            for (final var file : files) {
+                records.put(daoClassName, Map.of(file, dao.db(file)));
+            }
         }
-
-        mapOfObjects.put("foreignKeyIndexPath", dao.getIndexPath(foreignKeyName));
-        mapOfObjects.put("using", dao.using());
-        mapOfObjects.put("name", dao.name());
+        mapOfObjects.put(daoClassName, new HashMap<>() {
+            {
+                put("foreignKeyIndexPath", dao.getIndexPath(foreignKeyName));
+                put("using", dao.using());
+                put("name", dao.name());
+            }
+        });
     }
 
-    private void setRequiredObjects(final Map<String, ChronicleMap<Object, Object>> primaryRecords,
-            final Map<String, ChronicleMap<Object, Object>> foreignRecords,
-            final Map<String, Object> primaryMapOfObjects,
-            final Map<String, Object> foreignMapOfObjects, final Join join)
+    private void setRequiredObjects(final Map<String, Map<String, ChronicleMap<Object, Object>>> records,
+            final Map<String, Map<String, Object>> mapOfObjects, final Join join)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, InstantiationException, InvocationTargetException, IOException {
         switch (join.joinObjMultiMode()) {
             case PRIMARY:
-                setMultiChronicleRecords(join.primaryDaoClassName(), join.dataPath(), primaryRecords,
-                        join.foreignKeyName(), primaryMapOfObjects);
-                setSingleChronicleRecords(join.foreignDaoClassName(), join.dataPath(), foreignRecords,
-                        join.foreignKeyName(), foreignMapOfObjects);
+                setMultiChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
+                        join.foreignKeyName(), mapOfObjects);
+                setSingleChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
+                        join.foreignKeyName(), mapOfObjects);
                 break;
             case FOREIGN:
-                setSingleChronicleRecords(join.primaryDaoClassName(), join.dataPath(), primaryRecords,
-                        join.foreignKeyName(), primaryMapOfObjects);
-                setMultiChronicleRecords(join.foreignDaoClassName(), join.dataPath(), foreignRecords,
-                        join.foreignKeyName(), foreignMapOfObjects);
+                setSingleChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
+                        join.foreignKeyName(), mapOfObjects);
+                setMultiChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
+                        join.foreignKeyName(), mapOfObjects);
                 break;
             case NONE:
-                setSingleChronicleRecords(join.primaryDaoClassName(), join.dataPath(), primaryRecords,
-                        join.foreignKeyName(), primaryMapOfObjects);
-                setSingleChronicleRecords(join.foreignDaoClassName(), join.dataPath(), foreignRecords,
-                        join.foreignKeyName(), foreignMapOfObjects);
+                setSingleChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
+                        join.foreignKeyName(), mapOfObjects);
+                setSingleChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
+                        join.foreignKeyName(), mapOfObjects);
                 break;
             default:
-                setMultiChronicleRecords(join.primaryDaoClassName(), join.dataPath(), primaryRecords,
-                        join.foreignKeyName(), primaryMapOfObjects);
-                setMultiChronicleRecords(join.foreignDaoClassName(), join.dataPath(), foreignRecords,
-                        join.foreignKeyName(), foreignMapOfObjects);
+                setMultiChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
+                        join.foreignKeyName(), mapOfObjects);
+                setMultiChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
+                        join.foreignKeyName(), mapOfObjects);
                 break;
         }
     }
 
-    private void closeOpenDbs(final Map<String, ChronicleMap<Object, Object>> primaryRecords,
-            final Map<String, ChronicleMap<Object, Object>> foreignRecords) {
-        foreignRecords.forEach((k, v) -> {
-            v.close();
-        });
-        primaryRecords.forEach((k, v) -> {
-            v.close();
+    private void closeOpenDbs(final Map<String, Map<String, ChronicleMap<Object, Object>>> mapOfRecords) {
+        mapOfRecords.forEach((k, v) -> {
+            v.forEach((k1, v1) -> {
+                v1.close();
+            });
         });
     }
 
@@ -297,16 +302,14 @@ public final class ChronicleDb {
             InstantiationException, IOException {
         final var joinedMap = new ConcurrentHashMap<Object, Map<String, Object>>();
         final var toRemove = new HashSet<>();
+        final var mapOfRecords = new HashMap<String, Map<String, ChronicleMap<Object, Object>>>();
+        final var mapOfObjects = new HashMap<String, Map<String, Object>>();
 
         for (final var join : joins) {
-            final var primaryRecords = new HashMap<String, ChronicleMap<Object, Object>>();
-            final var foreignRecords = new HashMap<String, ChronicleMap<Object, Object>>();
-            final Map<String, Object> primaryMapOfObjects = new HashMap<String, Object>();
-            final Map<String, Object> foreignMapOfObjects = new HashMap<String, Object>();
+            setRequiredObjects(mapOfRecords, mapOfObjects, join);
 
-            setRequiredObjects(primaryRecords, foreignRecords, primaryMapOfObjects, foreignMapOfObjects, join);
-
-            final var foreignKeyIndexPath = foreignMapOfObjects.get("foreignKeyIndexPath").toString();
+            final var foreignKeyIndexPath = mapOfObjects.get(join.foreignDaoClassName()).get("foreignKeyIndexPath")
+                    .toString();
 
             if (!Files.exists(Paths.get(foreignKeyIndexPath))) {
                 Logger.error("Index is missing for the foreign key: {}.", foreignKeyIndexPath);
@@ -317,28 +320,35 @@ public final class ChronicleDb {
 
             if (indexDb.keySet().size() > 3) {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
+                    final var primaryRecords = mapOfRecords.get(join.primaryDaoClassName());
+                    final var foreignRecords = mapOfRecords.get(join.foreignDaoClassName());
                     for (final var entry : primaryRecords.entrySet()) {
                         loopJoinToMap(e, primaryRecords.get(entry.getKey()),
-                                foreignRecords.get(e.getKey()), primaryMapOfObjects.get("using"),
-                                foreignMapOfObjects.get("using"), primaryMapOfObjects.get("name").toString(),
-                                foreignMapOfObjects.get("name").toString(), joinedMap);
+                                foreignRecords.get(e.getKey()),
+                                mapOfObjects.get(join.primaryDaoClassName()).get("using"),
+                                mapOfObjects.get(join.foreignDaoClassName()).get("using"),
+                                mapOfObjects.get(join.primaryDaoClassName()).get("name").toString(),
+                                mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), joinedMap);
                         toRemove.addAll(primaryRecords.get(entry.getKey()).keySet());
                     }
                 }));
             } else
                 for (final var e : indexDb.entrySet()) {
+                    final var primaryRecords = mapOfRecords.get(join.primaryDaoClassName());
+                    final var foreignRecords = mapOfRecords.get(join.foreignDaoClassName());
                     for (final var entry : primaryRecords.entrySet()) {
-                        loopJoinToMap(e, primaryRecords.get(entry.getKey()),
-                                foreignRecords.get(e.getKey()), primaryMapOfObjects.get("using"),
-                                foreignMapOfObjects.get("using"), primaryMapOfObjects.get("name").toString(),
-                                foreignMapOfObjects.get("name").toString(), joinedMap);
+                        loopJoinToMap(e, primaryRecords.get(entry.getKey()), foreignRecords.get(e.getKey()),
+                                mapOfObjects.get(join.primaryDaoClassName()).get("using"),
+                                mapOfObjects.get(join.foreignDaoClassName()).get("using"),
+                                mapOfObjects.get(join.primaryDaoClassName()).get("name").toString(),
+                                mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), joinedMap);
                         toRemove.addAll(primaryRecords.get(entry.getKey()).keySet());
                     }
                 }
-            closeOpenDbs(primaryRecords, foreignRecords);
             indexDb.close();
         }
 
+        closeOpenDbs(mapOfRecords);
         joinedMap.keySet().removeAll(toRemove);
         return joinedMap;
     }
@@ -416,16 +426,14 @@ public final class ChronicleDb {
         final var headers = new ArrayList<String>();
         final var rowList = new ArrayList<Object[]>();
         final ConcurrentMap<Object, Integer> indexMap = new ConcurrentHashMap<>();
+        final var mapOfRecords = new HashMap<String, Map<String, ChronicleMap<Object, Object>>>();
+        final var mapOfObjects = new HashMap<String, Map<String, Object>>();
 
         for (final var join : joins) {
-            final var primaryRecords = new HashMap<String, ChronicleMap<Object, Object>>();
-            final var foreignRecords = new HashMap<String, ChronicleMap<Object, Object>>();
-            final Map<String, Object> primaryMapOfObjects = new HashMap<String, Object>();
-            final Map<String, Object> foreignMapOfObjects = new HashMap<String, Object>();
+            setRequiredObjects(mapOfRecords, mapOfObjects, join);
 
-            setRequiredObjects(primaryRecords, foreignRecords, primaryMapOfObjects, foreignMapOfObjects, join);
-
-            final var foreignKeyIndexPath = foreignMapOfObjects.get("foreignKeyIndexPath").toString();
+            final var foreignKeyIndexPath = mapOfObjects.get(join.foreignDaoClassName()).get("foreignKeyIndexPath")
+                    .toString();
 
             if (!Files.exists(Paths.get(foreignKeyIndexPath))) {
                 Logger.error("Index is missing for the foreign key: {}.", foreignKeyIndexPath);
@@ -433,34 +441,38 @@ public final class ChronicleDb {
             }
 
             final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(foreignKeyIndexPath);
-            final var primaryValue = primaryRecords.values().stream().findFirst().get().values().stream()
-                    .findFirst().get();
-            final var foreignValue = foreignRecords.values().stream().findFirst().get().values().stream()
-                    .findFirst().get();
+            final var primaryRecords = mapOfRecords.get(join.primaryDaoClassName());
+            final var foreignRecords = mapOfRecords.get(join.foreignDaoClassName());
+            final var primaryObjects = mapOfObjects.get(join.primaryDaoClassName());
+            final var foreignObjects = mapOfObjects.get(join.foreignDaoClassName());
+            final var primaryValue = primaryRecords.values().stream().findFirst().get().values().stream().findFirst()
+                    .get();
+            final var foreignValue = foreignRecords.values().stream().findFirst().get().values().stream().findFirst()
+                    .get();
             final Method primaryHeaderMethod = primaryValue.getClass().getDeclaredMethod("header");
             final Method foreignHeaderMethod = foreignValue.getClass().getDeclaredMethod("header");
             final String[] headerListA = (String[]) primaryHeaderMethod.invoke(primaryValue);
             final String[] headerListB = (String[]) foreignHeaderMethod.invoke(foreignValue);
-            addHeaders(headerListA, primaryMapOfObjects.get("name").toString(), headers);
-            addHeaders(headerListB, foreignMapOfObjects.get("name").toString(), headers);
+            addHeaders(headerListA, mapOfObjects.get(join.primaryDaoClassName()).get("name").toString(), headers);
+            addHeaders(headerListB, mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), headers);
 
-            if (indexDb.keySet().size() > 3)
+            if (indexDb.keySet().size() > 3) {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
                     for (final var entry : primaryRecords.entrySet()) {
                         loopJoinToCsv(e, primaryRecords.get(entry.getKey()), foreignRecords.get(e.getKey()),
-                                primaryMapOfObjects.get("using"), foreignMapOfObjects.get("using"), rowList, indexMap);
+                                primaryObjects.get("using"), foreignObjects.get("using"), rowList, indexMap);
                     }
                 }));
-            else
+            } else
                 for (final var e : indexDb.entrySet()) {
                     for (final var entry : primaryRecords.entrySet()) {
                         loopJoinToCsv(e, primaryRecords.get(entry.getKey()), foreignRecords.get(e.getKey()),
-                                primaryMapOfObjects.get("using"), foreignMapOfObjects.get("using"), rowList, indexMap);
+                                primaryObjects.get("using"), foreignObjects.get("using"), rowList, indexMap);
                     }
                 }
-            closeOpenDbs(primaryRecords, foreignRecords);
             indexDb.close();
         }
+        closeOpenDbs(mapOfRecords);
 
         return new CsvObject(headers.toArray(new String[0]), rowList);
     }
