@@ -3,6 +3,7 @@ package chronicle.db.dao;
 import static chronicle.db.service.MapDb.MAP_DB;
 
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -425,12 +426,13 @@ public final class ChronicleUtils {
         }
     }
 
-    public Object[] copyArray(final Object[] prefix, final Object[] toCopy) {
-        final int prefixLength = prefix.length;
-        final int newLength = toCopy.length;
-        final var copied = new Object[prefixLength + newLength];
-        System.arraycopy(prefix, 0, copied, 0, prefixLength);
-        System.arraycopy(toCopy, 0, copied, prefixLength, newLength);
+    public <T> T[] copyArray(final T[] prefix, final T[] toCopy) {
+        final int aLen = prefix.length;
+        final int bLen = toCopy.length;
+
+        final T[] copied = (T[]) Array.newInstance(prefix.getClass().getComponentType(), aLen + bLen);
+        System.arraycopy(prefix, 0, copied, 0, aLen);
+        System.arraycopy(toCopy, 0, copied, aLen, bLen);
 
         return copied;
     }
