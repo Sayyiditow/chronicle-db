@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -17,39 +18,109 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.stream.Collectors;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
+import chronicle.db.dao.MultiChronicleDao;
+import chronicle.db.dao.SingleChronicleDao;
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Join;
 import chronicle.db.entity.JoinFilter;
 
-@SuppressWarnings({ "unchecked" })
+@SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDbJoinService {
     private ChronicleDbJoinService() {
     }
 
     public static final ChronicleDbJoinService CHRONICLE_DB_JOIN_SERVICE = new ChronicleDbJoinService();
 
+    private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
+            final MultiChronicleDao dao, final JoinFilter filter, final String file)
+            throws IOException, NoSuchFieldException, SecurityException {
+        if (filter.key() != null) {
+            recordValueMap.put("data", new ConcurrentHashMap<>() {
+                {
+                    {
+                        put(filter.key(), dao.get(filter.key(), file));
+                    }
+                }
+            });
+        } else if (filter.keys() != null) {
+            recordValueMap.put("data", dao.get(filter.keys()));
+        } else if (filter.search() != null) {
+            if (Files.exists(Path.of(dao.getIndexPath(filter.search().field())))) {
+                if (filter.limit() != 0)
+                    recordValueMap.put("data", dao.indexedSearch(dao.db(file), filter.search()));
+                else
+                    recordValueMap.put("data", dao.indexedSearch(dao.db(file), filter.search(), filter.limit()));
+            } else {
+                if (filter.limit() != 0)
+                    recordValueMap.put("data", dao.search(dao.db(file), filter.search()));
+                else
+                    recordValueMap.put("data", dao.search(dao.db(file), filter.search(), filter.limit()));
+            }
+        } else {
+            ConcurrentMap<?, ?> db = dao.db(file);
+            if (filter.limit() != 0)
+                db = db.entrySet().stream().limit(filter.limit())
+                        .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
+            recordValueMap.put("data", db);
+
+        }
+    }
+
+    private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
+            final SingleChronicleDao dao, final JoinFilter filter) throws IOException {
+        if (filter != null) {
+            if (filter.key() != null) {
+                recordValueMap.put("data", new ConcurrentHashMap<>() {
+                    {
+                        {
+                            put(filter.key(), dao.get(filter.key()));
+                        }
+                    }
+                });
+            } else if (filter.keys() != null) {
+                recordValueMap.put("data", dao.get(filter.keys()));
+            } else if (filter.search() != null) {
+                if (Files.exists(Path.of(dao.getIndexPath(filter.search().field())))) {
+                    if (filter.limit() != 0)
+                        recordValueMap.put("data", dao.indexedSearch(filter.search()));
+                    else
+                        recordValueMap.put("data", dao.indexedSearch(filter.search(), filter.limit()));
+
+                } else {
+                    if (filter.limit() != 0)
+                        recordValueMap.put("data", dao.search(filter.search()));
+                    else
+                        recordValueMap.put("data", dao.search(filter.search(), filter.limit()));
+                }
+            } else {
+                ConcurrentMap<?, ?> db = dao.db();
+
+                if (filter != null && filter.limit() != 0)
+                    db = db.entrySet().stream().limit(filter.limit())
+                            .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
+                recordValueMap.put("data", db);
+
+            }
+        } else
+            recordValueMap.put("data", dao.db());
+    }
+
     private void setSingleChronicleRecords(final String daoClassName, final String dataPath,
-            final Map<String, Map<String, ConcurrentMap<Object, Object>>> records, final String foreignKeyName,
+            final Map<String, Map<String, ConcurrentMap<?, ?>>> records, final String foreignKeyName,
             final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
         final var dao = CHRONICLE_DB.getSingleChronicleDao(daoClassName, dataPath);
 
         if (records.get(daoClassName) == null) {
-            if (filter.key() != null) {
-                records.put(daoClassName, Map.of("data", new ConcurrentHashMap<>() {
-                    {
-                        put(filter.key(), dao.get(filter.key()));
-                    }
-                }));
-            } else if (filter.keys() != null) {
-                records.put(daoClassName, Map.of("data", dao.get(filter.keys())));
-            }
-            records.put(daoClassName, Map.of("data", dao.db()));
+            final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
+            setRecordsFromFilter(recordValueMap, dao, filter);
+            records.put(daoClassName, recordValueMap);
         }
         mapOfObjects.put(daoClassName, new HashMap<>() {
             {
@@ -60,17 +131,19 @@ public final class ChronicleDbJoinService {
     }
 
     private void setMultiChronicleRecords(final String daoClassName, final String dataPath,
-            final Map<String, Map<String, ConcurrentMap<Object, Object>>> records, final String foreignKeyName,
-            final Map<String, Map<String, Object>> mapOfObjects)
+            final Map<String, Map<String, ConcurrentMap<?, ?>>> records, final String foreignKeyName,
+            final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
         final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, dataPath);
         if (records.get(daoClassName) == null) {
             final List<String> files = dao.getFiles();
+            final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
 
             for (final var file : files) {
-                records.put(daoClassName, Map.of(file, dao.db(file)));
+                setRecordsFromFilter(recordValueMap, dao, filter, file);
             }
+            records.put(daoClassName, recordValueMap);
         }
         mapOfObjects.put(daoClassName, new HashMap<>() {
             {
@@ -80,14 +153,14 @@ public final class ChronicleDbJoinService {
         });
     }
 
-    private void setRequiredObjects(final Map<String, Map<String, ConcurrentMap<Object, Object>>> records,
+    private void setRequiredObjects(final Map<String, Map<String, ConcurrentMap<?, ?>>> records,
             final Map<String, Map<String, Object>> mapOfObjects, final Join join)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, InstantiationException, InvocationTargetException, IOException {
         switch (join.joinObjMultiMode()) {
             case PRIMARY:
                 setMultiChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
-                        join.foreignKeyName(), mapOfObjects);
+                        join.foreignKeyName(), mapOfObjects, join.primaryFilter());
                 setSingleChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.foreignFilter());
                 break;
@@ -95,7 +168,7 @@ public final class ChronicleDbJoinService {
                 setSingleChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.primaryFilter());
                 setMultiChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
-                        join.foreignKeyName(), mapOfObjects);
+                        join.foreignKeyName(), mapOfObjects, join.foreignFilter());
                 break;
             case NONE:
                 setSingleChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
@@ -105,15 +178,15 @@ public final class ChronicleDbJoinService {
                 break;
             default:
                 setMultiChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
-                        join.foreignKeyName(), mapOfObjects);
+                        join.foreignKeyName(), mapOfObjects, join.primaryFilter());
                 setMultiChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
-                        join.foreignKeyName(), mapOfObjects);
+                        join.foreignKeyName(), mapOfObjects, join.foreignFilter());
                 break;
         }
     }
 
     private void loopJoinToMap(final Entry<String, Map<Object, List<Object>>> e,
-            final ConcurrentMap<Object, Object> primaryObject, final ConcurrentMap<Object, Object> foreignObject,
+            final ConcurrentMap<?, ?> primaryObject, final ConcurrentMap<?, ?> foreignObject,
             final String primaryObjectName, final String foreignObjectName,
             final ConcurrentMap<Object, Map<String, Object>> joinedMap)
             throws IllegalAccessException {
@@ -171,7 +244,7 @@ public final class ChronicleDbJoinService {
             InstantiationException, IOException {
         final var joinedMap = new ConcurrentHashMap<Object, Map<String, Object>>();
         final var toRemove = new HashSet<>();
-        final var mapOfRecords = new HashMap<String, Map<String, ConcurrentMap<Object, Object>>>();
+        final var mapOfRecords = new HashMap<String, Map<String, ConcurrentMap<?, ?>>>();
         final var mapOfObjects = new HashMap<String, Map<String, Object>>();
 
         for (final var join : joins) {
@@ -218,7 +291,7 @@ public final class ChronicleDbJoinService {
     }
 
     private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
-            final ConcurrentMap<Object, Object> primaryObject, final ConcurrentMap<Object, Object> foreignObject,
+            final ConcurrentMap<?, ?> primaryObject, final ConcurrentMap<?, ?> foreignObject,
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
@@ -289,7 +362,7 @@ public final class ChronicleDbJoinService {
         final var headers = new ArrayList<String>();
         final var rowList = new ArrayList<Object[]>();
         final ConcurrentMap<Object, Integer> indexMap = new ConcurrentHashMap<>();
-        final var mapOfRecords = new HashMap<String, Map<String, ConcurrentMap<Object, Object>>>();
+        final var mapOfRecords = new HashMap<String, Map<String, ConcurrentMap<?, ?>>>();
         final var mapOfObjects = new HashMap<String, Map<String, Object>>();
 
         for (final var join : joins) {
