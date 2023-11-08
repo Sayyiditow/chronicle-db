@@ -66,7 +66,6 @@ public final class ChronicleDbJoinService {
                 }
             }
             recordValueMap.put(file, db);
-
         } else {
             ConcurrentMap<?, ?> db = dao.db(file);
             if (filter.limit() != 0)
@@ -169,27 +168,27 @@ public final class ChronicleDbJoinService {
             NoSuchFieldException, SecurityException, InstantiationException, InvocationTargetException, IOException {
         switch (join.joinObjMultiMode()) {
             case PRIMARY:
-                setMultiChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
+                setMultiChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.primaryFilter());
-                setSingleChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
+                setSingleChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.foreignFilter());
                 break;
             case FOREIGN:
-                setSingleChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
+                setSingleChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.primaryFilter());
-                setMultiChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
+                setMultiChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.foreignFilter());
                 break;
             case NONE:
-                setSingleChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
+                setSingleChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.primaryFilter());
-                setSingleChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
+                setSingleChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.foreignFilter());
                 break;
             default:
-                setMultiChronicleRecords(join.primaryDaoClassName(), join.dataPath(), records,
+                setMultiChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.primaryFilter());
-                setMultiChronicleRecords(join.foreignDaoClassName(), join.dataPath(), records,
+                setMultiChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
                         join.foreignKeyName(), mapOfObjects, join.foreignFilter());
                 break;
         }
@@ -321,6 +320,9 @@ public final class ChronicleDbJoinService {
                         final Integer foreignIndex = indexMap.get(keyEntry.getValue().get(i));
                         final var foreignPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
                         final Object primary = primaryObject.get(keyEntry.getKey());
+                        if(primary == null) {
+                            System.out.println(keyEntry.getKey());
+                        }
                         final var primaryRow = (Object[]) primary.getClass().getDeclaredMethod("row", Object.class)
                                 .invoke(primary, keyEntry.getKey());
                         if (foreignPrev != null) {
