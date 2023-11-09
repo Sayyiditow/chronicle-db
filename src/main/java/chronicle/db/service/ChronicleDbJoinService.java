@@ -311,6 +311,16 @@ public final class ChronicleDbJoinService {
         return joinedMap;
     }
 
+    private Object[] createEmptyObject(final int length) {
+        final var obj = new Object[length];
+
+        for (int i = 0; i < length; i++) {
+            obj[i] = null;
+        }
+
+        return obj;
+    }
+
     private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
             final ConcurrentMap<?, ?> primaryObject, final ConcurrentMap<?, ?> foreignObject,
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
@@ -325,29 +335,44 @@ public final class ChronicleDbJoinService {
                 for (int i = 0; i < keyEntry.getValue().size(); i++) {
                     if (primaryPrev != null) {
                         final Object foreign = foreignObject.get(keyEntry.getValue().get(i));
-                        final var foreignRow = foreignSubsetFields.length == 0
+                        final var foreignIsNull = foreign == null;
+
+                        final var foreignRow = !foreignIsNull ? foreignSubsetFields.length == 0
                                 ? (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
                                         .invoke(foreign, keyEntry.getValue().get(i))
-                                : ((LinkedHashMap) foreign).values().toArray();
+                                : createEmptyObject(foreignObject.values().toArray()[0].getClass()
+                                        .getDeclaredFields().length)
+                                : !foreignIsNull ? ((LinkedHashMap) foreign).values().toArray()
+                                        : createEmptyObject(foreignSubsetFields.length);
                         rowList.set(primaryIndex, CHRONICLE_UTILS.copyArray(primaryPrev, foreignRow));
                         indexMap.put(keyEntry.getValue().get(i), primaryIndex);
                     } else {
                         final Integer foreignIndex = indexMap.get(keyEntry.getValue().get(i));
                         final var foreignPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
                         final Object primary = primaryObject.get(keyEntry.getKey());
+                        final var primaryIsNull = primary == null;
+
                         final var primaryRow = primarySubsetFields.length == 0
-                                ? (Object[]) primary.getClass().getDeclaredMethod("row", Object.class)
+                                ? !primaryIsNull ? (Object[]) primary.getClass().getDeclaredMethod("row", Object.class)
                                         .invoke(primary, keyEntry.getValue().get(i))
-                                : ((LinkedHashMap) primary).values().toArray();
+                                        : createEmptyObject(primaryObject.values().toArray()[0].getClass()
+                                                .getDeclaredFields().length)
+                                : !primaryIsNull ? ((LinkedHashMap) primary).values().toArray()
+                                        : createEmptyObject(primarySubsetFields.length);
                         if (foreignPrev != null) {
                             indexMap.put(keyEntry.getValue().get(i), foreignIndex);
                             rowList.set(foreignIndex, CHRONICLE_UTILS.copyArray(foreignPrev, primaryRow));
                         } else {
                             final Object foreign = foreignObject.get(keyEntry.getValue().get(i));
-                            final var foreignRow = foreignSubsetFields.length == 0
+                            final var foreignIsNull = foreign == null;
+
+                            final var foreignRow = !foreignIsNull ? foreignSubsetFields.length == 0
                                     ? (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
                                             .invoke(foreign, keyEntry.getValue().get(i))
-                                    : ((LinkedHashMap) foreign).values().toArray();
+                                    : createEmptyObject(foreignObject.values().toArray()[0].getClass()
+                                            .getDeclaredFields().length)
+                                    : !foreignIsNull ? ((LinkedHashMap) foreign).values().toArray()
+                                            : createEmptyObject(foreignSubsetFields.length);
                             rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
                             indexMap.put(keyEntry.getValue().get(i), rowList.size() - 1);
                         }
