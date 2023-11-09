@@ -452,7 +452,7 @@ public final class ChronicleDbJoinService {
             final String[] headerListB = foreignSubsetFields.length == 0
                     ? (String[]) foreignValue.getClass().getDeclaredMethod("header").invoke(foreignValue)
                     : foreignSubsetFields;
-            addHeaders(headerListA, mapOfObjects.get(join.primaryDaoClassName()).get("name").toString(), headers);
+            addHeaders(headerListA, join.foreignKeyName(), headers);
             addHeaders(headerListB, mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), headers);
 
             if (indexDb.keySet().size() > 3) {
