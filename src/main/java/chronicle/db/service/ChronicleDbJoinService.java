@@ -138,31 +138,56 @@ public final class ChronicleDbJoinService {
 
     private void setSingleChronicleRecords(final String daoClassName, final String dataPath,
             final Map<String, Map<String, ConcurrentMap<?, ?>>> records, final String foreignKeyName,
-            final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter)
+            final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter, final boolean isForeign)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
         final var dao = CHRONICLE_DB.getSingleChronicleDao(daoClassName, dataPath);
+        mapOfObjects.put(daoClassName, new HashMap<>() {
+            {
+                put("name", dao.name());
+            }
+        });
+        final var indexPath = dao.getIndexPath(foreignKeyName);
+
+        if (isForeign) {
+            mapOfObjects.get(daoClassName).put("foreignKeyIndexPath", indexPath);
+
+            if (!Files.exists(Paths.get(indexPath))) {
+                Logger.info("Index is missing for the foreign key: {}. Initilizing.", indexPath);
+                dao.initIndex(new String[] { foreignKeyName });
+            }
+        }
 
         if (records.get(daoClassName) == null) {
             final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
             setRecordsFromFilter(recordValueMap, dao, filter);
             records.put(daoClassName, recordValueMap);
         }
-        mapOfObjects.put(daoClassName, new HashMap<>() {
-            {
-                put("foreignKeyIndexPath", dao.getIndexPath(foreignKeyName));
-                put("name", dao.name());
-                put("dao", dao);
-            }
-        });
+
     }
 
     private void setMultiChronicleRecords(final String daoClassName, final String dataPath,
             final Map<String, Map<String, ConcurrentMap<?, ?>>> records, final String foreignKeyName,
-            final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter)
+            final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter, final boolean isForeign)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
         final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, dataPath);
+        mapOfObjects.put(daoClassName, new HashMap<>() {
+            {
+                put("name", dao.name());
+            }
+        });
+        final var indexPath = dao.getIndexPath(foreignKeyName);
+
+        if (isForeign) {
+            mapOfObjects.get(daoClassName).put("foreignKeyIndexPath", indexPath);
+
+            if (!Files.exists(Paths.get(indexPath))) {
+                Logger.info("Index is missing for the foreign key: {}. Initilizing.", indexPath);
+                dao.initIndex(new String[] { foreignKeyName });
+            }
+        }
+
         if (records.get(daoClassName) == null) {
             final List<String> files = dao.getFiles();
             final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
@@ -172,13 +197,6 @@ public final class ChronicleDbJoinService {
             }
             records.put(daoClassName, recordValueMap);
         }
-        mapOfObjects.put(daoClassName, new HashMap<>() {
-            {
-                put("foreignKeyIndexPath", dao.getIndexPath(foreignKeyName));
-                put("name", dao.name());
-                put("dao", dao);
-            }
-        });
     }
 
     private void setRequiredObjects(final Map<String, Map<String, ConcurrentMap<?, ?>>> records,
@@ -188,27 +206,27 @@ public final class ChronicleDbJoinService {
         switch (join.joinObjMultiMode()) {
             case PRIMARY:
                 setMultiChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.primaryFilter());
+                        join.foreignKeyName(), mapOfObjects, join.primaryFilter(), false);
                 setSingleChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignFilter());
+                        join.foreignKeyName(), mapOfObjects, join.foreignFilter(), true);
                 break;
             case FOREIGN:
                 setSingleChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.primaryFilter());
+                        join.foreignKeyName(), mapOfObjects, join.primaryFilter(), false);
                 setMultiChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignFilter());
+                        join.foreignKeyName(), mapOfObjects, join.foreignFilter(), true);
                 break;
             case NONE:
                 setSingleChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.primaryFilter());
+                        join.foreignKeyName(), mapOfObjects, join.primaryFilter(), false);
                 setSingleChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignFilter());
+                        join.foreignKeyName(), mapOfObjects, join.foreignFilter(), true);
                 break;
             default:
                 setMultiChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.primaryFilter());
+                        join.foreignKeyName(), mapOfObjects, join.primaryFilter(), false);
                 setMultiChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignFilter());
+                        join.foreignKeyName(), mapOfObjects, join.foreignFilter(), true);
                 break;
         }
     }
@@ -277,16 +295,9 @@ public final class ChronicleDbJoinService {
 
         for (final var join : joins) {
             setRequiredObjects(mapOfRecords, mapOfObjects, join);
-
-            final var foreignKeyIndexPath = mapOfObjects.get(join.foreignDaoClassName()).get("foreignKeyIndexPath")
-                    .toString();
-
-            if (!Files.exists(Paths.get(foreignKeyIndexPath))) {
-                Logger.error("Index is missing for the foreign key: {}.", foreignKeyIndexPath);
-                return null;
-            }
-
-            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(foreignKeyIndexPath);
+            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB
+                    .getDb(mapOfObjects.get(join.foreignDaoClassName()).get("foreignKeyIndexPath")
+                            .toString());
 
             if (indexDb.keySet().size() > 3) {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
@@ -427,22 +438,18 @@ public final class ChronicleDbJoinService {
 
         for (final var join : joins) {
             setRequiredObjects(mapOfRecords, mapOfObjects, join);
+            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB
+                    .getDb(mapOfObjects.get(join.foreignDaoClassName()).get("foreignKeyIndexPath")
+                            .toString());
 
-            final var foreignKeyIndexPath = mapOfObjects.get(join.foreignDaoClassName()).get("foreignKeyIndexPath")
-                    .toString();
-
-            if (!Files.exists(Paths.get(foreignKeyIndexPath))) {
-                Logger.error("Index is missing for the foreign key: {}.", foreignKeyIndexPath);
-                return null;
-            }
-
-            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(foreignKeyIndexPath);
             final var primaryRecords = mapOfRecords.get(join.primaryDaoClassName());
             final var foreignRecords = mapOfRecords.get(join.foreignDaoClassName());
             final var primaryValue = primaryRecords.values().stream().findFirst().get().values().stream().findFirst()
-                    .get();
+                    .orElseGet(() -> null);
             final var foreignValue = foreignRecords.values().stream().findFirst().get().values().stream().findFirst()
-                    .get();
+                    .orElseGet(() -> null);
+            if (primaryValue == null || foreignValue == null)
+                continue;
             String[] primarySubsetFields = new String[] {};
             String[] foreignSubsetFields = new String[] {};
 
