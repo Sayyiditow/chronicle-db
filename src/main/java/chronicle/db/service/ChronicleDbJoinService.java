@@ -51,37 +51,43 @@ public final class ChronicleDbJoinService {
             } else if (filter.keys() != null) {
                 recordValueMap.put(file, dao.get(filter.keys()));
             } else if (filter.search() != null) {
-                ConcurrentMap<?, ?> db = dao.db(file);
+                final var db = dao.db(file);
+                ConcurrentMap<?, ?> dbToMap = new ConcurrentHashMap<>(db);
+                db.close();
 
                 for (final var search : filter.search()) {
                     if (Files.exists(Path.of(dao.getIndexPath(search.field())))) {
                         if (filter.limit() == 0)
-                            db = dao.indexedSearch(db, search);
+                            dbToMap = dao.indexedSearch(dbToMap, search);
                         else
-                            db = dao.indexedSearch(db, search, filter.limit());
+                            dbToMap = dao.indexedSearch(dbToMap, search, filter.limit());
                     } else {
                         if (filter.limit() == 0)
-                            db = dao.search(db, search);
+                            dbToMap = dao.search(dbToMap, search);
                         else
-                            db = dao.search(db, search, filter.limit());
+                            dbToMap = dao.search(dbToMap, search, filter.limit());
                     }
                 }
-                recordValueMap.put(file, db);
+                recordValueMap.put(file, dbToMap);
             } else if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
-                final ConcurrentMap<?, ?> db = dao.db(file);
-                recordValueMap.put(file, dao.subsetOfValues(db, filter.subsetFields()));
-            }
-
-            else {
-                ConcurrentMap<?, ?> db = dao.db(file);
+                final var db = dao.db(file);
+                final ConcurrentMap<?, ?> dbToMap = new ConcurrentHashMap<>(db);
+                db.close();
+                recordValueMap.put(file, dao.subsetOfValues(dbToMap, filter.subsetFields()));
+            } else {
+                final var db = dao.db(file);
+                ConcurrentMap<?, ?> dbToMap = new ConcurrentHashMap<>(db);
+                db.close();
                 if (filter.limit() != 0)
-                    db = db.entrySet().stream().limit(filter.limit())
+                    dbToMap = dbToMap.entrySet().stream().limit(filter.limit())
                             .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
-                recordValueMap.put(file, db);
-
+                recordValueMap.put(file, dbToMap);
             }
         } else {
-            recordValueMap.put(file, dao.db(file));
+            final var db = dao.db(file);
+            final ConcurrentMap<?, ?> dbToMap = new ConcurrentHashMap<>(db);
+            db.close();
+            recordValueMap.put(file, dbToMap);
         }
     }
 
@@ -99,7 +105,7 @@ public final class ChronicleDbJoinService {
             } else if (filter.keys() != null) {
                 recordValueMap.put("data", dao.get(filter.keys()));
             } else if (filter.search() != null) {
-                ConcurrentMap<?, ?> db = dao.db();
+                ConcurrentMap<?, ?> db = dao.fetch();
 
                 for (final var search : filter.search()) {
                     if (Files.exists(Path.of(dao.getIndexPath(search.field())))) {
@@ -115,12 +121,11 @@ public final class ChronicleDbJoinService {
                     }
                 }
                 recordValueMap.put("data", db);
-
             } else if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
-                final ConcurrentMap<?, ?> db = dao.db();
+                final ConcurrentMap<?, ?> db = dao.fetch();
                 recordValueMap.put("data", dao.subsetOfValues(db, filter.subsetFields()));
             } else {
-                ConcurrentMap<?, ?> db = dao.db();
+                ConcurrentMap<?, ?> db = dao.fetch();
 
                 if (filter.limit() != 0)
                     db = db.entrySet().stream().limit(filter.limit())
@@ -128,7 +133,7 @@ public final class ChronicleDbJoinService {
                 recordValueMap.put("data", db);
             }
         } else
-            recordValueMap.put("data", dao.db());
+            recordValueMap.put("data", dao.fetch());
     }
 
     private void setSingleChronicleRecords(final String daoClassName, final String dataPath,
@@ -147,6 +152,7 @@ public final class ChronicleDbJoinService {
             {
                 put("foreignKeyIndexPath", dao.getIndexPath(foreignKeyName));
                 put("name", dao.name());
+                put("dao", dao);
             }
         });
     }
@@ -170,6 +176,7 @@ public final class ChronicleDbJoinService {
             {
                 put("foreignKeyIndexPath", dao.getIndexPath(foreignKeyName));
                 put("name", dao.name());
+                put("dao", dao);
             }
         });
     }
