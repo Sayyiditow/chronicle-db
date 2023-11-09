@@ -185,7 +185,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
 
         if (indexFileNames.size() != 0) {
             CHRONICLE_UTILS.updateIndex("data", name(), dataPath(), indexFileNames, Map.of(key, value),
-                    Map.of(key, prevValue));
+                    prevValueMap);
         }
 
         return updated ? PutStatus.UPDATED : PutStatus.INSERTED;
