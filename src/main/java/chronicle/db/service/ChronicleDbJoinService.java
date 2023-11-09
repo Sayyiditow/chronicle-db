@@ -6,13 +6,13 @@ import static chronicle.db.service.MapDb.MAP_DB;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -39,40 +39,49 @@ public final class ChronicleDbJoinService {
     private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
             final MultiChronicleDao dao, final JoinFilter filter, final String file)
             throws IOException, NoSuchFieldException, SecurityException {
-        if (filter.key() != null) {
-            recordValueMap.put(file, new ConcurrentHashMap<>() {
-                {
+        if (filter != null) {
+            if (filter.key() != null) {
+                recordValueMap.put(file, new ConcurrentHashMap<>() {
                     {
-                        put(filter.key(), dao.get(filter.key(), file));
+                        {
+                            put(filter.key(), dao.get(filter.key(), file));
+                        }
+                    }
+                });
+            } else if (filter.keys() != null) {
+                recordValueMap.put(file, dao.get(filter.keys()));
+            } else if (filter.search() != null) {
+                ConcurrentMap<?, ?> db = dao.db(file);
+
+                for (final var search : filter.search()) {
+                    if (Files.exists(Path.of(dao.getIndexPath(search.field())))) {
+                        if (filter.limit() == 0)
+                            db = dao.indexedSearch(db, search);
+                        else
+                            db = dao.indexedSearch(db, search, filter.limit());
+                    } else {
+                        if (filter.limit() == 0)
+                            db = dao.search(db, search);
+                        else
+                            db = dao.search(db, search, filter.limit());
                     }
                 }
-            });
-        } else if (filter.keys() != null) {
-            recordValueMap.put(file, dao.get(filter.keys()));
-        } else if (filter.search() != null) {
-            ConcurrentMap<?, ?> db = dao.db(file);
-
-            for (final var search : filter.search()) {
-                if (Files.exists(Path.of(dao.getIndexPath(search.field())))) {
-                    if (filter.limit() == 0)
-                        db = dao.indexedSearch(db, search);
-                    else
-                        db = dao.indexedSearch(db, search, filter.limit());
-                } else {
-                    if (filter.limit() == 0)
-                        db = dao.search(db, search);
-                    else
-                        db = dao.search(db, search, filter.limit());
-                }
+                recordValueMap.put(file, db);
+            } else if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
+                final ConcurrentMap<?, ?> db = dao.db(file);
+                recordValueMap.put(file, dao.subsetOfValues(db, filter.subsetFields()));
             }
-            recordValueMap.put(file, db);
-        } else {
-            ConcurrentMap<?, ?> db = dao.db(file);
-            if (filter.limit() != 0)
-                db = db.entrySet().stream().limit(filter.limit())
-                        .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
-            recordValueMap.put(file, db);
 
+            else {
+                ConcurrentMap<?, ?> db = dao.db(file);
+                if (filter.limit() != 0)
+                    db = db.entrySet().stream().limit(filter.limit())
+                            .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
+                recordValueMap.put(file, db);
+
+            }
+        } else {
+            recordValueMap.put(file, dao.db(file));
         }
     }
 
@@ -107,10 +116,13 @@ public final class ChronicleDbJoinService {
                 }
                 recordValueMap.put("data", db);
 
+            } else if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
+                final ConcurrentMap<?, ?> db = dao.db();
+                recordValueMap.put("data", dao.subsetOfValues(db, filter.subsetFields()));
             } else {
                 ConcurrentMap<?, ?> db = dao.db();
 
-                if (filter != null && filter.limit() != 0)
+                if (filter.limit() != 0)
                     db = db.entrySet().stream().limit(filter.limit())
                             .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
                 recordValueMap.put("data", db);
@@ -301,7 +313,8 @@ public final class ChronicleDbJoinService {
 
     private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
             final ConcurrentMap<?, ?> primaryObject, final ConcurrentMap<?, ?> foreignObject,
-            final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap)
+            final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
+            final String[] primarySubsetFields, final String[] foreignSubsetFields)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         for (final var keyEntry : e.getValue().entrySet()) {
@@ -312,26 +325,29 @@ public final class ChronicleDbJoinService {
                 for (int i = 0; i < keyEntry.getValue().size(); i++) {
                     if (primaryPrev != null) {
                         final Object foreign = foreignObject.get(keyEntry.getValue().get(i));
-                        final var foreignRow = (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
-                                .invoke(foreign, keyEntry.getValue().get(i));
+                        final var foreignRow = foreignSubsetFields.length == 0
+                                ? (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
+                                        .invoke(foreign, keyEntry.getValue().get(i))
+                                : ((LinkedHashMap) foreign).values().toArray();
                         rowList.set(primaryIndex, CHRONICLE_UTILS.copyArray(primaryPrev, foreignRow));
                         indexMap.put(keyEntry.getValue().get(i), primaryIndex);
                     } else {
                         final Integer foreignIndex = indexMap.get(keyEntry.getValue().get(i));
                         final var foreignPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
                         final Object primary = primaryObject.get(keyEntry.getKey());
-                        if(primary == null) {
-                            System.out.println(keyEntry.getKey());
-                        }
-                        final var primaryRow = (Object[]) primary.getClass().getDeclaredMethod("row", Object.class)
-                                .invoke(primary, keyEntry.getKey());
+                        final var primaryRow = primarySubsetFields.length == 0
+                                ? (Object[]) primary.getClass().getDeclaredMethod("row", Object.class)
+                                        .invoke(primary, keyEntry.getValue().get(i))
+                                : ((LinkedHashMap) primary).values().toArray();
                         if (foreignPrev != null) {
                             indexMap.put(keyEntry.getValue().get(i), foreignIndex);
                             rowList.set(foreignIndex, CHRONICLE_UTILS.copyArray(foreignPrev, primaryRow));
                         } else {
                             final Object foreign = foreignObject.get(keyEntry.getValue().get(i));
-                            final var foreignRow = (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
-                                    .invoke(foreign, keyEntry.getValue().get(i));
+                            final var foreignRow = foreignSubsetFields.length == 0
+                                    ? (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
+                                            .invoke(foreign, keyEntry.getValue().get(i))
+                                    : ((LinkedHashMap) foreign).values().toArray();
                             rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
                             indexMap.put(keyEntry.getValue().get(i), rowList.size() - 1);
                         }
@@ -395,25 +411,39 @@ public final class ChronicleDbJoinService {
                     .get();
             final var foreignValue = foreignRecords.values().stream().findFirst().get().values().stream().findFirst()
                     .get();
-            final Method primaryHeaderMethod = primaryValue.getClass().getDeclaredMethod("header");
-            final Method foreignHeaderMethod = foreignValue.getClass().getDeclaredMethod("header");
-            final String[] headerListA = (String[]) primaryHeaderMethod.invoke(primaryValue);
-            final String[] headerListB = (String[]) foreignHeaderMethod.invoke(foreignValue);
+            String[] primarySubsetFields = new String[] {};
+            String[] foreignSubsetFields = new String[] {};
+
+            try {
+                primarySubsetFields = join.primaryFilter().subsetFields();
+                foreignSubsetFields = join.foreignFilter().subsetFields();
+            } catch (final NullPointerException e) {
+                Logger.info("No subset fields set on either primary or foreign or both objects.");
+            }
+
+            final String[] headerListA = primarySubsetFields.length == 0
+                    ? (String[]) primaryValue.getClass().getDeclaredMethod("header").invoke(primaryValue)
+                    : primarySubsetFields;
+            final String[] headerListB = foreignSubsetFields.length == 0
+                    ? (String[]) foreignValue.getClass().getDeclaredMethod("header").invoke(foreignValue)
+                    : foreignSubsetFields;
             addHeaders(headerListA, mapOfObjects.get(join.primaryDaoClassName()).get("name").toString(), headers);
             addHeaders(headerListB, mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), headers);
 
             if (indexDb.keySet().size() > 3) {
+                final var finalPrimarySubsetFields = primarySubsetFields;
+                final var finalForeignSubsetFields = foreignSubsetFields;
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
                     for (final var entry : primaryRecords.entrySet()) {
                         loopJoinToCsv(e, primaryRecords.get(entry.getKey()), foreignRecords.get(e.getKey()),
-                                rowList, indexMap);
+                                rowList, indexMap, finalPrimarySubsetFields, finalForeignSubsetFields);
                     }
                 }));
             } else
                 for (final var e : indexDb.entrySet()) {
                     for (final var entry : primaryRecords.entrySet()) {
                         loopJoinToCsv(e, primaryRecords.get(entry.getKey()), foreignRecords.get(e.getKey()),
-                                rowList, indexMap);
+                                rowList, indexMap, primarySubsetFields, foreignSubsetFields);
                     }
                 }
             indexDb.close();
