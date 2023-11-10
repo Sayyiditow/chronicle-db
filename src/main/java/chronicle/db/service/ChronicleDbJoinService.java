@@ -404,7 +404,7 @@ public final class ChronicleDbJoinService {
             final boolean isPrimary) {
         for (final var h : objectHeaders) {
             final var name = isPrimary ? objectName + "." + h : h;
-            if (headers.indexOf(name) == -1) {
+            if (headers.indexOf(h) == -1) {
                 headers.add(name);
             }
         }
@@ -456,9 +456,13 @@ public final class ChronicleDbJoinService {
 
             try {
                 primarySubsetFields = join.primaryFilter().subsetFields();
+            } catch (final NullPointerException e) {
+                Logger.info("No subset fields set on object.");
+            }
+            try {
                 foreignSubsetFields = join.foreignFilter().subsetFields();
             } catch (final NullPointerException e) {
-                Logger.info("No subset fields set on either primary or foreign or both objects.");
+                Logger.info("No subset fields set on foreign key object.");
             }
 
             final String[] headerListA = primarySubsetFields.length == 0
