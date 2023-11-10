@@ -400,9 +400,10 @@ public final class ChronicleDbJoinService {
         }
     }
 
-    private void addHeaders(final String[] objectHeaders, final String objectName, final List<String> headers) {
+    private void addHeaders(final String[] objectHeaders, final String objectName, final List<String> headers,
+            final boolean isPrimary) {
         for (final var h : objectHeaders) {
-            final var name = objectName + "." + h;
+            final var name = isPrimary ? objectName + "." + h : h;
             if (headers.indexOf(name) == -1) {
                 headers.add(name);
             }
@@ -466,8 +467,9 @@ public final class ChronicleDbJoinService {
             final String[] headerListB = foreignSubsetFields.length == 0
                     ? (String[]) foreignValue.getClass().getDeclaredMethod("header").invoke(foreignValue)
                     : foreignSubsetFields;
-            addHeaders(headerListA, join.foreignKeyName(), headers);
-            addHeaders(headerListB, mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), headers);
+            addHeaders(headerListA, join.foreignKeyName(), headers, true);
+            addHeaders(headerListB, mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), headers,
+                    false);
 
             if (indexDb.keySet().size() > 3) {
                 final var finalPrimarySubsetFields = primarySubsetFields;
