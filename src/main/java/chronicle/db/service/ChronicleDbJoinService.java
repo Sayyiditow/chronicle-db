@@ -353,7 +353,7 @@ public final class ChronicleDbJoinService {
                         final Object foreignObj = foreignKeyObject.get(key);
                         final var foreignObjIsNull = foreignObj == null;
 
-                        final var foreignObjRow = !foreignObjIsNull ? foreignKeyObjSubsetLength == 0
+                        final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? !foreignObjIsNull
                                 ? (Object[]) foreignObj.getClass().getDeclaredMethod("row", Object.class)
                                         .invoke(foreignObj, key)
                                 : createEmptyObject(foreignKeyObject.values().toArray()[0].getClass()
