@@ -340,14 +340,15 @@ public final class ChronicleDbJoinService {
     private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
             final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
-            final int objSubsetLength, final int foreignKeyObjSubsetLength)
+            final int objSubsetLength, final int foreignKeyObjSubsetLength, final int headerSize)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         for (final var keyEntry : e.getValue().entrySet()) {
-            if (keyEntry.getKey() != null) {
-                final var objIndex = indexMap.get(keyEntry.getKey());
-                final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
+            final var objIndex = indexMap.get(keyEntry.getKey());
+            final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
+            final var multiForeignValues = new Object[1];
 
+            if (keyEntry.getKey() != null) {
                 for (final var key : keyEntry.getValue()) {
                     if (objPrev != null) {
                         final Object foreignObj = foreignKeyObject.get(key);
@@ -360,7 +361,15 @@ public final class ChronicleDbJoinService {
                                         .getDeclaredFields().length)
                                 : !foreignObjIsNull ? ((LinkedHashMap) foreignObj).values().toArray()
                                         : createEmptyObject(foreignKeyObjSubsetLength);
-                        rowList.set(objIndex, CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
+
+                        if (multiForeignValues[0] == null) {
+                            multiForeignValues[0] = foreignObjRow;
+                        } else {
+                            multiForeignValues[0] = CHRONICLE_UTILS.copyArray(multiForeignValues,
+                                    foreignObjRow);
+                        }
+                        rowList.set(objIndex,
+                                CHRONICLE_UTILS.copyArray(objPrev, multiForeignValues));
                         indexMap.put(key, objIndex);
                     } else {
                         final var foreignIndex = indexMap.get(key);
@@ -484,14 +493,14 @@ public final class ChronicleDbJoinService {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
                     for (final var entry : objRecords.entrySet()) {
                         loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
-                                rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength);
+                                rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size());
                     }
                 }));
             } else
                 for (final var e : indexDb.entrySet()) {
                     for (final var entry : objRecords.entrySet()) {
                         loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
-                                rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength);
+                                rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size());
                     }
                 }
             indexDb.close();
