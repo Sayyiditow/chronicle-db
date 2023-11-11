@@ -204,62 +204,61 @@ public final class ChronicleDbJoinService {
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, InstantiationException, InvocationTargetException, IOException {
         switch (join.joinObjMultiMode()) {
-            case PRIMARY:
-                setMultiChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.primaryFilter(), false);
-                setSingleChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignFilter(), true);
+            case MAIN:
+                setMultiChronicleRecords(join.objDaoName(), join.objPath(), records,
+                        join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
+                setSingleChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
+                        join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
                 break;
-            case FOREIGN:
-                setSingleChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.primaryFilter(), false);
-                setMultiChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignFilter(), true);
+            case FOREIGN_KEY_OBJ:
+                setSingleChronicleRecords(join.objDaoName(), join.objPath(), records,
+                        join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
+                setMultiChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
+                        join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
                 break;
             case NONE:
-                setSingleChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.primaryFilter(), false);
-                setSingleChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignFilter(), true);
+                setSingleChronicleRecords(join.objDaoName(), join.objPath(), records,
+                        join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
+                setSingleChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
+                        join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
                 break;
             default:
-                setMultiChronicleRecords(join.primaryDaoClassName(), join.primaryPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.primaryFilter(), false);
-                setMultiChronicleRecords(join.foreignDaoClassName(), join.foreignPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignFilter(), true);
+                setMultiChronicleRecords(join.objDaoName(), join.objPath(), records,
+                        join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
+                setMultiChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
+                        join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
                 break;
         }
     }
 
     private void loopJoinToMap(final Entry<String, Map<Object, List<Object>>> e,
-            final ConcurrentMap<?, ?> primaryObject, final ConcurrentMap<?, ?> foreignObject,
-            final String primaryObjectName, final String foreignObjectName,
-            final ConcurrentMap<Object, Map<String, Object>> joinedMap)
-            throws IllegalAccessException {
+            final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
+            final String objectName, final String foreignKeyObjName,
+            final ConcurrentMap<Object, Map<String, Object>> joinedMap) throws IllegalAccessException {
         for (final var keyEntry : e.getValue().entrySet()) {
             if (keyEntry.getKey() != null) {
-                final var primaryPrev = joinedMap.get(keyEntry.getKey());
+                final var objPrev = joinedMap.get(keyEntry.getKey());
 
                 for (final var key : keyEntry.getValue()) {
-                    if (primaryPrev != null) {
-                        final Object foreign = foreignObject.get(key);
-                        final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName, key);
-                        final var primaryValue = new HashMap<>(primaryPrev);
-                        primaryValue.putAll(foreignValue);
-                        joinedMap.put(key, primaryValue);
+                    if (objPrev != null) {
+                        final Object foreignObj = foreignKeyObject.get(key);
+                        final var foreignValue = CHRONICLE_UTILS.objectToMap(foreignObj, foreignKeyObjName, key);
+                        final var objValue = new HashMap<>(objPrev);
+                        objValue.putAll(foreignValue);
+                        joinedMap.put(key, objValue);
                     } else {
-                        final Object primary = primaryObject.get(keyEntry.getKey());
-                        final var primaryValue = CHRONICLE_UTILS.objectToMap(primary, primaryObjectName,
+                        final Object obj = object.get(keyEntry.getKey());
+                        final var objValue = CHRONICLE_UTILS.objectToMap(obj, objectName,
                                 keyEntry.getKey());
-                        final var foreignPrev = joinedMap.get(key);
-                        if (foreignPrev != null) {
-                            foreignPrev.putAll(primaryValue);
-                            joinedMap.put(key, foreignPrev);
+                        final var foreignObjPrev = joinedMap.get(key);
+                        if (foreignObjPrev != null) {
+                            foreignObjPrev.putAll(objValue);
+                            joinedMap.put(key, foreignObjPrev);
                         } else {
-                            final Object foreign = foreignObject.get(key);
-                            final var foreignValue = CHRONICLE_UTILS.objectToMap(foreign, foreignObjectName, key);
-                            primaryValue.putAll(foreignValue);
-                            joinedMap.put(key, primaryValue);
+                            final Object foreignObj = foreignKeyObject.get(key);
+                            final var foreignValue = CHRONICLE_UTILS.objectToMap(foreignObj, foreignKeyObjName, key);
+                            objValue.putAll(foreignValue);
+                            joinedMap.put(key, objValue);
                         }
                     }
                 }
@@ -296,30 +295,29 @@ public final class ChronicleDbJoinService {
         for (final var join : joins) {
             setRequiredObjects(mapOfRecords, mapOfObjects, join);
             final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB
-                    .getDb(mapOfObjects.get(join.foreignDaoClassName()).get("foreignKeyIndexPath")
+                    .getDb(mapOfObjects.get(join.foreignKeyObjDaoName()).get("foreignKeyIndexPath")
                             .toString());
+
+            final var objRecords = mapOfRecords.get(join.objDaoName());
+            final var foreignObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
 
             if (indexDb.keySet().size() > 3) {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
-                    final var primaryRecords = mapOfRecords.get(join.primaryDaoClassName());
-                    final var foreignRecords = mapOfRecords.get(join.foreignDaoClassName());
-                    for (final var entry : primaryRecords.entrySet()) {
-                        loopJoinToMap(e, primaryRecords.get(entry.getKey()),
-                                foreignRecords.get(e.getKey()),
-                                mapOfObjects.get(join.primaryDaoClassName()).get("name").toString(),
-                                mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), joinedMap);
-                        toRemove.addAll(primaryRecords.get(entry.getKey()).keySet());
+                    for (final var entry : objRecords.entrySet()) {
+                        loopJoinToMap(e, objRecords.get(entry.getKey()),
+                                foreignObjRecords.get(e.getKey()),
+                                mapOfObjects.get(join.objDaoName()).get("name").toString(),
+                                mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
+                        toRemove.addAll(objRecords.get(entry.getKey()).keySet());
                     }
                 }));
             } else
                 for (final var e : indexDb.entrySet()) {
-                    final var primaryRecords = mapOfRecords.get(join.primaryDaoClassName());
-                    final var foreignRecords = mapOfRecords.get(join.foreignDaoClassName());
-                    for (final var entry : primaryRecords.entrySet()) {
-                        loopJoinToMap(e, primaryRecords.get(entry.getKey()), foreignRecords.get(e.getKey()),
-                                mapOfObjects.get(join.primaryDaoClassName()).get("name").toString(),
-                                mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), joinedMap);
-                        toRemove.addAll(primaryRecords.get(entry.getKey()).keySet());
+                    for (final var entry : objRecords.entrySet()) {
+                        loopJoinToMap(e, objRecords.get(entry.getKey()), foreignObjRecords.get(e.getKey()),
+                                mapOfObjects.get(join.objDaoName()).get("name").toString(),
+                                mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
+                        toRemove.addAll(objRecords.get(entry.getKey()).keySet());
                     }
                 }
             indexDb.close();
@@ -340,59 +338,59 @@ public final class ChronicleDbJoinService {
     }
 
     private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
-            final ConcurrentMap<?, ?> primaryObject, final ConcurrentMap<?, ?> foreignObject,
+            final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
-            final String[] primarySubsetFields, final String[] foreignSubsetFields)
+            final int objSubsetLength, final int foreignKeyObjSubsetLength)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         for (final var keyEntry : e.getValue().entrySet()) {
             if (keyEntry.getKey() != null) {
-                final Integer primaryIndex = indexMap.get(keyEntry.getKey());
-                final var primaryPrev = primaryIndex != null ? rowList.get(primaryIndex) : null;
+                final Integer objIndex = indexMap.get(keyEntry.getKey());
+                final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
 
-                for (int i = 0; i < keyEntry.getValue().size(); i++) {
-                    if (primaryPrev != null) {
-                        final Object foreign = foreignObject.get(keyEntry.getValue().get(i));
-                        final var foreignIsNull = foreign == null;
+                for (final var key : keyEntry.getValue()) {
+                    if (objPrev != null) {
+                        final Object foreignObj = foreignKeyObject.get(key);
+                        final var foreignObjIsNull = foreignObj == null;
 
-                        final var foreignRow = !foreignIsNull ? foreignSubsetFields.length == 0
-                                ? (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
-                                        .invoke(foreign, keyEntry.getValue().get(i))
-                                : createEmptyObject(foreignObject.values().toArray()[0].getClass()
+                        final var foreignObjRow = !foreignObjIsNull ? foreignKeyObjSubsetLength == 0
+                                ? (Object[]) foreignObj.getClass().getDeclaredMethod("row", Object.class)
+                                        .invoke(foreignObj, key)
+                                : createEmptyObject(foreignKeyObject.values().toArray()[0].getClass()
                                         .getDeclaredFields().length)
-                                : !foreignIsNull ? ((LinkedHashMap) foreign).values().toArray()
-                                        : createEmptyObject(foreignSubsetFields.length);
-                        rowList.set(primaryIndex, CHRONICLE_UTILS.copyArray(primaryPrev, foreignRow));
-                        indexMap.put(keyEntry.getValue().get(i), primaryIndex);
+                                : !foreignObjIsNull ? ((LinkedHashMap) foreignObj).values().toArray()
+                                        : createEmptyObject(foreignKeyObjSubsetLength);
+                        rowList.set(objIndex, CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
+                        indexMap.put(key, objIndex);
                     } else {
-                        final Integer foreignIndex = indexMap.get(keyEntry.getValue().get(i));
-                        final var foreignPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
-                        final Object primary = primaryObject.get(keyEntry.getKey());
-                        final var primaryIsNull = primary == null;
+                        final Integer foreignIndex = indexMap.get(key);
+                        final var foreignObjPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
+                        final Object obj = object.get(keyEntry.getKey());
+                        final var objIsNull = obj == null;
 
-                        final var primaryRow = primarySubsetFields.length == 0
-                                ? !primaryIsNull ? (Object[]) primary.getClass().getDeclaredMethod("row", Object.class)
-                                        .invoke(primary, keyEntry.getValue().get(i))
-                                        : createEmptyObject(primaryObject.values().toArray()[0].getClass()
+                        final var objRow = objSubsetLength == 0
+                                ? !objIsNull ? (Object[]) obj.getClass().getDeclaredMethod("row", Object.class)
+                                        .invoke(obj, key)
+                                        : createEmptyObject(object.values().toArray()[0].getClass()
                                                 .getDeclaredFields().length)
-                                : !primaryIsNull ? ((LinkedHashMap) primary).values().toArray()
-                                        : createEmptyObject(primarySubsetFields.length);
-                        if (foreignPrev != null) {
-                            indexMap.put(keyEntry.getValue().get(i), foreignIndex);
-                            rowList.set(foreignIndex, CHRONICLE_UTILS.copyArray(foreignPrev, primaryRow));
+                                : !objIsNull ? ((LinkedHashMap) obj).values().toArray()
+                                        : createEmptyObject(objSubsetLength);
+                        if (foreignObjPrev != null) {
+                            indexMap.put(key, foreignIndex);
+                            rowList.set(foreignIndex, CHRONICLE_UTILS.copyArray(foreignObjPrev, objRow));
                         } else {
-                            final Object foreign = foreignObject.get(keyEntry.getValue().get(i));
-                            final var foreignIsNull = foreign == null;
+                            final Object foreignObj = foreignKeyObject.get(key);
+                            final var foreignObjIsNull = foreignObj == null;
 
-                            final var foreignRow = !foreignIsNull ? foreignSubsetFields.length == 0
-                                    ? (Object[]) foreign.getClass().getDeclaredMethod("row", Object.class)
-                                            .invoke(foreign, keyEntry.getValue().get(i))
-                                    : createEmptyObject(foreignObject.values().toArray()[0].getClass()
+                            final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? !foreignObjIsNull
+                                    ? (Object[]) foreignObj.getClass().getDeclaredMethod("row", Object.class)
+                                            .invoke(foreignObj, key)
+                                    : createEmptyObject(foreignKeyObject.values().toArray()[0].getClass()
                                             .getDeclaredFields().length)
-                                    : !foreignIsNull ? ((LinkedHashMap) foreign).values().toArray()
-                                            : createEmptyObject(foreignSubsetFields.length);
-                            rowList.add(CHRONICLE_UTILS.copyArray(primaryRow, foreignRow));
-                            indexMap.put(keyEntry.getValue().get(i), rowList.size() - 1);
+                                    : !foreignObjIsNull ? ((LinkedHashMap) foreignObj).values().toArray()
+                                            : createEmptyObject(foreignKeyObjSubsetLength);
+                            rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
+                            indexMap.put(key, rowList.size() - 1);
                         }
                     }
                 }
@@ -401,9 +399,9 @@ public final class ChronicleDbJoinService {
     }
 
     private void addHeaders(final String[] objectHeaders, final String objectName, final List<String> headers,
-            final boolean isPrimary) {
+            final boolean mainObj) {
         for (final var h : objectHeaders) {
-            final var name = isPrimary ? objectName + "." + h : h;
+            final var name = mainObj ? objectName + "." + h : h;
             if (headers.indexOf(h) == -1) {
                 headers.add(name);
             }
@@ -440,55 +438,58 @@ public final class ChronicleDbJoinService {
         for (final var join : joins) {
             setRequiredObjects(mapOfRecords, mapOfObjects, join);
             final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB
-                    .getDb(mapOfObjects.get(join.foreignDaoClassName()).get("foreignKeyIndexPath")
+                    .getDb(mapOfObjects.get(join.foreignKeyObjDaoName()).get("foreignKeyIndexPath")
                             .toString());
 
-            final var primaryRecords = mapOfRecords.get(join.primaryDaoClassName());
-            final var foreignRecords = mapOfRecords.get(join.foreignDaoClassName());
-            final var primaryValue = primaryRecords.values().stream().findFirst().get().values().stream().findFirst()
+            final var objRecords = mapOfRecords.get(join.objDaoName());
+            final var foreignKeyObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
+            final var objValue = objRecords.values().stream().findFirst().get().values().stream().findFirst()
                     .orElseGet(() -> null);
-            final var foreignValue = foreignRecords.values().stream().findFirst().get().values().stream().findFirst()
+            final var foreignKeyObjValue = foreignKeyObjRecords.values().stream().findFirst().get().values().stream()
+                    .findFirst()
                     .orElseGet(() -> null);
-            if (primaryValue == null || foreignValue == null)
+            if (objValue == null || foreignKeyObjValue == null)
                 continue;
-            String[] primarySubsetFields = new String[] {};
-            String[] foreignSubsetFields = new String[] {};
+            String[] objSubsetFields = new String[] {};
+            String[] foreignKeyObjSubsetFields = new String[] {};
 
             try {
-                primarySubsetFields = join.primaryFilter().subsetFields();
+                objSubsetFields = join.objFilter().subsetFields();
             } catch (final NullPointerException e) {
                 Logger.info("No subset fields set on object.");
             }
             try {
-                foreignSubsetFields = join.foreignFilter().subsetFields();
+                foreignKeyObjSubsetFields = join.foreignKeyObjFilter().subsetFields();
             } catch (final NullPointerException e) {
                 Logger.info("No subset fields set on foreign key object.");
             }
+            final var objSubsetLength = objSubsetFields.length;
+            final var foreignKeyObjSubsetLength = foreignKeyObjSubsetFields.length;
+            final var objSubsetIsEmpty = objSubsetLength == 0;
+            final var foreignKeyObjSubsetIsEmpty = foreignKeyObjSubsetLength == 0;
 
-            final String[] headerListA = primarySubsetFields.length == 0
-                    ? (String[]) primaryValue.getClass().getDeclaredMethod("header").invoke(primaryValue)
-                    : primarySubsetFields;
-            final String[] headerListB = foreignSubsetFields.length == 0
-                    ? (String[]) foreignValue.getClass().getDeclaredMethod("header").invoke(foreignValue)
-                    : foreignSubsetFields;
-            addHeaders(headerListA, join.foreignKeyName(), headers, true);
-            addHeaders(headerListB, mapOfObjects.get(join.foreignDaoClassName()).get("name").toString(), headers,
-                    false);
+            final String[] headerListA = objSubsetIsEmpty
+                    ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
+                    : objSubsetFields;
+            final String[] headerListB = foreignKeyObjSubsetIsEmpty
+                    ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header").invoke(foreignKeyObjValue)
+                    : foreignKeyObjSubsetFields;
+            addHeaders(headerListA, join.foreignKeyName(), headers, !objSubsetIsEmpty);
+            addHeaders(headerListB, mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), headers,
+                    !foreignKeyObjSubsetIsEmpty);
 
             if (indexDb.keySet().size() > 3) {
-                final var finalPrimarySubsetFields = primarySubsetFields;
-                final var finalForeignSubsetFields = foreignSubsetFields;
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
-                    for (final var entry : primaryRecords.entrySet()) {
-                        loopJoinToCsv(e, primaryRecords.get(entry.getKey()), foreignRecords.get(e.getKey()),
-                                rowList, indexMap, finalPrimarySubsetFields, finalForeignSubsetFields);
+                    for (final var entry : objRecords.entrySet()) {
+                        loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
+                                rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength);
                     }
                 }));
             } else
                 for (final var e : indexDb.entrySet()) {
-                    for (final var entry : primaryRecords.entrySet()) {
-                        loopJoinToCsv(e, primaryRecords.get(entry.getKey()), foreignRecords.get(e.getKey()),
-                                rowList, indexMap, primarySubsetFields, foreignSubsetFields);
+                    for (final var entry : objRecords.entrySet()) {
+                        loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
+                                rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength);
                     }
                 }
             indexDb.close();

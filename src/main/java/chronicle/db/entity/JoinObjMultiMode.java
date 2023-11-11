@@ -1,5 +1,5 @@
 package chronicle.db.entity;
 
 public enum JoinObjMultiMode {
-    PRIMARY, FOREIGN, BOTH, NONE
+    MAIN, FOREIGN_KEY_OBJ, BOTH, NONE
 }
