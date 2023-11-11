@@ -345,7 +345,7 @@ public final class ChronicleDbJoinService {
             InvocationTargetException {
         for (final var keyEntry : e.getValue().entrySet()) {
             if (keyEntry.getKey() != null) {
-                final Integer objIndex = indexMap.get(keyEntry.getKey());
+                final var objIndex = indexMap.get(keyEntry.getKey());
                 final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
 
                 for (final var key : keyEntry.getValue()) {
@@ -363,7 +363,7 @@ public final class ChronicleDbJoinService {
                         rowList.set(objIndex, CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
                         indexMap.put(key, objIndex);
                     } else {
-                        final Integer foreignIndex = indexMap.get(key);
+                        final var foreignIndex = indexMap.get(key);
                         final var foreignObjPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
                         final Object obj = object.get(keyEntry.getKey());
                         final var objIsNull = obj == null;
