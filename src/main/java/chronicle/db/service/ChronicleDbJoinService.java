@@ -236,8 +236,9 @@ public final class ChronicleDbJoinService {
             final String objectName, final String foreignKeyObjName,
             final ConcurrentMap<Object, Map<String, Object>> joinedMap) throws IllegalAccessException {
         for (final var keyEntry : e.getValue().entrySet()) {
-            if (keyEntry.getKey() != null) {
-                final var objPrev = joinedMap.get(keyEntry.getKey());
+            final var keyEntryKey = keyEntry.getKey();
+            if (keyEntryKey != null) {
+                final var objPrev = joinedMap.get(keyEntryKey);
 
                 for (final var key : keyEntry.getValue()) {
                     if (objPrev != null) {
@@ -247,9 +248,9 @@ public final class ChronicleDbJoinService {
                         objValue.putAll(foreignValue);
                         joinedMap.put(key, objValue);
                     } else {
-                        final Object obj = object.get(keyEntry.getKey());
+                        final Object obj = object.get(keyEntryKey);
                         final var objValue = CHRONICLE_UTILS.objectToMap(obj, objectName,
-                                keyEntry.getKey());
+                                keyEntryKey);
                         final var foreignObjPrev = joinedMap.get(key);
                         if (foreignObjPrev != null) {
                             foreignObjPrev.putAll(objValue);
@@ -344,11 +345,17 @@ public final class ChronicleDbJoinService {
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         for (final var keyEntry : e.getValue().entrySet()) {
-            final var objIndex = indexMap.get(keyEntry.getKey());
-            final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
+            final var keyEntryKey = keyEntry.getKey();
+            final int objIndex = 0;
+            Object[] objPrev = null;
+
+            try {
+                objPrev = rowList.get(indexMap.get(keyEntryKey));
+            } catch (final NullPointerException ex) {
+            }
             final var multiForeignValues = new Object[1];
 
-            if (keyEntry.getKey() != null) {
+            if (keyEntryKey != null) {
                 for (final var key : keyEntry.getValue()) {
                     if (objPrev != null) {
                         final Object foreignObj = foreignKeyObject.get(key);
@@ -374,7 +381,7 @@ public final class ChronicleDbJoinService {
                     } else {
                         final var foreignIndex = indexMap.get(key);
                         final var foreignObjPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
-                        final Object obj = object.get(keyEntry.getKey());
+                        final Object obj = object.get(keyEntryKey);
                         final var objIsNull = obj == null;
 
                         final var objRow = objSubsetLength == 0
