@@ -39,7 +39,7 @@ public final class ChronicleDbJoinService {
     private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
             final MultiChronicleDao dao, final JoinFilter filter, final String file)
             throws IOException, NoSuchFieldException, SecurityException {
-        ConcurrentMap<?, ?> dbToMap = null;
+        ConcurrentMap<Object, Object> dbToMap = null;
 
         if (filter != null) {
             if (filter.key() != null) {
@@ -81,7 +81,6 @@ public final class ChronicleDbJoinService {
                 if (filter.limit() != 0)
                     dbToMap = dbToMap.entrySet().stream().limit(filter.limit())
                             .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
-                recordValueMap.put(file, dbToMap);
             }
 
             if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
@@ -89,6 +88,14 @@ public final class ChronicleDbJoinService {
                     final var db = dao.db(file);
                     dbToMap = new ConcurrentHashMap<>(db);
                     db.close();
+                    if (dbToMap.size() == 0) {
+                        // add one object just to make sure the join works when no data is available
+                        dbToMap.put(dao.averageKey(), dao.averageValue());
+                    }
+                }
+                if (dbToMap.size() == 0) {
+                    // add one object just to make sure the join works when no data is available
+                    dbToMap.put(dao.averageKey(), dao.averageValue());
                 }
                 dbToMap = dao.subsetOfValues(dbToMap, filter.subsetFields());
             }
@@ -97,6 +104,10 @@ public final class ChronicleDbJoinService {
             final var db = dao.db(file);
             dbToMap = new ConcurrentHashMap<>(db);
             db.close();
+            if (dbToMap.size() == 0) {
+                // add one object just to make sure the join works when no data is available
+                dbToMap.put(dao.averageKey(), dao.averageValue());
+            }
             recordValueMap.put(file, dbToMap);
         }
 
@@ -104,7 +115,7 @@ public final class ChronicleDbJoinService {
 
     private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
             final SingleChronicleDao dao, final JoinFilter filter) throws IOException {
-        ConcurrentMap<?, ?> db = null;
+        ConcurrentMap<Object, Object> db = null;
 
         if (filter != null) {
             if (filter.key() != null) {
@@ -144,12 +155,24 @@ public final class ChronicleDbJoinService {
             if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
                 if (db == null) {
                     db = dao.fetch();
+                    if (db.size() == 0) {
+                        // add one object just to make sure the join works when no data is available
+                        db.put(dao.averageKey(), dao.averageValue());
+                    }
                 }
                 db = dao.subsetOfValues(db, filter.subsetFields());
+            }
+            if (db.size() == 0) {
+                // add one object just to make sure the join works when no data is available
+                db.put(dao.averageKey(), dao.averageValue());
             }
             recordValueMap.put("data", db);
         } else {
             db = dao.fetch();
+            if (db.size() == 0) {
+                // add one object just to make sure the join works when no data is available
+                db.put(dao.averageKey(), dao.averageValue());
+            }
             recordValueMap.put("data", db);
         }
     }
@@ -477,8 +500,8 @@ public final class ChronicleDbJoinService {
             final var foreignKeyObjValue = foreignKeyObjRecords.values().stream().findFirst().get().values().stream()
                     .findFirst()
                     .orElseGet(() -> null);
-            if (objValue == null || foreignKeyObjValue == null) {
-                System.out.println("Object returned null");
+            if (objValue == null && foreignKeyObjValue == null) {
+                Logger.info("Both objects for join are empty.");
                 continue;
             }
             String[] objSubsetFields = new String[] {};
