@@ -408,6 +408,8 @@ public final class ChronicleDbJoinService {
                         } else {
                             final Object foreignObj = foreignKeyObject.get(key);
                             final var foreignObjIsNull = foreignObj == null;
+                            if (foreignObjIsNull && objIsNull)
+                                continue;
 
                             final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? !foreignObjIsNull
                                     ? (Object[]) foreignObj.getClass().getDeclaredMethod("row", Object.class)
@@ -476,6 +478,7 @@ public final class ChronicleDbJoinService {
                     .findFirst()
                     .orElseGet(() -> null);
             if (objValue == null || foreignKeyObjValue == null) {
+                System.out.println("Object returned null");
                 continue;
             }
             String[] objSubsetFields = new String[] {};
