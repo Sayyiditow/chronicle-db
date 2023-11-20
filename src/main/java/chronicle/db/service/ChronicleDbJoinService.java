@@ -457,18 +457,22 @@ public final class ChronicleDbJoinService {
             final var foreignKeyObjValue = foreignKeyObjRecords.values().stream().findFirst().get().values().stream()
                     .findFirst()
                     .orElseGet(() -> null);
-            if (objValue == null || foreignKeyObjValue == null)
+            if (objValue == null || foreignKeyObjValue == null) {
+                System.out.println("Object returned null");
                 continue;
+            }
             String[] objSubsetFields = new String[] {};
             String[] foreignKeyObjSubsetFields = new String[] {};
 
             try {
-                objSubsetFields = join.objFilter().subsetFields();
+                if (join.objFilter().subsetFields() != null)
+                    objSubsetFields = join.objFilter().subsetFields();
             } catch (final NullPointerException e) {
                 Logger.info("No subset fields set on object.");
             }
             try {
-                foreignKeyObjSubsetFields = join.foreignKeyObjFilter().subsetFields();
+                if (join.foreignKeyObjFilter().subsetFields() != null)
+                    foreignKeyObjSubsetFields = join.foreignKeyObjFilter().subsetFields();
             } catch (final NullPointerException e) {
                 Logger.info("No subset fields set on foreign key object.");
             }
