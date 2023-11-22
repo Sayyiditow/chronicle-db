@@ -424,12 +424,14 @@ public final class ChronicleDbJoinService {
 
                         if (multiForeignValues[0] == null) {
                             multiForeignValues[0] = foreignObjRow;
+                            rowList.set(objIndex,
+                                    CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
                         } else {
                             multiForeignValues[0] = CHRONICLE_UTILS.copyArray(multiForeignValues,
                                     foreignObjRow);
+                            rowList.set(objIndex,
+                                    CHRONICLE_UTILS.copyArray(objPrev, multiForeignValues));
                         }
-                        rowList.set(objIndex,
-                                CHRONICLE_UTILS.copyArray(objPrev, multiForeignValues));
                         indexMap.put(key, objIndex);
                     } else {
                         final var foreignIndex = indexMap.get(key);
