@@ -389,15 +389,17 @@ public final class ChronicleUtils {
      * @throws IllegalArgumentException
      * @throws IllegalAccessException
      */
-    public <K> CsvObject formatSubsetChronicleDataToCsv(
-            final ConcurrentMap<K, LinkedHashMap<String, Object>> map, final String[] headers)
-            throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
-            InvocationTargetException {
+    public <K> CsvObject formatSubsetChronicleDataToCsv(final ConcurrentMap<K, LinkedHashMap<String, Object>> map,
+            final String[] headers)
+            throws NoSuchMethodException, SecurityException, IllegalAccessException,
+            IllegalArgumentException, InvocationTargetException {
         final List<Object[]> rowList = new ArrayList<>();
+        final String[] updatedHeaders = copyArray(new String[] { "ID" }, headers);
 
         for (final var entry : map.entrySet()) {
-            int i = 0;
-            final var obj = new Object[entry.getValue().size()];
+            int i = 1;
+            final var obj = new Object[entry.getValue().size() + 1];
+            obj[0] = entry.getKey();
             for (final var ent : entry.getValue().entrySet()) {
                 obj[i] = ent.getValue();
                 i++;
@@ -405,7 +407,7 @@ public final class ChronicleUtils {
             rowList.add(obj);
         }
 
-        return new CsvObject(headers, rowList);
+        return new CsvObject(updatedHeaders, rowList);
     }
 
     public <V> void partialUpdateSetter(final V object, final String fieldName, final Object fieldValue)
