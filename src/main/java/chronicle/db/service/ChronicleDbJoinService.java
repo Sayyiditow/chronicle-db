@@ -383,11 +383,11 @@ public final class ChronicleDbJoinService {
             InvocationTargetException {
         int currentRowListSize = 0;
         for (final var keyEntry : e.getValue().entrySet()) {
-            final var objIndex = indexMap.get(keyEntry.getKey());
-            final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
-            final var multiForeignValues = new Object[1];
-
             if (keyEntry.getKey() != null) {
+                final var objIndex = indexMap.get(keyEntry.getKey());
+                final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
+                final var multiForeignValues = new Object[1];
+
                 for (final var key : keyEntry.getValue()) {
                     if (objPrev != null) {
                         final Object foreignObj = foreignKeyObject.get(key);
