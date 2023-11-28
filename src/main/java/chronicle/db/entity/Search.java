@@ -13,6 +13,7 @@ public record Search(String field, SearchType searchType, Object searchTerm) {
         LIKE,
         NOT_LIKE,
         CONTAINS,
+        NOT_CONTAINS,
         STARTS_WITH,
         ENDS_WITH
     }

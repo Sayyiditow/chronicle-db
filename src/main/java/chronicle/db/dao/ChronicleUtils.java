@@ -137,6 +137,10 @@ public final class ChronicleUtils {
                         if (Collections.singleton(currentValue).contains(searchTerm))
                             map.put(key, value);
                         break;
+                    case NOT_CONTAINS:
+                        if (!Collections.singleton(currentValue).contains(searchTerm))
+                            map.put(key, value);
+                        break;
                     case STARTS_WITH:
                         if (String.valueOf(currentValue).toLowerCase()
                                 .startsWith(String.valueOf(searchTerm).toLowerCase()))

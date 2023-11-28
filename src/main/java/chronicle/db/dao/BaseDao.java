@@ -267,6 +267,13 @@ interface BaseDao<K, V> {
                 }
                 addSearchedValues(keys, db, match);
                 break;
+            case NOT_CONTAINS:
+                for (final var entry : index.entrySet()) {
+                    if (!Collections.singleton(entry.getKey()).contains(search.searchTerm()))
+                        keys.addAll(entry.getValue());
+                }
+                addSearchedValues(keys, db, match);
+                break;
             case STARTS_WITH:
                 for (final var entry : index.entrySet()) {
                     if (String.valueOf(entry.getKey()).startsWith(String.valueOf(search.searchTerm())))
@@ -355,6 +362,13 @@ interface BaseDao<K, V> {
             case CONTAINS:
                 for (final var entry : index.entrySet()) {
                     if (Collections.singleton(entry.getKey()).contains(search.searchTerm()))
+                        keys.addAll(entry.getValue());
+                }
+                addSearchedValues(keys, db, match, limit);
+                break;
+            case NOT_CONTAINS:
+                for (final var entry : index.entrySet()) {
+                    if (!Collections.singleton(entry.getKey()).contains(search.searchTerm()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match, limit);
