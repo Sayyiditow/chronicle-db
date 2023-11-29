@@ -340,4 +340,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         indexDb.close();
         return result;
     }
+
+    default void clearDb() throws IOException {
+        final var db = db();
+        db.clear();
+        db.close();
+    }
 }

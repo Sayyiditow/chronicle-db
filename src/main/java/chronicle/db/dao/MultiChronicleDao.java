@@ -805,4 +805,20 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         indexDb.close();
         return map;
     }
+
+    default void clearDb(final String file) throws IOException {
+        final var db = db(file);
+        db.clear();
+        db.close();
+    }
+
+    default void clearDb() throws IOException {
+        final var files = getFiles();
+
+        for (final String file : files) {
+            final var db = db(file);
+            db.clear();
+            db.close();
+        }
+    }
 }
