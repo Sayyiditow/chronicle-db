@@ -94,8 +94,8 @@ public final class ChronicleUtils {
         final Field field = value.getClass().getField(search.field());
 
         if (Objects.nonNull(field)) {
-            final Object searchTerm = field.getClass().isEnum()
-                    ? toEnum(field.getType(), search.searchTerm())
+            final Object searchTerm = field.getType().getClass().isEnum() && (search.searchTerm() instanceof String)
+                    ? toEnum(field.getType().getClass(), search.searchTerm())
                     : search.searchTerm();
             final Object currentValue = field.get(value);
 
