@@ -5,6 +5,8 @@ import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import static chronicle.db.service.MapDb.MAP_DB;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -676,7 +678,12 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
     default ConcurrentMap<String, ConcurrentMap<K, V>> indexedSearch(final Search search)
             throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var indexFilePath = getIndexPath(search.field());
+        if (!Files.exists(Paths.get(indexFilePath))) {
+            Logger.info("Index file does not exist, it will be created.");
+            initIndex(new String[] { search.field() });
+        }
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexFilePath);
         final var files = getFiles();
 
         if (multiThreaded(files)) {

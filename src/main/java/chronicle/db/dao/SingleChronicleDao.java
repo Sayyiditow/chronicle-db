@@ -300,7 +300,12 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * Refer to @BaseDao.super.indexedSearch
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var indexFilePath = getIndexPath(search.field());
+        if (!Files.exists(Paths.get(indexFilePath))) {
+            Logger.info("Index file does not exist, it will be created.");
+            initIndex(new String[] { search.field() });
+        }
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexFilePath);
         final var db = db();
         final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"));
         indexDb.close();
