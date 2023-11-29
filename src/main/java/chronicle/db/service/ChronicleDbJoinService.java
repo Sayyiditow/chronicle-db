@@ -468,8 +468,19 @@ public final class ChronicleDbJoinService {
                                     : createEmptyObject(foreignKeyObjSubsetLength);
                             rowList.set(objPrevIndex, CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
                             indexMap.put(o.getKey(), objPrevIndex);
-
                         }
+                    } else {
+                        final var foreignObj = foreignKeyObject.values().toArray()[0];
+                        final var foreignObjRow = foreignKeyObjSubsetLength == 0
+                                ? createEmptyObject(foreignObj.getClass()
+                                        .getDeclaredFields().length)
+                                : createEmptyObject(foreignKeyObjSubsetLength);
+                        final var objRow = objSubsetLength == 0
+                                ? (Object[]) o.getValue().getClass().getDeclaredMethod("row", Object.class)
+                                        .invoke(o.getValue(), o.getKey())
+                                : ((LinkedHashMap) o.getValue()).values().toArray();
+                        rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
+                        indexMap.put(o.getKey(), indexMap.size());
                     }
                 }
             } else if (e.getValue().size() == 0) {
