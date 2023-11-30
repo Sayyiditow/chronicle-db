@@ -469,18 +469,6 @@ public final class ChronicleDbJoinService {
                             rowList.set(objPrevIndex, CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
                             indexMap.put(o.getKey(), objPrevIndex);
                         }
-                    } else {
-                        // final var foreignObj = foreignKeyObject.values().toArray()[0];
-                        // final var foreignObjRow = foreignKeyObjSubsetLength == 0
-                        //         ? createEmptyObject(foreignObj.getClass()
-                        //                 .getDeclaredFields().length)
-                        //         : createEmptyObject(foreignKeyObjSubsetLength);
-                        // final var objRow = objSubsetLength == 0
-                        //         ? (Object[]) o.getValue().getClass().getDeclaredMethod("row", Object.class)
-                        //                 .invoke(o.getValue(), o.getKey())
-                        //         : ((LinkedHashMap) o.getValue()).values().toArray();
-                        // rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
-                        // indexMap.put(o.getKey(), indexMap.size() - 1);
                     }
                 }
             } else if (e.getValue().size() == 0) {
@@ -500,7 +488,7 @@ public final class ChronicleDbJoinService {
                                         .invoke(o.getValue(), o.getKey())
                                 : ((LinkedHashMap) o.getValue()).values().toArray();
                         rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
-                        indexMap.put(o.getKey(), indexMap.size() - 1);
+                        indexMap.put(o.getKey(), rowList.size() - 1);
                     }
                 }
             }
