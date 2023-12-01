@@ -434,7 +434,7 @@ public final class ChronicleDbJoinService {
                         } else {
                             final Object foreignObj = foreignKeyObject.get(key);
                             final var foreignObjIsNull = foreignObj == null;
-                            if (foreignObjIsNull)
+                            if ((foreignObjIsNull || objIsNull) && isInnerJoin)
                                 continue;
 
                             final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? !foreignObjIsNull
