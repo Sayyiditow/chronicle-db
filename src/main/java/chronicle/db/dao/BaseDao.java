@@ -154,7 +154,7 @@ interface BaseDao<K, V> {
     default String[] deleteIndexes() throws IOException {
         final var available = indexFileNames();
         available.forEach(f -> {
-            CHRONICLE_UTILS.deleteFileIfExists(f);
+            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + "/indexes/" + f);
         });
 
         return available.toArray(new String[0]);
