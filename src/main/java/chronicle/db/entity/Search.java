@@ -15,7 +15,9 @@ public record Search(String field, SearchType searchType, Object searchTerm) {
         CONTAINS,
         NOT_CONTAINS,
         STARTS_WITH,
-        ENDS_WITH
+        ENDS_WITH,
+        IN,
+        NOT_IN
     }
 
     @JsonCreator

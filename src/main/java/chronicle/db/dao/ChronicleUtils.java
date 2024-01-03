@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 
 import org.mapdb.HTreeMap;
@@ -149,6 +150,16 @@ public final class ChronicleUtils {
                     case ENDS_WITH:
                         if (String.valueOf(currentValue).toLowerCase()
                                 .endsWith(String.valueOf(searchTerm).toLowerCase()))
+                            map.put(key, value);
+                        break;
+                    case IN:
+                        final Set<Object> set = (Set<Object>) searchTerm;
+                        if (set.contains(currentValue))
+                            map.put(key, value);
+                        break;
+                    case NOT_IN:
+                        final Set<Object> set2 = (Set<Object>) searchTerm;
+                        if (!set2.contains(currentValue))
                             map.put(key, value);
                         break;
                 }

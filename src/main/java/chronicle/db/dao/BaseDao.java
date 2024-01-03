@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -203,6 +204,7 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
+    @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
@@ -288,6 +290,20 @@ interface BaseDao<K, V> {
                 }
                 addSearchedValues(keys, db, match);
                 break;
+            case IN:
+                final Set<Object> set = (Set<Object>) search.searchTerm();
+                for (final var entry : index.entrySet()) {
+                    if (set.contains(entry.getKey()))
+                        keys.addAll(entry.getValue());
+                }
+                break;
+            case NOT_IN:
+                final Set<Object> set2 = (Set<Object>) search.searchTerm();
+                for (final var entry : index.entrySet()) {
+                    if (!set2.contains(entry.getKey()))
+                        keys.addAll(entry.getValue());
+                }
+                break;
         }
 
         return match;
@@ -302,6 +318,7 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
+    @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
@@ -386,6 +403,20 @@ interface BaseDao<K, V> {
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match, limit);
+                break;
+            case IN:
+                final Set<Object> set = (Set<Object>) search.searchTerm();
+                for (final var entry : index.entrySet()) {
+                    if (set.contains(entry.getKey()))
+                        keys.addAll(entry.getValue());
+                }
+                break;
+            case NOT_IN:
+                final Set<Object> set2 = (Set<Object>) search.searchTerm();
+                for (final var entry : index.entrySet()) {
+                    if (!set2.contains(entry.getKey()))
+                        keys.addAll(entry.getValue());
+                }
                 break;
         }
 
