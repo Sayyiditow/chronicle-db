@@ -79,11 +79,13 @@ interface BaseDao<K, V> {
      * Create the folders required on init
      */
     default void createDataDirs() {
-        try {
-            Files.createDirectories(Path.of(dataPath() + "/" + "data"));
-            Files.createDirectories(Path.of(dataPath() + "/" + "indexes"));
-        } catch (final IOException e) {
-            Logger.error(e.getMessage());
+        if (!Files.exists(Path.of(dataPath()))) {
+            try {
+                Files.createDirectories(Path.of(dataPath() + "/" + "data"));
+                Files.createDirectories(Path.of(dataPath() + "/" + "indexes"));
+            } catch (final IOException e) {
+                Logger.error(e.getMessage());
+            }
         }
     }
 
