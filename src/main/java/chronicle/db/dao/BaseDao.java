@@ -66,6 +66,8 @@ interface BaseDao<K, V> {
      */
     TypeLiteral<V> jsonType();
 
+    void initIndex(final String[] fields) throws IOException;
+
     /**
      * The bloatFactor is used when the file contents can grow much more than the
      * average value,
@@ -172,6 +174,25 @@ interface BaseDao<K, V> {
      */
     default String getIndexPath(final String field) {
         return dataPath() + "/indexes/" + field;
+    }
+
+    /**
+     * Initialize indexes at dao creation
+     * 
+     * @param fields the fields required
+     */
+    default void initDefaultIndexes(final String[] fields) throws IOException {
+        final var toIndex = new ArrayList<String>();
+
+        for (final var field : fields) {
+            if (indexFileNames().indexOf(field) == -1) {
+                toIndex.add(field);
+            }
+        }
+
+        if (toIndex.size() > 0) {
+            initIndex(toIndex.toArray(new String[0]));
+        }
     }
 
     private void addSearchedValues(final List<K> keys, final ConcurrentMap<K, V> db, final ConcurrentMap<K, V> match) {
