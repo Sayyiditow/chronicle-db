@@ -15,7 +15,7 @@ repositories {
 dependencies {
     api 'net.openhft:chronicle-map:3.25ea3'
     api 'com.jsoniter:jsoniter:0.9.23'
-    api 'org.mapdb:mapdb:3.0.10'
+    api 'org.mapdb:mapdb:3.1.0'
     api "org.tinylog:tinylog-impl:$tinyLogVersion"
     api "org.tinylog:tinylog-api:$tinyLogVersion"
     api "junit:junit:4.13.2"
