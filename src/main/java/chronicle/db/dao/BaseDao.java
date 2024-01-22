@@ -182,16 +182,19 @@ interface BaseDao<K, V> {
      * @param fields the fields required
      */
     default void initDefaultIndexes(final String[] fields) throws IOException {
-        final var toIndex = new ArrayList<String>();
+        final var indexFiles = indexFileNames();
+        if (indexFiles.size() == 0) {
+            final var toIndex = new ArrayList<String>();
 
-        for (final var field : fields) {
-            if (indexFileNames().indexOf(field) == -1) {
-                toIndex.add(field);
+            for (final var field : fields) {
+                if (indexFileNames().indexOf(field) == -1) {
+                    toIndex.add(field);
+                }
             }
-        }
 
-        if (toIndex.size() > 0) {
-            initIndex(toIndex.toArray(new String[0]));
+            if (toIndex.size() > 0) {
+                initIndex(toIndex.toArray(new String[0]));
+            }
         }
     }
 
