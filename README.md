@@ -17,4 +17,4 @@ Data Types.
 6. int for small numbers.
 7. double if it fits the required precision ONLY.
 
-The key of the map is always a String.
+The key of the map is always a String. UUID preferred.
