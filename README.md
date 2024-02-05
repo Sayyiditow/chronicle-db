@@ -13,4 +13,8 @@ Data Types.
 2. dates/datetime = long (format yyyyMMddHHmmss)
 3. currency amounts, numerical values = BigDecimal
 4. fixed reference tables = enums
-5. Prefer to use primitive types where possible
+5. boolean for true/false
+6. int for small numbers.
+7. double if it fits the required precision ONLY.
+
+The key of the map is always a String.
