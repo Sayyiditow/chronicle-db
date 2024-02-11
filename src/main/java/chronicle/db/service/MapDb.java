@@ -17,9 +17,10 @@ public final class MapDb {
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
         final var db = DBMaker
                 .fileDB(filePath)
-                .fileMmapEnable()
-                .fileLockDisable()
-                .closeOnJvmShutdown()
+                .fileMmapEnable()            // Always enable mmap
+                .fileMmapEnableIfSupported() // Only enable mmap on supported platforms
+                .fileMmapPreclearDisable()   // Make mmap file faster
+                .cleanerHackEnable()
                 .make();
         Logger.info("Opening index file at: {}", filePath);
         return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();

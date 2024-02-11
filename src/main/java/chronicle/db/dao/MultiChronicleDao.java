@@ -33,7 +33,7 @@ import net.openhft.chronicle.map.ChronicleMap;
  * @param <V> Type of the single element
  */
 public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
-    default List<String> getFiles() {
+    default List<String> getFiles() throws IOException {
         return ChronicleUtils.getFileList(dataPath() + "/data");
     }
 

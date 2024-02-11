@@ -20,6 +20,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
@@ -59,21 +65,14 @@ public final class ChronicleUtils {
      * @param dirPath dirPath to retrieve files from
      * @return a list of files
      */
-    public static List<String> getFileList(final String dirPath) {
-        final Path path = Path.of(dirPath);
-        final List<String> files = new ArrayList<>();
-
-        if (Files.isDirectory(path)) {
-            try {
-                Files.list(path).map(Path::getFileName).map(Path::toString).forEach(files::add);
-            } catch (final IOException e) {
-                Logger.error(e.getMessage());
-            }
-        } else {
-            Logger.info("Path: {} is not a directory", dirPath);
+    public static List<String> getFileList(final String dirPath) throws IOException {
+        try (Stream<Path> stream = Files.list(Paths.get(dirPath))) {
+            return stream
+                    .filter(file -> !Files.isDirectory(file))
+                    .map(Path::getFileName)
+                    .map(Path::toString)
+                    .collect(Collectors.toList());
         }
-
-        return files;
     }
 
     public int compare(final Object obj1, final Object obj2) {
@@ -465,5 +464,19 @@ public final class ChronicleUtils {
         }
 
         return map;
+    }
+
+    public void runInThreadPool(final List<Runnable> runnableList, final String threadPoolIdentifier)
+            throws InterruptedException {
+        final ThreadFactory factory = Thread.ofVirtual().name(threadPoolIdentifier).factory();
+        try (final ExecutorService executorService = Executors.newThreadPerTaskExecutor(factory)) {
+            runnableList.forEach(r -> executorService.execute(r));
+            executorService.shutdown();
+            if (!executorService.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS)) {
+                executorService.shutdownNow();
+                Logger.info("Threadpool: {} successfully shutdown. {} tasks completed.", threadPoolIdentifier,
+                        runnableList.size());
+            }
+        }
     }
 }

@@ -142,12 +142,13 @@ interface BaseDao<K, V> {
 
     /**
      * If this database object contains indexes
+     * @throws IOException 
      */
-    default boolean containsIndexes() {
+    default boolean containsIndexes() throws IOException {
         return ChronicleUtils.getFileList(dataPath() + "/indexes/").size() > 0;
     }
 
-    default List<String> indexFileNames() {
+    default List<String> indexFileNames() throws IOException {
         return ChronicleUtils.getFileList(dataPath() + "/indexes/");
     }
 
