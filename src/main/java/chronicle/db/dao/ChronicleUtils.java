@@ -67,11 +67,7 @@ public final class ChronicleUtils {
      */
     public static List<String> getFileList(final String dirPath) throws IOException {
         try (Stream<Path> stream = Files.list(Paths.get(dirPath))) {
-            return stream
-                    .filter(file -> !Files.isDirectory(file))
-                    .map(Path::getFileName)
-                    .map(Path::toString)
-                    .collect(Collectors.toList());
+            return stream.map(Path::getFileName).map(Path::toString).collect(Collectors.toList());
         }
     }
 
