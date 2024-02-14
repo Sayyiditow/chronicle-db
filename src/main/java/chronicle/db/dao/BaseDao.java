@@ -456,8 +456,8 @@ interface BaseDao<K, V> {
         Field field = null;
         final var valueMap = new LinkedHashMap<String, Object>();
         for (final var f : fields) {
-            if (f.equals("id")) {
-                valueMap.put(objectName + "." + f, entry.getKey());
+            if (f.contains("id")) {
+                valueMap.put(objectName + ".id", entry.getKey());
             } else {
                 try {
                     field = entry.getValue().getClass().getField(f);
