@@ -496,9 +496,11 @@ public final class ChronicleDbJoinService {
     }
 
     private void addHeaders(final String[] objectHeaders, final String objectName, final List<String> headers,
-            final boolean addPrefix, final String foreignKeyName) {
+            final boolean addPrefix, final String foreignKeyName, final boolean mainObj) {
         for (final var h : objectHeaders) {
-            final var name = addPrefix ? objectName + "." + foreignKeyName + "." + h : h;
+            var name = addPrefix ? objectName + "." + foreignKeyName + "." + h : h;
+            if (h.toLowerCase().equals("id"))
+                name = mainObj ? objectName + "." + foreignKeyName + "." + h : objectName + "." + h;
             if (headers.indexOf(name) == -1) {
                 headers.add(name);
             }
@@ -573,14 +575,14 @@ public final class ChronicleDbJoinService {
                     ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
                     : objSubsetFields;
             addHeaders(headerListA, mapOfObjects.get(join.objDaoName()).get("name").toString(), headers,
-                    !objSubsetIsEmpty, join.foreignKeyName());
+                    !objSubsetIsEmpty, join.foreignKeyName(), true);
 
             final String[] headerListB = foreignKeyObjSubsetIsEmpty
                     ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header")
                             .invoke(foreignKeyObjValue)
                     : foreignKeyObjSubsetFields;
             addHeaders(headerListB, mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), headers,
-                    false, join.foreignKeyName());
+                    false, join.foreignKeyName(), false);
 
             if (indexDb.keySet().size() > 3) {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
