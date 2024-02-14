@@ -21,6 +21,7 @@ public final class MapDb {
                 .fileMmapEnableIfSupported() // Only enable mmap on supported platforms
                 .fileMmapPreclearDisable()   // Make mmap file faster
                 .cleanerHackEnable()
+                .fileLockDisable()
                 .make();
         Logger.info("Opening index file at: {}", filePath);
         return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
