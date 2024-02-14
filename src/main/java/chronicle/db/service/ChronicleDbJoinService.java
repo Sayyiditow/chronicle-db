@@ -573,14 +573,14 @@ public final class ChronicleDbJoinService {
                     ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
                     : objSubsetFields;
             addHeaders(headerListA, mapOfObjects.get(join.objDaoName()).get("name").toString(), headers,
-                    !objSubsetIsEmpty, join.foreignKeyName());
+                    true, join.foreignKeyName());
 
             final String[] headerListB = foreignKeyObjSubsetIsEmpty
                     ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header")
                             .invoke(foreignKeyObjValue)
                     : foreignKeyObjSubsetFields;
             addHeaders(headerListB, mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), headers,
-                    !foreignKeyObjSubsetIsEmpty, join.foreignKeyName());
+                    false, join.foreignKeyName());
 
             if (indexDb.keySet().size() > 3) {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
