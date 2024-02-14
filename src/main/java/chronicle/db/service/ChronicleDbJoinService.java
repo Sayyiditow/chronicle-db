@@ -496,9 +496,9 @@ public final class ChronicleDbJoinService {
     }
 
     private void addHeaders(final String[] objectHeaders, final String objectName, final List<String> headers,
-            final boolean mainObj) {
+            final boolean mainObj, final String foreignKeyName) {
         for (final var h : objectHeaders) {
-            final var name = mainObj ? objectName + "." + h : h;
+            final var name = mainObj ? objectName + "." + foreignKeyName + "." + h : h;
             if (headers.indexOf(name) == -1) {
                 headers.add(name);
             }
@@ -569,17 +569,18 @@ public final class ChronicleDbJoinService {
             final var objSubsetIsEmpty = objSubsetLength == 0;
             final var foreignKeyObjSubsetIsEmpty = foreignKeyObjSubsetLength == 0;
 
-            final String[] headerListA = objSubsetIsEmpty ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
+            final String[] headerListA = objSubsetIsEmpty
+                    ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
                     : objSubsetFields;
             addHeaders(headerListA, mapOfObjects.get(join.objDaoName()).get("name").toString(), headers,
-                    !objSubsetIsEmpty);
+                    !objSubsetIsEmpty, join.foreignKeyName());
 
-            final String[] headerListB = foreignKeyObjSubsetIsEmpty                    
-                            ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header")
-                                    .invoke(foreignKeyObjValue)
-                            : foreignKeyObjSubsetFields;
+            final String[] headerListB = foreignKeyObjSubsetIsEmpty
+                    ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header")
+                            .invoke(foreignKeyObjValue)
+                    : foreignKeyObjSubsetFields;
             addHeaders(headerListB, mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), headers,
-                    !foreignKeyObjSubsetIsEmpty);
+                    !foreignKeyObjSubsetIsEmpty, join.foreignKeyName());
 
             if (indexDb.keySet().size() > 3) {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
