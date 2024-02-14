@@ -569,7 +569,7 @@ public final class ChronicleDbJoinService {
             final var objSubsetIsEmpty = objSubsetLength == 0;
             final var foreignKeyObjSubsetIsEmpty = foreignKeyObjSubsetLength == 0;
 
-            if (mapOfObjects.get("daoClassName").get(join.objDaoName()) == null) {
+            if (mapOfObjects.get(join.objDaoName()) == null) {
                 final String[] headerListA = objSubsetIsEmpty
                         ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
                         : objSubsetFields;
@@ -577,7 +577,7 @@ public final class ChronicleDbJoinService {
                         !objSubsetIsEmpty);
             }
 
-            if (mapOfObjects.get("daoClassName").get(join.foreignKeyObjDaoName()) == null) {
+            if (mapOfObjects.get(join.foreignKeyObjDaoName()) == null) {
                 final String[] headerListB = foreignKeyObjSubsetIsEmpty
                         ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header")
                                 .invoke(foreignKeyObjValue)
