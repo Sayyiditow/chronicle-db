@@ -93,7 +93,7 @@ public final class ChronicleDbJoinService {
                     // add one object just to make sure the join works when no data is available
                     dbToMap.put(dao.averageKey(), dao.averageValue());
                 }
-                dbToMap = dao.subsetOfValues(dbToMap, filter.subsetFields());
+                dbToMap = dao.subsetOfValues(dbToMap, filter.subsetFields(), dao.name());
             }
             recordValueMap.put(file, dbToMap);
         } else {
@@ -156,7 +156,7 @@ public final class ChronicleDbJoinService {
                     // add one object just to make sure the join works when no data is available
                     db.put(dao.averageKey(), dao.averageValue());
                 }
-                db = dao.subsetOfValues(db, filter.subsetFields());
+                db = dao.subsetOfValues(db, filter.subsetFields(), dao.name());
             }
             if (db.size() == 0) {
                 // add one object just to make sure the join works when no data is available

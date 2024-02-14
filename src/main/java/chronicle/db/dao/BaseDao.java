@@ -142,7 +142,8 @@ interface BaseDao<K, V> {
 
     /**
      * If this database object contains indexes
-     * @throws IOException 
+     * 
+     * @throws IOException
      */
     default boolean containsIndexes() throws IOException {
         return ChronicleUtils.getFileList(dataPath() + "/indexes/").size() > 0;
@@ -451,18 +452,22 @@ interface BaseDao<K, V> {
     }
 
     private void subsetOfValues(final String[] fields, final Map.Entry<K, V> entry,
-            final ConcurrentMap<K, LinkedHashMap<String, Object>> map) {
+            final ConcurrentMap<K, LinkedHashMap<String, Object>> map, final String objectName) {
         Field field = null;
         final var valueMap = new LinkedHashMap<String, Object>();
         for (final var f : fields) {
-            try {
-                field = entry.getValue().getClass().getField(f);
-                if (Objects.nonNull(field)) {
-                    valueMap.put(f, field.get(entry.getValue()));
+            if (f.equals("id")) {
+                valueMap.put(f, entry.getKey());
+            } else {
+                try {
+                    field = entry.getValue().getClass().getField(f);
+                    if (Objects.nonNull(field)) {
+                        valueMap.put(f, field.get(entry.getValue()));
+                    }
+                } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+                    Logger.error("No such field: {} when making a subset of {}. {}", f,
+                            entry.getValue().getClass().getSimpleName(), e);
                 }
-            } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-                Logger.error("No such field: {} when making a subset of {}. {}", f,
-                        entry.getValue().getClass().getSimpleName(), e);
             }
         }
         map.put(entry.getKey(), valueMap);
@@ -477,11 +482,11 @@ interface BaseDao<K, V> {
      * @param fields     the required fields
      */
     default ConcurrentMap<K, LinkedHashMap<String, Object>> subsetOfValues(final ConcurrentMap<K, V> initialMap,
-            final String[] fields) {
+            final String[] fields, final String objectName) {
         final var map = new ConcurrentHashMap<K, LinkedHashMap<String, Object>>();
 
         for (final var entry : initialMap.entrySet()) {
-            subsetOfValues(fields, entry, map);
+            subsetOfValues(fields, entry, map,objectName);
         }
         return map;
     }
