@@ -457,7 +457,7 @@ interface BaseDao<K, V> {
         final var valueMap = new LinkedHashMap<String, Object>();
         for (final var f : fields) {
             if (f.equals("id")) {
-                valueMap.put(f, entry.getKey());
+                valueMap.put(objectName + "." + f, entry.getKey());
             } else {
                 try {
                     field = entry.getValue().getClass().getField(f);
@@ -486,7 +486,7 @@ interface BaseDao<K, V> {
         final var map = new ConcurrentHashMap<K, LinkedHashMap<String, Object>>();
 
         for (final var entry : initialMap.entrySet()) {
-            subsetOfValues(fields, entry, map,objectName);
+            subsetOfValues(fields, entry, map, objectName);
         }
         return map;
     }
