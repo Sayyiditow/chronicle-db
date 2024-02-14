@@ -569,16 +569,22 @@ public final class ChronicleDbJoinService {
             final var objSubsetIsEmpty = objSubsetLength == 0;
             final var foreignKeyObjSubsetIsEmpty = foreignKeyObjSubsetLength == 0;
 
-            final String[] headerListA = objSubsetIsEmpty
-                    ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
-                    : objSubsetFields;
-            final String[] headerListB = foreignKeyObjSubsetIsEmpty
-                    ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header").invoke(foreignKeyObjValue)
-                    : foreignKeyObjSubsetFields;
-            addHeaders(headerListA, mapOfObjects.get(join.objDaoName()).get("name").toString(), headers,
-                    !objSubsetIsEmpty);
-            addHeaders(headerListB, mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), headers,
-                    !foreignKeyObjSubsetIsEmpty);
+            if (mapOfObjects.get("daoClassName").get(join.objDaoName()) == null) {
+                final String[] headerListA = objSubsetIsEmpty
+                        ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
+                        : objSubsetFields;
+                addHeaders(headerListA, mapOfObjects.get(join.objDaoName()).get("name").toString(), headers,
+                        !objSubsetIsEmpty);
+            }
+
+            if (mapOfObjects.get("daoClassName").get(join.foreignKeyObjDaoName()) == null) {
+                final String[] headerListB = foreignKeyObjSubsetIsEmpty
+                        ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header")
+                                .invoke(foreignKeyObjValue)
+                        : foreignKeyObjSubsetFields;
+                addHeaders(headerListB, mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), headers,
+                        !foreignKeyObjSubsetIsEmpty);
+            }
 
             if (indexDb.keySet().size() > 3) {
                 indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
