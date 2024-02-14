@@ -496,9 +496,9 @@ public final class ChronicleDbJoinService {
     }
 
     private void addHeaders(final String[] objectHeaders, final String objectName, final List<String> headers,
-            final boolean mainObj, final String foreignKeyName) {
+            final boolean addPrefix, final String foreignKeyName) {
         for (final var h : objectHeaders) {
-            final var name = mainObj ? objectName + "." + foreignKeyName + "." + h : h;
+            final var name = addPrefix ? objectName + "." + foreignKeyName + "." + h : h;
             if (headers.indexOf(name) == -1) {
                 headers.add(name);
             }
@@ -573,7 +573,7 @@ public final class ChronicleDbJoinService {
                     ? (String[]) objValue.getClass().getDeclaredMethod("header").invoke(objValue)
                     : objSubsetFields;
             addHeaders(headerListA, mapOfObjects.get(join.objDaoName()).get("name").toString(), headers,
-                    true, join.foreignKeyName());
+                    !objSubsetIsEmpty, join.foreignKeyName());
 
             final String[] headerListB = foreignKeyObjSubsetIsEmpty
                     ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header")
