@@ -488,10 +488,11 @@ public final class ChronicleUtils {
 
         for (final var entry : currentValues.entrySet()) {
             final var newObj = constuctor.newInstance();
+            final var newFields = Arrays.asList(newObj.getClass().getDeclaredFields());
             final var currentVal = entry.getValue();
             for (final var field : currentVal.getClass().getDeclaredFields()) {
                 final Object value = field.get(currentVal);
-                if (Arrays.asList(newObj.getClass().getDeclaredFields()).contains(field))
+                if (newFields.contains(field))
                     field.set(newObj, value);
             }
             map.put(entry.getKey(), newObj);
