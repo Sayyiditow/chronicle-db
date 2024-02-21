@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -337,6 +338,14 @@ interface BaseDao<K, V> {
         return match;
     }
 
+    @SuppressWarnings("unchecked")
+    private void castSet(final Object searchTerm, Set<Object> set) {
+        if (searchTerm instanceof List)
+            set = new HashSet<>((List<Object>) searchTerm);
+        else
+            set = (Set<Object>) searchTerm;
+    }
+
     /**
      * Searches the objects using an index, without needed to loop over every record
      * Only useful for @code SearchType.EQUAL and @code SearchType.NOT_EQUAL
@@ -433,16 +442,18 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match, limit);
                 break;
             case IN:
-                final Set<Object> set = (Set<Object>) search.searchTerm();
+                Set<Object> set = new HashSet<>();
+                castSet(search.searchTerm(), set);
                 for (final var entry : index.entrySet()) {
                     if (set.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
                 break;
             case NOT_IN:
-                final Set<Object> set2 = (Set<Object>) search.searchTerm();
+                set = new HashSet<>();
+                castSet(search.searchTerm(), set);
                 for (final var entry : index.entrySet()) {
-                    if (!set2.contains(entry.getKey()))
+                    if (!set.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
                 break;
