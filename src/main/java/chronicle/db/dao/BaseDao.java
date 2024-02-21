@@ -340,7 +340,7 @@ interface BaseDao<K, V> {
 
     @SuppressWarnings("unchecked")
     private void castSet(final Object searchTerm, Set<Object> set) {
-        System.out.println(searchTerm.getClass().getName());
+        System.out.println("This is the class name "+searchTerm.getClass().getName());
         if (searchTerm instanceof ArrayList)
             set = new HashSet<>((ArrayList<Object>) searchTerm);
         else
