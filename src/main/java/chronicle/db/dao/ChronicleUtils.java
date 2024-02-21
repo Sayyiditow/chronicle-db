@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -490,7 +491,8 @@ public final class ChronicleUtils {
             final var currentVal = entry.getValue();
             for (final var field : currentVal.getClass().getDeclaredFields()) {
                 final Object value = field.get(currentVal);
-                field.set(newObj, value);
+                if (Arrays.asList(newObj.getClass().getDeclaredFields()).contains(field))
+                    field.set(newObj, value);
             }
             map.put(entry.getKey(), newObj);
         }
