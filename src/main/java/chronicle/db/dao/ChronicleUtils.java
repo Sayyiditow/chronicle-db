@@ -477,7 +477,8 @@ public final class ChronicleUtils {
         }
     }
 
-    public <K, V> void moveRecords(final ConcurrentMap<K, V> currentValues, final String toObjectClass)
+    public <K, V> ConcurrentMap<K, Object> moveRecords(final ConcurrentMap<K, V> currentValues,
+            final String toObjectClass)
             throws ClassNotFoundException, NoSuchMethodException, SecurityException, InstantiationException,
             IllegalAccessException, IllegalArgumentException, InvocationTargetException {
         final var cls = Class.forName(toObjectClass);
@@ -488,10 +489,12 @@ public final class ChronicleUtils {
             final var newObj = constuctor.newInstance();
             final var currentVal = entry.getValue();
             for (final var field : currentVal.getClass().getDeclaredFields()) {
-                Object value = field.get(currentVal);
+                final Object value = field.get(currentVal);
                 field.set(newObj, value);
             }
             map.put(entry.getKey(), newObj);
         }
+
+        return map;
     }
 }

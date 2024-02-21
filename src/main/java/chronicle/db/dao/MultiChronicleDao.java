@@ -61,11 +61,12 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
     /**
      * Get the db object, you must close the map manually
      * 
-     * @param path the file name
+     * @param fileName the file name
      * @throws IOException
      */
-    default ChronicleMap<K, V> db(final String path) throws IOException {
-        return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(), dataPath() + "/data/" + path,
+    default ChronicleMap<K, V> db(final String fileName) throws IOException {
+        return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
+                dataPath() + "/data/" + fileName,
                 bloatFactor());
     }
 
