@@ -224,6 +224,12 @@ interface BaseDao<K, V> {
             }
     }
 
+    @SuppressWarnings("unchecked")
+    private Set<Object> castSet(final Object searchTerm) {
+        return searchTerm instanceof ArrayList ? new HashSet<>((ArrayList<Object>) searchTerm)
+                : (Set<Object>) searchTerm;
+    }
+
     /**
      * Searches the objects using an index, without needed to loop over every record
      * Only useful for @code SearchType.EQUAL and @code SearchType.NOT_EQUAL
@@ -233,7 +239,6 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
-    @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
@@ -320,33 +325,25 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match);
                 break;
             case IN:
-                final Set<Object> set = (Set<Object>) search.searchTerm();
+                var set = castSet(search.searchTerm());
                 for (final var entry : index.entrySet()) {
                     if (set.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
+                addSearchedValues(keys, db, match);
                 break;
             case NOT_IN:
-                final Set<Object> set2 = (Set<Object>) search.searchTerm();
+                set = castSet(search.searchTerm());
                 for (final var entry : index.entrySet()) {
-                    if (!set2.contains(entry.getKey()))
+                    if (!set.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
+                addSearchedValues(keys, db, match);
                 break;
         }
 
         return match;
     }
-
-    // @SuppressWarnings("unchecked")
-    // private void castSet(final Object searchTerm, Set<Object> set) {
-    // System.out.println("This is the class name
-    // "+searchTerm.getClass().getName());
-    // if (searchTerm instanceof ArrayList)
-    // set = new HashSet<>((ArrayList<Object>) searchTerm);
-    // else
-    // set = (Set<Object>) searchTerm;
-    // }
 
     /**
      * Searches the objects using an index, without needed to loop over every record
@@ -357,12 +354,10 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
-    @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
         final var keys = new ArrayList<K>();
-        Set<Object> set;
 
         switch (search.searchType()) {
             case EQUAL:
@@ -445,18 +440,20 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match, limit);
                 break;
             case IN:
-                set = new HashSet<>((ArrayList<Object>) search.searchTerm());
+                var set = castSet(search.searchTerm());
                 for (final var entry : index.entrySet()) {
                     if (set.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
+                addSearchedValues(keys, db, match);
                 break;
             case NOT_IN:
-                set = new HashSet<>((ArrayList<Object>) search.searchTerm());
+                set = castSet(search.searchTerm());
                 for (final var entry : index.entrySet()) {
                     if (!set.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
+                addSearchedValues(keys, db, match);
                 break;
         }
 
