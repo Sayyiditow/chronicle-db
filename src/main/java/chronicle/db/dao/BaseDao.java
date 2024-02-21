@@ -340,7 +340,7 @@ interface BaseDao<K, V> {
 
     @SuppressWarnings("unchecked")
     private void castSet(final Object searchTerm, Set<Object> set) {
-        if (searchTerm instanceof List)
+        if (searchTerm instanceof ArrayList)
             set = new HashSet<>((List<Object>) searchTerm);
         else
             set = (Set<Object>) searchTerm;
@@ -355,7 +355,6 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
-    @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
