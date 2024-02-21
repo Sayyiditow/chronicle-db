@@ -341,7 +341,7 @@ interface BaseDao<K, V> {
     @SuppressWarnings("unchecked")
     private void castSet(final Object searchTerm, Set<Object> set) {
         if (searchTerm instanceof ArrayList)
-            set = new HashSet<>((List<Object>) searchTerm);
+            set = new HashSet<>((ArrayList<Object>) searchTerm);
         else
             set = (Set<Object>) searchTerm;
     }
