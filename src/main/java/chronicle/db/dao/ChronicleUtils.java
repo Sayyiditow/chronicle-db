@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -476,5 +477,21 @@ public final class ChronicleUtils {
         }
     }
 
-   // public <K,V> void moveRecords(final ConcurrentMap<K,V> intiialMap)
+    public <K, V> void moveRecords(final ConcurrentMap<K, V> currentValues, final String toObjectClass)
+            throws ClassNotFoundException, NoSuchMethodException, SecurityException, InstantiationException,
+            IllegalAccessException, IllegalArgumentException, InvocationTargetException {
+        final var cls = Class.forName(toObjectClass);
+        final var constuctor = cls.getConstructor();
+        final ConcurrentMap<K, Object> map = new ConcurrentHashMap<>();
+
+        for (final var entry : currentValues.entrySet()) {
+            final var newObj = constuctor.newInstance();
+            final var currentVal = entry.getValue();
+            for (final var field : currentVal.getClass().getDeclaredFields()) {
+                Object value = field.get(currentVal);
+                field.set(newObj, value);
+            }
+            map.put(entry.getKey(), newObj);
+        }
+    }
 }
