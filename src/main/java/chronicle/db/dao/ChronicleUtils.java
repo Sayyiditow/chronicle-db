@@ -12,7 +12,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -479,21 +478,25 @@ public final class ChronicleUtils {
     }
 
     public <K, V> ConcurrentMap<K, Object> moveRecords(final ConcurrentMap<K, V> currentValues,
-            final String toObjectClass)
-            throws ClassNotFoundException, NoSuchMethodException, SecurityException, InstantiationException,
-            IllegalAccessException, IllegalArgumentException, InvocationTargetException {
+            final String toObjectClass) throws ClassNotFoundException, NoSuchMethodException, SecurityException,
+            InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
         final var cls = Class.forName(toObjectClass);
         final var constuctor = cls.getConstructor();
         final ConcurrentMap<K, Object> map = new ConcurrentHashMap<>();
 
         for (final var entry : currentValues.entrySet()) {
             final var newObj = constuctor.newInstance();
-            final var newFields = Arrays.asList(newObj.getClass().getDeclaredFields());
             final var currentVal = entry.getValue();
             for (final var field : currentVal.getClass().getDeclaredFields()) {
                 final Object value = field.get(currentVal);
-                if (newFields.contains(field))
-                    field.set(newObj, value);
+                final var fieldName = field.getName();
+
+                try {
+                    final var f2 = newObj.getClass().getField(fieldName);
+                    f2.set(newObj, value);
+                } catch (final NoSuchFieldException e) {
+                    Logger.info("Field from source object does not exist in destination object: {}.", fieldName);
+                }
             }
             map.put(entry.getKey(), newObj);
         }
