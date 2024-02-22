@@ -8,12 +8,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -224,12 +222,6 @@ interface BaseDao<K, V> {
             }
     }
 
-    @SuppressWarnings("unchecked")
-    private Set<Object> castSet(final Object searchTerm) {
-        return searchTerm instanceof ArrayList ? new HashSet<>((ArrayList<Object>) searchTerm)
-                : (Set<Object>) searchTerm;
-    }
-
     /**
      * Searches the objects using an index, without needed to loop over every record
      * Only useful for @code SearchType.EQUAL and @code SearchType.NOT_EQUAL
@@ -239,6 +231,7 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
+    @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
@@ -325,17 +318,17 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match);
                 break;
             case IN:
-                var set = castSet(search.searchTerm());
+                var list = (List<Object>) search.searchTerm();
                 for (final var entry : index.entrySet()) {
-                    if (set.contains(entry.getKey()))
+                    if (list.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
                 break;
             case NOT_IN:
-                set = castSet(search.searchTerm());
+                list = (List<Object>) search.searchTerm();
                 for (final var entry : index.entrySet()) {
-                    if (!set.contains(entry.getKey()))
+                    if (!list.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
@@ -354,6 +347,7 @@ interface BaseDao<K, V> {
      * @param db     the db to search
      * @throws IOException
      */
+    @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
         final var match = new ConcurrentHashMap<K, V>();
@@ -440,17 +434,17 @@ interface BaseDao<K, V> {
                 addSearchedValues(keys, db, match, limit);
                 break;
             case IN:
-                var set = castSet(search.searchTerm());
+                var list = (List<Object>) search.searchTerm();
                 for (final var entry : index.entrySet()) {
-                    if (set.contains(entry.getKey()))
+                    if (list.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
                 break;
             case NOT_IN:
-                set = castSet(search.searchTerm());
+                list = (List<Object>) search.searchTerm();
                 for (final var entry : index.entrySet()) {
-                    if (!set.contains(entry.getKey()))
+                    if (!list.contains(entry.getKey()))
                         keys.addAll(entry.getValue());
                 }
                 addSearchedValues(keys, db, match);
