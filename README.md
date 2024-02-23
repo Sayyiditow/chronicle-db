@@ -12,7 +12,7 @@ Data Types.
 1. varchar, text, primary/foreign keys = String
 2. dates/datetime = long (format yyyyMMddHHmmss)
 3. currency amounts, numerical values = BigDecimal
-4. fixed reference tables = enums
+4. fixed reference tables = enums, and they must be in their own file.
 5. boolean for true/false
 6. int for small numbers.
 7. double if it fits the required precision ONLY.
