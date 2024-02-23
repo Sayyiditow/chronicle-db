@@ -488,11 +488,15 @@ public final class ChronicleUtils {
             final var newObj = constuctor.newInstance();
             final var currentVal = entry.getValue();
             for (final var field : currentVal.getClass().getDeclaredFields()) {
-                final Object value = field.get(currentVal);
+                final var fieldType = field.getType();
                 final var fieldName = field.getName();
 
                 try {
                     final var f2 = newObj.getClass().getField(fieldName);
+                    final var fieldVal = field.get(currentVal);
+                    final Object value = fieldType.isEnum() && f2.getType().isEnum() && fieldVal != null
+                            ? toEnum(f2.getType(), fieldVal)
+                            : fieldVal;
                     f2.set(newObj, value);
                 } catch (final NoSuchFieldException e) {
                     Logger.info("Field from source object does not exist in destination object: {}.", fieldName);
