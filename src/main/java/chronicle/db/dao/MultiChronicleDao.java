@@ -821,12 +821,16 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
     }
 
     default void clearDb() throws IOException {
-        final var files = getFiles();
-
-        for (final String file : files) {
+        for (final String file : getFiles()) {
             final var db = db(file);
             db.clear();
             db.close();
+        }
+    }
+
+    default void deleteDataFiles() throws IOException {
+        for (final String file : getFiles()) {
+            ChronicleUtils.CHRONICLE_UTILS.deleteFileIfExists(dataPath() + "/data/" + file);
         }
     }
 }

@@ -351,4 +351,8 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         db.clear();
         db.close();
     }
+
+    default void deleteDataFiles() throws IOException {
+        ChronicleUtils.CHRONICLE_UTILS.deleteFileIfExists(dataPath() + "/data/data");
+    }
 }
