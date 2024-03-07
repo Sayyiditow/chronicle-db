@@ -378,7 +378,7 @@ public final class ChronicleDbJoinService {
             final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
             final int objSubsetLength, final int foreignKeyObjSubsetLength, final int headerSize,
-            final boolean isInnerJoin)
+            final boolean isInnerJoin, final boolean foreignIsMainObject)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         int currentRowListSize = 0;
@@ -435,6 +435,8 @@ public final class ChronicleDbJoinService {
                             final Object foreignObj = foreignKeyObject.get(key);
                             final var foreignObjIsNull = foreignObj == null;
                             if ((foreignObjIsNull || objIsNull) && isInnerJoin)
+                                continue;
+                            if (foreignObjIsNull && foreignIsMainObject)
                                 continue;
 
                             final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? !foreignObjIsNull
@@ -589,7 +591,7 @@ public final class ChronicleDbJoinService {
                     for (final var entry : objRecords.entrySet()) {
                         loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
                                 rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size(),
-                                join.isInnerJoin());
+                                join.isInnerJoin(), join.foreignIsMainObject());
                     }
                 }));
             } else
@@ -597,7 +599,7 @@ public final class ChronicleDbJoinService {
                     for (final var entry : objRecords.entrySet()) {
                         loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
                                 rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size(),
-                                join.isInnerJoin());
+                                join.isInnerJoin(), join.foreignIsMainObject());
                     }
                 }
             indexDb.close();
