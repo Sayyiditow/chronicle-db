@@ -18,7 +18,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
@@ -149,13 +148,13 @@ public final class ChronicleUtils {
                             map.put(key, value);
                         break;
                     case IN:
-                        final Set<Object> set = (Set<Object>) searchTerm;
-                        if (set.contains(currentValue))
+                        var list = (List<Object>) search.searchTerm();
+                        if (list.contains(currentValue))
                             map.put(key, value);
                         break;
                     case NOT_IN:
-                        final Set<Object> set2 = (Set<Object>) searchTerm;
-                        if (!set2.contains(currentValue))
+                        list = (List<Object>) search.searchTerm();
+                        if (!list.contains(currentValue))
                             map.put(key, value);
                         break;
                 }
