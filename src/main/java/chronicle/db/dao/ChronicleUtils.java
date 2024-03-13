@@ -263,7 +263,7 @@ public final class ChronicleUtils {
                 field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
                     indexKey = !field.getType().isEnum() ? field.get(value)
-                            : field.get(value).toString();
+                            : String.valueOf(field.get(value));
                 }
                 final List<K> keys = index.get(indexKey);
                 if (keys.remove(entry.getKey())) {
