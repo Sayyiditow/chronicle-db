@@ -175,7 +175,6 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
     default PutStatus put(final K key, final V value, final List<String> indexFileNames) throws IOException {
         // create a bigger file if records in db are equal to multiple of entries()
         final var db = createNewDb(db());
-        Logger.info("Inserting into {} using key {}.", name(), key);
         final var prevValue = db.put(key, value);
         final var updated = prevValue != null;
         final var prevValueMap = new HashMap<K, V>();
@@ -187,8 +186,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             CHRONICLE_UTILS.updateIndex("data", name(), dataPath(), indexFileNames, Map.of(key, value),
                     prevValueMap);
         }
+        final var status = updated ? PutStatus.UPDATED : PutStatus.INSERTED;
+        Logger.info("{} into {} using key {}.", status, name(), key);
 
-        return updated ? PutStatus.UPDATED : PutStatus.INSERTED;
+        return status;
     }
 
     /**

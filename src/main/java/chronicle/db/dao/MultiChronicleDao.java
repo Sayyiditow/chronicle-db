@@ -364,7 +364,6 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default PutStatus put(final K key, final V value, final String file, final List<String> indexFileNames)
             throws IOException {
-        Logger.info("Inserting into {} at file {} using key {}.", name(), file, key);
 
         final var db = db(file);
         final var prevValue = db.put(key, value);
@@ -377,7 +376,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         if (indexFileNames.size() != 0) {
             CHRONICLE_UTILS.updateIndex(file, name(), dataPath(), indexFileNames, Map.of(key, value), prevValueMap);
         }
-        return updated ? PutStatus.UPDATED : PutStatus.INSERTED;
+
+        final var status = updated ? PutStatus.UPDATED : PutStatus.INSERTED;
+        Logger.info("{} into {} at file {} using key {}.", status, name(), file, key);
+        return status;
     }
 
     /**
