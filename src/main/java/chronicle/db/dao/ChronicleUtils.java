@@ -184,7 +184,7 @@ public final class ChronicleUtils {
                 f = entry.getValue().getClass().getField(field);
                 if (Objects.nonNull(field)) {
                     final Object currentValue = !f.getType().isEnum() ? f.get(entry.getValue())
-                            : f.get(entry.getValue()).toString();
+                            : String.valueOf(f.get(entry.getValue()));
                     List<K> keys = copy.get(currentValue);
                     if (Objects.isNull(keys)) {
                         keys = new ArrayList<>();
