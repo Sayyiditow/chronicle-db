@@ -98,11 +98,11 @@ public final class ChronicleUtils {
             if (Objects.nonNull(currentValue)) {
                 switch (search.searchType()) {
                     case EQUAL:
-                        if (String.valueOf(currentValue).equals(String.valueOf(searchTerm)))
+                        if (currentValue.equals(searchTerm))
                             map.put(key, value);
                         break;
                     case NOT_EQUAL:
-                        if (!String.valueOf(currentValue).equals(String.valueOf(searchTerm)))
+                        if (!currentValue.equals(searchTerm))
                             map.put(key, value);
                         break;
                     case LESS:
