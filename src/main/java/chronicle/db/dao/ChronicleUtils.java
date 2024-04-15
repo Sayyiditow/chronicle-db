@@ -94,7 +94,7 @@ public final class ChronicleUtils {
                     ? toEnum(field.getType(), search.searchTerm())
                     : field.getType().isAssignableFrom(long.class)
                             && (search.searchTerm() instanceof String || search.searchTerm() instanceof Integer)
-                                    ? (long) search.searchTerm()
+                                    ? Long.parseLong(search.searchTerm().toString())
                                     : search.searchTerm();
             final Object currentValue = field.get(value);
 
