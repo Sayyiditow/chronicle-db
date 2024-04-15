@@ -32,6 +32,7 @@ import org.tinylog.Logger;
 
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Search;
+import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.HandleConsumer;
 
 @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -85,17 +86,46 @@ public final class ChronicleUtils {
         return Enum.valueOf((Class<Enum>) enumClass, value.toString());
     }
 
+    public List<Object> setSearchTerm(final List<Object> searchTerms, final Class<?> fieldClass) {
+        for (int i = 0; i < searchTerms.size(); i++) {
+            if (fieldClass.isEnum() && (searchTerms.get(i) instanceof String)) {
+                searchTerms.set(i, toEnum(fieldClass, searchTerms.get(i)));
+                continue;
+            }
+            if (fieldClass.isAssignableFrom(long.class)
+                    && (searchTerms.get(i) instanceof String || searchTerms.get(i) instanceof Integer
+                            || searchTerms.get(i).getClass().isAssignableFrom(int.class))) {
+                searchTerms.set(i, toEnum(fieldClass, Long.parseLong(searchTerms.get(i).toString())));
+                continue;
+            }
+
+        }
+
+        return searchTerms;
+    }
+
+    public Object setSearchTerm(final Object searchTerm, final Class<?> fieldClass) {
+        if (fieldClass.isEnum() && (searchTerm instanceof String))
+            return toEnum(fieldClass, searchTerm);
+
+        if (fieldClass.isAssignableFrom(long.class) && (searchTerm instanceof String || searchTerm instanceof Integer
+                || searchTerm.getClass().isAssignableFrom(int.class)))
+            return Long.parseLong(searchTerm.toString());
+
+        return searchTerm;
+
+    }
+
     public <K, V> void search(final Search search, final K key, final V value, final ConcurrentMap<K, V> map)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
         final Field field = value.getClass().getField(search.field());
+        List<Object> searchTermList = new ArrayList<>();
 
         if (Objects.nonNull(field)) {
-            final Object searchTerm = field.getType().isEnum() && (search.searchTerm() instanceof String)
-                    ? toEnum(field.getType(), search.searchTerm())
-                    : field.getType().isAssignableFrom(long.class)
-                            && (search.searchTerm() instanceof String || search.searchTerm() instanceof Integer)
-                                    ? Long.parseLong(search.searchTerm().toString())
-                                    : search.searchTerm();
+            final Object searchTerm = setSearchTerm(search.searchTerm(), field.getType());
+            if (List.of(SearchType.IN, SearchType.NOT_IN).indexOf(search.searchType()) != -1) {
+                searchTermList = setSearchTerm((List<Object>) search.searchTerm(), field.getType());
+            }
             final Object currentValue = field.get(value);
 
             if (Objects.nonNull(currentValue)) {
@@ -151,13 +181,11 @@ public final class ChronicleUtils {
                             map.put(key, value);
                         break;
                     case IN:
-                        var list = (List<Object>) search.searchTerm();
-                        if (list.contains(currentValue))
+                        if (searchTermList.contains(currentValue))
                             map.put(key, value);
                         break;
                     case NOT_IN:
-                        list = (List<Object>) search.searchTerm();
-                        if (!list.contains(currentValue))
+                        if (!searchTermList.contains(currentValue))
                             map.put(key, value);
                         break;
                 }
@@ -186,8 +214,7 @@ public final class ChronicleUtils {
             try {
                 f = entry.getValue().getClass().getField(field);
                 if (Objects.nonNull(field)) {
-                    final Object currentValue = !f.getType().isEnum() ? f.get(entry.getValue())
-                            : String.valueOf(f.get(entry.getValue()));
+                    final Object currentValue = f.get(entry.getValue());
                     List<K> keys = copy.get(currentValue);
                     if (Objects.isNull(keys)) {
                         keys = new ArrayList<>();
