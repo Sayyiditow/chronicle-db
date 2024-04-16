@@ -243,8 +243,7 @@ public final class ChronicleUtils {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
-                    indexKey = !field.getType().isEnum() ? field.get(value)
-                            : field.get(value).toString();
+                    indexKey = field.get(value);
                 }
                 final List<K> keys = index.get(indexKey);
                 if (keys.remove(entry.getKey())) {
@@ -292,8 +291,7 @@ public final class ChronicleUtils {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
-                    indexKey = !field.getType().isEnum() ? field.get(value)
-                            : String.valueOf(field.get(value));
+                    indexKey = field.get(value);
                 }
                 final List<K> keys = index.get(indexKey);
                 if (keys.remove(entry.getKey())) {
@@ -306,8 +304,7 @@ public final class ChronicleUtils {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 if (Objects.nonNull(field)) {
-                    indexKey = !field.getType().isEnum() ? field.get(value)
-                            : String.valueOf(field.get(value));
+                    indexKey = field.get(value);
                 }
 
                 List<K> keys = index.get(indexKey);
