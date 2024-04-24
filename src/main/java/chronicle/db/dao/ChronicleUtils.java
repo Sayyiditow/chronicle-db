@@ -213,15 +213,15 @@ public final class ChronicleUtils {
             Field f = null;
             try {
                 f = entry.getValue().getClass().getField(field);
-                if (Objects.nonNull(field)) {
-                    final Object currentValue = f.get(entry.getValue());
-                    List<K> keys = copy.get(currentValue);
-                    if (Objects.isNull(keys)) {
-                        keys = new ArrayList<>();
-                    }
-                    keys.add(entry.getKey());
-                    copy.put(currentValue, keys);
+                Object currentValue = f.get(entry.getValue());
+                if (currentValue == null)
+                    currentValue = "null";
+                List<K> keys = copy.get(currentValue);
+                if (Objects.isNull(keys)) {
+                    keys = new ArrayList<>();
                 }
+                keys.add(entry.getKey());
+                copy.put(currentValue, keys);
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when indexing {}. {}", field, dbName, e);
                 break;
@@ -242,9 +242,7 @@ public final class ChronicleUtils {
             for (final var entry : values.entrySet()) {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
-                if (Objects.nonNull(field)) {
-                    indexKey = field.get(value);
-                }
+                indexKey = field.get(value);
                 final List<K> keys = index.get(indexKey);
                 if (keys.remove(entry.getKey())) {
                     index.put(indexKey, keys);
@@ -290,22 +288,19 @@ public final class ChronicleUtils {
             for (final var entry : prevValues.entrySet()) {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
-                if (Objects.nonNull(field)) {
-                    indexKey = field.get(value);
-                }
+                indexKey = field.get(value);
                 final List<K> keys = index.get(indexKey);
-                if (keys.remove(entry.getKey())) {
-                    index.put(indexKey, keys);
-                    indexDb.put(dbFileName, index);
-                }
+                if (Objects.nonNull(keys))
+                    if (keys.remove(entry.getKey())) {
+                        index.put(indexKey, keys);
+                        indexDb.put(dbFileName, index);
+                    }
             }
 
             for (final var entry : values.entrySet()) {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
-                if (Objects.nonNull(field)) {
-                    indexKey = field.get(value);
-                }
+                indexKey = field.get(value);
 
                 List<K> keys = index.get(indexKey);
                 if (Objects.isNull(keys)) {
