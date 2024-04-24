@@ -243,6 +243,8 @@ public final class ChronicleUtils {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 indexKey = field.get(value);
+                if (Objects.isNull(indexKey))
+                    indexKey = "null";
                 final List<K> keys = index.get(indexKey);
                 if (keys.remove(entry.getKey())) {
                     index.put(indexKey, keys);
@@ -289,18 +291,21 @@ public final class ChronicleUtils {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 indexKey = field.get(value);
+                if (Objects.isNull(indexKey))
+                    indexKey = "null";
                 final List<K> keys = index.get(indexKey);
-                if (Objects.nonNull(keys))
-                    if (keys.remove(entry.getKey())) {
-                        index.put(indexKey, keys);
-                        indexDb.put(dbFileName, index);
-                    }
+                if (keys.remove(entry.getKey())) {
+                    index.put(indexKey, keys);
+                    indexDb.put(dbFileName, index);
+                }
             }
 
             for (final var entry : values.entrySet()) {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 indexKey = field.get(value);
+                if (Objects.isNull(indexKey))
+                    indexKey = "null";
 
                 List<K> keys = index.get(indexKey);
                 if (Objects.isNull(keys)) {
