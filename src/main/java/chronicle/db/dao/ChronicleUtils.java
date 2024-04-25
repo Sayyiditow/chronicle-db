@@ -294,10 +294,11 @@ public final class ChronicleUtils {
                 if (Objects.isNull(indexKey))
                     indexKey = "null";
                 final List<K> keys = index.get(indexKey);
-                if (keys.remove(entry.getKey())) {
-                    index.put(indexKey, keys);
-                    indexDb.put(dbFileName, index);
-                }
+                if (Objects.nonNull(keys))
+                    if (keys.remove(entry.getKey())) {
+                        index.put(indexKey, keys);
+                        indexDb.put(dbFileName, index);
+                    }
             }
 
             for (final var entry : values.entrySet()) {
