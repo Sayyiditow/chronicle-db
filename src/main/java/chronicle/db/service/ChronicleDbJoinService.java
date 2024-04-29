@@ -420,6 +420,11 @@ public final class ChronicleDbJoinService {
                         final Object obj = object.get(keyEntry.getKey());
                         final var objIsNull = obj == null;
 
+                        if (objIsNull && isInnerJoin)
+                            continue;
+                        else if (objIsNull && !foreignIsMainObject)
+                            continue;
+
                         final var objRow = objSubsetLength == 0
                                 ? !objIsNull ? (Object[]) obj.getClass().getDeclaredMethod("row", Object.class)
                                         .invoke(obj, key)
@@ -434,7 +439,7 @@ public final class ChronicleDbJoinService {
                         } else {
                             final Object foreignObj = foreignKeyObject.get(key);
                             final var foreignObjIsNull = foreignObj == null;
-                            if ((foreignObjIsNull || objIsNull) && isInnerJoin)
+                            if (foreignObjIsNull && isInnerJoin)
                                 continue;
                             else if (foreignObjIsNull && foreignIsMainObject)
                                 continue;
