@@ -83,7 +83,11 @@ public final class ChronicleUtils {
     }
 
     public Enum toEnum(final Class<?> enumClass, final Object value) {
-        return Enum.valueOf((Class<Enum>) enumClass, value.toString());
+        try {
+            return Enum.valueOf((Class<Enum>) enumClass, value.toString());
+        } catch (final Exception e) {
+            return null;
+        }
     }
 
     public List<Object> setSearchTerm(final List<Object> searchTerms, final Class<?> fieldClass) {
@@ -515,13 +519,12 @@ public final class ChronicleUtils {
             final var newObj = constuctor.newInstance();
             final var currentVal = entry.getValue();
             for (final var field : currentVal.getClass().getDeclaredFields()) {
-                final var fieldType = field.getType();
                 final var fieldName = field.getName();
 
                 try {
                     final var f2 = newObj.getClass().getField(fieldName);
                     final var fieldVal = field.get(currentVal);
-                    final Object value = fieldType.isEnum() && f2.getType().isEnum() && fieldVal != null
+                    final Object value = f2.getType().isEnum() && fieldVal != null
                             ? toEnum(f2.getType(), fieldVal)
                             : fieldVal;
                     f2.set(newObj, value);
