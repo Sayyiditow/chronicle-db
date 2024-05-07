@@ -374,6 +374,25 @@ public final class ChronicleDbJoinService {
         return obj;
     }
 
+    private Object[] getRow(final Object obj, final boolean objIsNull, final Object key, final int subsetLength,
+            final int objFieldLength)
+            throws IllegalAccessException, InvocationTargetException, NoSuchMethodException, SecurityException {
+        if (!objIsNull) {
+            if (obj instanceof LinkedHashMap) {
+                return ((LinkedHashMap) obj).values().toArray();
+            } else {
+                return (Object[]) obj.getClass().getDeclaredMethod("row", Object.class)
+                        .invoke(obj, key);
+            }
+        } else {
+            if (subsetLength == 0) {
+                return createEmptyObject(objFieldLength);
+            } else {
+                return createEmptyObject(subsetLength);
+            }
+        }
+    }
+
     private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
             final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
@@ -390,16 +409,11 @@ public final class ChronicleDbJoinService {
 
                 for (final var key : keyEntry.getValue()) {
                     if (objPrev != null) {
-                        final Object foreignObj = foreignKeyObject.get(key);
+                        final var foreignObj = foreignKeyObject.get(key);
                         final var foreignObjIsNull = foreignObj == null;
 
-                        final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? !foreignObjIsNull
-                                ? (Object[]) foreignObj.getClass().getDeclaredMethod("row", Object.class)
-                                        .invoke(foreignObj, key)
-                                : createEmptyObject(foreignKeyObject.values().toArray()[0].getClass()
-                                        .getDeclaredFields().length)
-                                : !foreignObjIsNull ? ((LinkedHashMap) foreignObj).values().toArray()
-                                        : createEmptyObject(foreignKeyObjSubsetLength);
+                        final var foreignObjRow = getRow(foreignObj, foreignObjIsNull, key, foreignKeyObjSubsetLength,
+                                foreignKeyObject.values().toArray()[0].getClass().getDeclaredFields().length);
 
                         if (multiForeignValues[0] == null) {
                             multiForeignValues[0] = foreignObjRow;
@@ -417,7 +431,7 @@ public final class ChronicleDbJoinService {
                     } else {
                         final var foreignIndex = indexMap.get(key);
                         final var foreignObjPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
-                        final Object obj = object.get(keyEntry.getKey());
+                        final var obj = object.get(keyEntry.getKey());
                         final var objIsNull = obj == null;
 
                         if (objIsNull && isInnerJoin)
@@ -425,32 +439,26 @@ public final class ChronicleDbJoinService {
                         else if (objIsNull && !foreignIsMainObject)
                             continue;
 
-                        final var objRow = objSubsetLength == 0
-                                ? !objIsNull ? (Object[]) obj.getClass().getDeclaredMethod("row", Object.class)
-                                        .invoke(obj, key)
-                                        : createEmptyObject(object.values().toArray()[0].getClass()
-                                                .getDeclaredFields().length)
-                                : !objIsNull ? ((LinkedHashMap) obj).values().toArray()
-                                        : createEmptyObject(objSubsetLength);
+                        final var objRow = getRow(obj, objIsNull, key, objSubsetLength,
+                                object.values().toArray()[0].getClass().getDeclaredFields().length);
+
                         if (foreignObjPrev != null) {
                             indexMap.put(key, foreignIndex);
                             rowList.set(foreignIndex, CHRONICLE_UTILS.copyArray(foreignObjPrev, objRow));
                             currentRowListSize = objRow.length + foreignObjPrev.length;
                         } else {
-                            final Object foreignObj = foreignKeyObject.get(key);
+                            final var foreignObj = foreignKeyObject.get(key);
                             final var foreignObjIsNull = foreignObj == null;
+
                             if (foreignObjIsNull && isInnerJoin)
                                 continue;
                             else if (foreignObjIsNull && foreignIsMainObject)
                                 continue;
 
-                            final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? !foreignObjIsNull
-                                    ? (Object[]) foreignObj.getClass().getDeclaredMethod("row", Object.class)
-                                            .invoke(foreignObj, key)
-                                    : createEmptyObject(foreignKeyObject.values().toArray()[0].getClass()
-                                            .getDeclaredFields().length)
-                                    : !foreignObjIsNull ? ((LinkedHashMap) foreignObj).values().toArray()
-                                            : createEmptyObject(foreignKeyObjSubsetLength);
+                            final var foreignObjRow = getRow(foreignObj, foreignObjIsNull, key,
+                                    foreignKeyObjSubsetLength,
+                                    foreignKeyObject.values().toArray()[0].getClass().getDeclaredFields().length);
+
                             rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
                             currentRowListSize = objRow.length + foreignObjRow.length;
                             indexMap.put(key, rowList.size() - 1);
