@@ -404,7 +404,6 @@ public final class ChronicleDbJoinService {
             if (keyEntry.getKey() != null) {
                 final var objIndex = indexMap.get(keyEntry.getKey());
                 final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
-                final var multiForeignValues = new Object[1];
 
                 for (final var key : keyEntry.getValue()) {
                     if (objPrev != null) {
@@ -414,16 +413,7 @@ public final class ChronicleDbJoinService {
                         final var foreignObjRow = getRow(foreignObj, foreignObjIsNull, key, foreignKeyObjSubsetLength,
                                 foreignKeyObject.values().toArray()[0].getClass().getDeclaredFields().length);
 
-                        if (multiForeignValues[0] == null) {
-                            multiForeignValues[0] = foreignObjRow;
-                            rowList.set(objIndex,
-                                    CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
-                        } else {
-                            multiForeignValues[0] = CHRONICLE_UTILS.copyArray(multiForeignValues,
-                                    foreignObjRow);
-                            rowList.set(objIndex,
-                                    CHRONICLE_UTILS.copyArray(objPrev, multiForeignValues));
-                        }
+                        rowList.set(objIndex, CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
                         indexMap.put(key, objIndex);
                     } else {
                         final var foreignIndex = indexMap.get(key);
@@ -464,8 +454,7 @@ public final class ChronicleDbJoinService {
         }
 
         if (!isInnerJoin && !foreignIsMainObject) {
-            if (e.getValue().keySet().size() != object.keySet().size()) {
-                Logger.info("No link on foreign key and first object is required. Adding default values.");
+            if (e.getValue().size() != 0) {
                 object.keySet().removeAll(e.getValue().keySet());
 
                 for (final var key : object.keySet()) {
@@ -483,8 +472,7 @@ public final class ChronicleDbJoinService {
                     rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
                     indexMap.put(key, rowList.size() - 1);
                 }
-            } else if (e.getValue().size() == 0) {
-                Logger.info("No link on foreign key and first object is required. Adding default values.");
+            } else {
                 for (final var o : object.entrySet()) {
                     final var foreignObj = foreignKeyObject.values().toArray()[0];
                     final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? createEmptyObject(foreignObj.getClass()
