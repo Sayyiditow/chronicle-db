@@ -400,7 +400,6 @@ public final class ChronicleDbJoinService {
             final boolean isInnerJoin, final boolean foreignIsMainObject)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
-        int currentRowListSize = 0;
         for (final var keyEntry : e.getValue().entrySet()) {
             if (keyEntry.getKey() != null) {
                 final var objIndex = indexMap.get(keyEntry.getKey());
@@ -419,13 +418,11 @@ public final class ChronicleDbJoinService {
                             multiForeignValues[0] = foreignObjRow;
                             rowList.set(objIndex,
                                     CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
-                            currentRowListSize = objPrev.length + foreignObjRow.length;
                         } else {
                             multiForeignValues[0] = CHRONICLE_UTILS.copyArray(multiForeignValues,
                                     foreignObjRow);
                             rowList.set(objIndex,
                                     CHRONICLE_UTILS.copyArray(objPrev, multiForeignValues));
-                            currentRowListSize = objPrev.length + multiForeignValues.length;
                         }
                         indexMap.put(key, objIndex);
                     } else {
@@ -445,7 +442,6 @@ public final class ChronicleDbJoinService {
                         if (foreignObjPrev != null) {
                             indexMap.put(key, foreignIndex);
                             rowList.set(foreignIndex, CHRONICLE_UTILS.copyArray(foreignObjPrev, objRow));
-                            currentRowListSize = objRow.length + foreignObjPrev.length;
                         } else {
                             final var foreignObj = foreignKeyObject.get(key);
                             final var foreignObjIsNull = foreignObj == null;
@@ -460,7 +456,6 @@ public final class ChronicleDbJoinService {
                                     foreignKeyObject.values().toArray()[0].getClass().getDeclaredFields().length);
 
                             rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
-                            currentRowListSize = objRow.length + foreignObjRow.length;
                             indexMap.put(key, rowList.size() - 1);
                         }
                     }
@@ -468,43 +463,40 @@ public final class ChronicleDbJoinService {
             }
         }
 
-        if (!isInnerJoin) {
+        if (!isInnerJoin && !foreignIsMainObject) {
             if (e.getValue().keySet().size() != object.keySet().size()) {
-                for (final var o : object.entrySet()) {
-                    final var objPrevIndex = indexMap.get(o.getKey());
+                Logger.info("No link on foreign key and first object is required. Adding default values.");
+                object.keySet().removeAll(e.getValue().keySet());
 
-                    if (objPrevIndex != null) {
-                        final var objPrev = rowList.get(objPrevIndex);
-                        if (objPrev.length != currentRowListSize) {
-                            final var foreignObj = foreignKeyObject.values().toArray()[0];
-                            final var foreignObjRow = foreignKeyObjSubsetLength == 0
-                                    ? createEmptyObject(foreignObj.getClass()
-                                            .getDeclaredFields().length)
-                                    : createEmptyObject(foreignKeyObjSubsetLength);
-                            rowList.set(objPrevIndex, CHRONICLE_UTILS.copyArray(objPrev, foreignObjRow));
-                            indexMap.put(o.getKey(), objPrevIndex);
-                        }
-                    }
+                for (final var key : object.keySet()) {
+                    final var value = object.get(key);
+                    final var foreignObj = foreignKeyObject.values().toArray()[0];
+                    final var foreignObjRow = foreignKeyObjSubsetLength == 0
+                            ? createEmptyObject(foreignObj.getClass()
+                                    .getDeclaredFields().length)
+                            : createEmptyObject(foreignKeyObjSubsetLength);
+
+                    final var objRow = objSubsetLength == 0
+                            ? (Object[]) value.getClass().getDeclaredMethod("row", Object.class)
+                                    .invoke(value, key)
+                            : ((LinkedHashMap) value).values().toArray();
+                    rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
+                    indexMap.put(key, rowList.size() - 1);
                 }
             } else if (e.getValue().size() == 0) {
-                Logger.info("No link on foreign key.");
+                Logger.info("No link on foreign key and first object is required. Adding default values.");
                 for (final var o : object.entrySet()) {
-                    final var objPrevIndex = indexMap.get(o.getKey());
                     final var foreignObj = foreignKeyObject.values().toArray()[0];
                     final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? createEmptyObject(foreignObj.getClass()
                             .getDeclaredFields().length)
                             : createEmptyObject(foreignKeyObjSubsetLength);
-                    if (objPrevIndex != null) {
-                        rowList.set(objPrevIndex, CHRONICLE_UTILS.copyArray(rowList.get(objPrevIndex), foreignObjRow));
-                        indexMap.put(o.getKey(), objPrevIndex);
-                    } else {
-                        final var objRow = objSubsetLength == 0
-                                ? (Object[]) o.getValue().getClass().getDeclaredMethod("row", Object.class)
-                                        .invoke(o.getValue(), o.getKey())
-                                : ((LinkedHashMap) o.getValue()).values().toArray();
-                        rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
-                        indexMap.put(o.getKey(), rowList.size() - 1);
-                    }
+
+                    final var objRow = objSubsetLength == 0
+                            ? (Object[]) o.getValue().getClass().getDeclaredMethod("row", Object.class)
+                                    .invoke(o.getValue(), o.getKey())
+                            : ((LinkedHashMap) o.getValue()).values().toArray();
+                    rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
+                    indexMap.put(o.getKey(), rowList.size() - 1);
                 }
             }
         }
@@ -597,13 +589,13 @@ public final class ChronicleDbJoinService {
                 objectHeaderList.add(objectName + join.foreignKeyName());
             }
 
-            if (objectHeaderList.indexOf(foreignKeyObjName + join.foreignKeyName()) == -1) {
+            if (objectHeaderList.indexOf(foreignKeyObjName) == -1) {
                 final String[] headerListB = foreignKeyObjSubsetIsEmpty
                         ? (String[]) foreignKeyObjValue.getClass().getDeclaredMethod("header")
                                 .invoke(foreignKeyObjValue)
                         : foreignKeyObjSubsetFields;
                 addHeaders(headerListB, foreignKeyObjName, headers, false, join.foreignKeyName(), false);
-                objectHeaderList.add(foreignKeyObjName + join.foreignKeyName());
+                objectHeaderList.add(foreignKeyObjName);
             }
 
             if (indexDb.keySet().size() > 3) {
