@@ -1,6 +1,7 @@
 package chronicle.db.dao;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
+import static chronicle.db.dao.ChronicleUtils.getFileList;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -184,18 +185,20 @@ interface BaseDao<K, V> {
      * @param fields the fields required
      */
     default void initDefaultIndexes(final String[] fields) throws IOException {
-        final var indexFiles = indexFileNames();
-        if (indexFiles.size() == 0) {
-            final var toIndex = new ArrayList<String>();
+        if (getFileList(dataPath() + "/data").size() != 0) {
+            final var indexFiles = indexFileNames();
+            if (indexFiles.size() != fields.length) {
+                final var toIndex = new ArrayList<String>();
 
-            for (final var field : fields) {
-                if (indexFileNames().indexOf(field) == -1) {
-                    toIndex.add(field);
+                for (final var field : fields) {
+                    if (indexFiles.indexOf(field) == -1) {
+                        toIndex.add(field);
+                    }
                 }
-            }
 
-            if (toIndex.size() > 0) {
-                initIndex(toIndex.toArray(new String[0]));
+                if (toIndex.size() > 0) {
+                    initIndex(toIndex.toArray(new String[0]));
+                }
             }
         }
     }
