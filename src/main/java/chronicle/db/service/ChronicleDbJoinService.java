@@ -16,7 +16,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
@@ -578,7 +577,8 @@ public final class ChronicleDbJoinService {
             final var foreignKeyObjSubsetIsEmpty = foreignKeyObjSubsetLength == 0;
             final var objectName = mapOfObjects.get(join.objDaoName()).get("name").toString();
             final var foreignKeyObjName = mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString();
-            final var isObjectEmpty = String.valueOf(mapOfObjects.get(join.objDaoName()).get("isEmpty"));
+            final var isObjectEmpty = !String.valueOf(mapOfObjects.get(join.objDaoName()).get("isEmpty"))
+                    .equals("null");
 
             if (objectHeaderList.indexOf(objectName + join.foreignKeyName()) == -1) {
                 final String[] headerListA = objSubsetIsEmpty
@@ -602,7 +602,7 @@ public final class ChronicleDbJoinService {
                     for (final var entry : objRecords.entrySet()) {
                         loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
                                 rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size(),
-                                join.isInnerJoin(), join.foreignIsMainObject(), Objects.nonNull(isObjectEmpty));
+                                join.isInnerJoin(), join.foreignIsMainObject(), isObjectEmpty);
                     }
                 }));
             } else
@@ -610,7 +610,7 @@ public final class ChronicleDbJoinService {
                     for (final var entry : objRecords.entrySet()) {
                         loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
                                 rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size(),
-                                join.isInnerJoin(), join.foreignIsMainObject(), Objects.nonNull(isObjectEmpty));
+                                join.isInnerJoin(), join.foreignIsMainObject(), isObjectEmpty);
                     }
                 }
             indexDb.close();
