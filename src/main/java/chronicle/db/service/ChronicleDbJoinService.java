@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
@@ -37,7 +38,8 @@ public final class ChronicleDbJoinService {
     public static final ChronicleDbJoinService CHRONICLE_DB_JOIN_SERVICE = new ChronicleDbJoinService();
 
     private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
-            final MultiChronicleDao dao, final JoinFilter filter, final String file)
+            final MultiChronicleDao dao, final JoinFilter filter, final String file,
+            final Map<String, Map<String, Object>> mapOfObjects, final String daoClassName)
             throws IOException, NoSuchFieldException, SecurityException {
         ConcurrentMap<Object, Object> dbToMap = null;
 
@@ -91,6 +93,7 @@ public final class ChronicleDbJoinService {
                 }
                 if (dbToMap.size() == 0) {
                     // add one object just to make sure the join works when no data is available
+                    mapOfObjects.get(daoClassName).put("isEmpty", true);
                     dbToMap.put(dao.averageKey(), dao.averageValue());
                 }
                 dbToMap = dao.subsetOfValues(dbToMap, filter.subsetFields(), dao.name());
@@ -102,6 +105,7 @@ public final class ChronicleDbJoinService {
             db.close();
             if (dbToMap.size() == 0) {
                 // add one object just to make sure the join works when no data is available
+                mapOfObjects.get(daoClassName).put("isEmpty", true);
                 dbToMap.put(dao.averageKey(), dao.averageValue());
             }
             recordValueMap.put(file, dbToMap);
@@ -110,7 +114,8 @@ public final class ChronicleDbJoinService {
     }
 
     private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
-            final SingleChronicleDao dao, final JoinFilter filter) throws IOException {
+            final SingleChronicleDao dao, final JoinFilter filter, final Map<String, Map<String, Object>> mapOfObjects,
+            final String daoClassName) throws IOException {
         ConcurrentMap<Object, Object> db = null;
 
         if (filter != null) {
@@ -154,6 +159,7 @@ public final class ChronicleDbJoinService {
                 }
                 if (db.size() == 0) {
                     // add one object just to make sure the join works when no data is available
+                    mapOfObjects.get(daoClassName).put("isEmpty", true);
                     db.put(dao.averageKey(), dao.averageValue());
                 }
                 db = dao.subsetOfValues(db, filter.subsetFields(), dao.name());
@@ -167,6 +173,7 @@ public final class ChronicleDbJoinService {
             db = dao.fetch();
             if (db.size() == 0) {
                 // add one object just to make sure the join works when no data is available
+                mapOfObjects.get(daoClassName).put("isEmpty", true);
                 db.put(dao.averageKey(), dao.averageValue());
             }
             recordValueMap.put("data", db);
@@ -197,7 +204,7 @@ public final class ChronicleDbJoinService {
 
         if (records.get(daoClassName) == null) {
             final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
-            setRecordsFromFilter(recordValueMap, dao, filter);
+            setRecordsFromFilter(recordValueMap, dao, filter, mapOfObjects, daoClassName);
             records.put(daoClassName, recordValueMap);
         }
 
@@ -230,7 +237,7 @@ public final class ChronicleDbJoinService {
             final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
 
             for (final var file : files) {
-                setRecordsFromFilter(recordValueMap, dao, filter, file);
+                setRecordsFromFilter(recordValueMap, dao, filter, file, mapOfObjects, daoClassName);
             }
             records.put(daoClassName, recordValueMap);
         }
@@ -397,7 +404,7 @@ public final class ChronicleDbJoinService {
             final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
             final int objSubsetLength, final int foreignKeyObjSubsetLength, final int headerSize,
-            final boolean isInnerJoin, final boolean foreignIsMainObject)
+            final boolean isInnerJoin, final boolean foreignIsMainObject, final boolean isObjectEmpty)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         for (final var keyEntry : e.getValue().entrySet()) {
@@ -473,18 +480,21 @@ public final class ChronicleDbJoinService {
                     indexMap.put(key, rowList.size() - 1);
                 }
             } else {
-                for (final var o : object.entrySet()) {
-                    final var foreignObj = foreignKeyObject.values().toArray()[0];
-                    final var foreignObjRow = foreignKeyObjSubsetLength == 0 ? createEmptyObject(foreignObj.getClass()
-                            .getDeclaredFields().length)
-                            : createEmptyObject(foreignKeyObjSubsetLength);
+                if (!isObjectEmpty) {
+                    for (final var o : object.entrySet()) {
+                        final var foreignObj = foreignKeyObject.values().toArray()[0];
+                        final var foreignObjRow = foreignKeyObjSubsetLength == 0
+                                ? createEmptyObject(foreignObj.getClass()
+                                        .getDeclaredFields().length)
+                                : createEmptyObject(foreignKeyObjSubsetLength);
 
-                    final var objRow = objSubsetLength == 0
-                            ? (Object[]) o.getValue().getClass().getDeclaredMethod("row", Object.class)
-                                    .invoke(o.getValue(), o.getKey())
-                            : ((LinkedHashMap) o.getValue()).values().toArray();
-                    rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
-                    indexMap.put(o.getKey(), rowList.size() - 1);
+                        final var objRow = objSubsetLength == 0
+                                ? (Object[]) o.getValue().getClass().getDeclaredMethod("row", Object.class)
+                                        .invoke(o.getValue(), o.getKey())
+                                : ((LinkedHashMap) o.getValue()).values().toArray();
+                        rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
+                        indexMap.put(o.getKey(), rowList.size() - 1);
+                    }
                 }
             }
         }
@@ -568,6 +578,7 @@ public final class ChronicleDbJoinService {
             final var foreignKeyObjSubsetIsEmpty = foreignKeyObjSubsetLength == 0;
             final var objectName = mapOfObjects.get(join.objDaoName()).get("name").toString();
             final var foreignKeyObjName = mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString();
+            final var isObjectEmpty = String.valueOf(mapOfObjects.get(join.objDaoName()).get("isEmpty"));
 
             if (objectHeaderList.indexOf(objectName + join.foreignKeyName()) == -1) {
                 final String[] headerListA = objSubsetIsEmpty
@@ -591,7 +602,7 @@ public final class ChronicleDbJoinService {
                     for (final var entry : objRecords.entrySet()) {
                         loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
                                 rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size(),
-                                join.isInnerJoin(), join.foreignIsMainObject());
+                                join.isInnerJoin(), join.foreignIsMainObject(), Objects.nonNull(isObjectEmpty));
                     }
                 }));
             } else
@@ -599,7 +610,7 @@ public final class ChronicleDbJoinService {
                     for (final var entry : objRecords.entrySet()) {
                         loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
                                 rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size(),
-                                join.isInnerJoin(), join.foreignIsMainObject());
+                                join.isInnerJoin(), join.foreignIsMainObject(), Objects.nonNull(isObjectEmpty));
                     }
                 }
             indexDb.close();
