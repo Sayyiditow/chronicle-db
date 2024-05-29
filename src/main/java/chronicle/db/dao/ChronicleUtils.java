@@ -515,11 +515,12 @@ public final class ChronicleUtils {
         final var cls = Class.forName(toObjectClass);
         final var constuctor = cls.getConstructor();
         final ConcurrentMap<K, Object> map = new ConcurrentHashMap<>();
+        final Field[] fields = currentValues.values().stream().findFirst().get().getClass().getDeclaredFields();
 
         for (final var entry : currentValues.entrySet()) {
             final var newObj = constuctor.newInstance();
             final var currentVal = entry.getValue();
-            for (final var field : currentVal.getClass().getDeclaredFields()) {
+            for (final var field : fields) {
                 final var fieldName = field.getName();
                 final var destMoveFieldName = move.get(fieldName);
                 final var destFieldName = destMoveFieldName != null ? destMoveFieldName : fieldName;
@@ -542,6 +543,10 @@ public final class ChronicleUtils {
                 } catch (final NoSuchFieldException e) {
                     Logger.info("Field from source object does not exist in destination object: {}.", fieldName);
                 }
+            }
+
+            for(var en: def.entrySet()){
+
             }
             map.put(entry.getKey(), newObj);
         }
