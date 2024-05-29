@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -512,52 +513,54 @@ public final class ChronicleUtils {
             final String toObjectClass, final Map<String, String> move, final Map<String, Object> def)
             throws ClassNotFoundException, NoSuchMethodException, SecurityException,
             InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
-        final var cls = Class.forName(toObjectClass);
-        final var constuctor = cls.getConstructor();
         final ConcurrentMap<K, Object> map = new ConcurrentHashMap<>();
-        final Field[] fields = currentValues.values().stream().findFirst().get().getClass().getDeclaredFields();
-        final var newFields = List.of(constuctor.newInstance().getClass().getDeclaredFields());
-        newFields.removeAll(List.of(fields));
+        if (currentValues.size() != 0) {
+            final var cls = Class.forName(toObjectClass);
+            final var constuctor = cls.getConstructor();
+            final Field[] fields = currentValues.values().stream().findFirst().get().getClass().getDeclaredFields();
+            final var newFields = new ArrayList<>(
+                    Arrays.asList(constuctor.newInstance().getClass().getDeclaredFields()));
+            newFields.removeAll(new ArrayList<>(Arrays.asList(fields)));
 
-        for (final var entry : currentValues.entrySet()) {
-            final var newObj = constuctor.newInstance();
-            final var currentVal = entry.getValue();
-            for (final var field : fields) {
-                final var fieldName = field.getName();
-                final var destMoveFieldName = move.get(fieldName);
-                final var destFieldName = destMoveFieldName != null ? destMoveFieldName : fieldName;
-                final var defValue = def.get(fieldName);
-
-                try {
-                    final var f2 = newObj.getClass().getField(destFieldName);
-                    final var fieldVal = field.get(currentVal);
-                    if (defValue != null) {
-                        final Object value = f2.getType().isEnum()
-                                ? toEnum(f2.getType(), defValue)
-                                : defValue;
-                        f2.set(newObj, value);
-                        continue;
-                    }
-                    final Object value = f2.getType().isEnum() && fieldVal != null
-                            ? toEnum(f2.getType(), fieldVal)
-                            : fieldVal;
-                    f2.set(newObj, value);
-                } catch (final NoSuchFieldException e) {
-                    Logger.info("Field from source object does not exist in destination object: {}.", fieldName);
-                }
-            }
-
-            for (final var en : def.entrySet()) {
-                for (final var field : newFields) {
+            for (final var entry : currentValues.entrySet()) {
+                final var newObj = constuctor.newInstance();
+                final var currentVal = entry.getValue();
+                for (final var field : fields) {
                     final var fieldName = field.getName();
-                    if (fieldName.equals(en.getKey())) {
-                        field.set(newObj, en.getValue());
+                    final var destMoveFieldName = move.get(fieldName);
+                    final var destFieldName = destMoveFieldName != null ? destMoveFieldName : fieldName;
+                    final var defValue = def.get(fieldName);
+
+                    try {
+                        final var f2 = newObj.getClass().getField(destFieldName);
+                        final var fieldVal = field.get(currentVal);
+                        if (defValue != null) {
+                            final Object value = f2.getType().isEnum()
+                                    ? toEnum(f2.getType(), defValue)
+                                    : defValue;
+                            f2.set(newObj, value);
+                            continue;
+                        }
+                        final Object value = f2.getType().isEnum() && fieldVal != null
+                                ? toEnum(f2.getType(), fieldVal)
+                                : fieldVal;
+                        f2.set(newObj, value);
+                    } catch (final NoSuchFieldException e) {
+                        Logger.info("Field from source object does not exist in destination object: {}.", fieldName);
                     }
                 }
-            }
-            map.put(entry.getKey(), newObj);
-        }
 
+                for (final var en : def.entrySet()) {
+                    for (final var field : newFields) {
+                        final var fieldName = field.getName();
+                        if (fieldName.equals(en.getKey())) {
+                            field.set(newObj, en.getValue());
+                        }
+                    }
+                }
+                map.put(entry.getKey(), newObj);
+            }
+        }
         return map;
     }
 }
