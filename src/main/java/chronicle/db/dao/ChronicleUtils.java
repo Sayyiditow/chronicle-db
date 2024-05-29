@@ -516,6 +516,8 @@ public final class ChronicleUtils {
         final var constuctor = cls.getConstructor();
         final ConcurrentMap<K, Object> map = new ConcurrentHashMap<>();
         final Field[] fields = currentValues.values().stream().findFirst().get().getClass().getDeclaredFields();
+        final var newFields = List.of(constuctor.newInstance().getClass().getDeclaredFields());
+        newFields.removeAll(List.of(fields));
 
         for (final var entry : currentValues.entrySet()) {
             final var newObj = constuctor.newInstance();
@@ -545,8 +547,13 @@ public final class ChronicleUtils {
                 }
             }
 
-            for(var en: def.entrySet()){
-
+            for (final var en : def.entrySet()) {
+                for (final var field : newFields) {
+                    final var fieldName = field.getName();
+                    if (fieldName.equals(en.getKey())) {
+                        field.set(newObj, en.getValue());
+                    }
+                }
             }
             map.put(entry.getKey(), newObj);
         }
