@@ -509,7 +509,8 @@ public final class ChronicleUtils {
     }
 
     public <K, V> ConcurrentMap<K, Object> moveRecords(final ConcurrentMap<K, V> currentValues,
-            final String toObjectClass) throws ClassNotFoundException, NoSuchMethodException, SecurityException,
+            final String toObjectClass, final Map<String, String> move, final Map<String, Object> def)
+            throws ClassNotFoundException, NoSuchMethodException, SecurityException,
             InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
         final var cls = Class.forName(toObjectClass);
         final var constuctor = cls.getConstructor();
@@ -520,10 +521,20 @@ public final class ChronicleUtils {
             final var currentVal = entry.getValue();
             for (final var field : currentVal.getClass().getDeclaredFields()) {
                 final var fieldName = field.getName();
+                final var destMoveFieldName = move.get(fieldName);
+                final var destFieldName = destMoveFieldName != null ? destMoveFieldName : fieldName;
+                final var defValue = def.get(fieldName);
 
                 try {
-                    final var f2 = newObj.getClass().getField(fieldName);
+                    final var f2 = newObj.getClass().getField(destFieldName);
                     final var fieldVal = field.get(currentVal);
+                    if (defValue != null) {
+                        final Object value = f2.getType().isEnum()
+                                ? toEnum(f2.getType(), defValue)
+                                : defValue;
+                        f2.set(newObj, value);
+                        continue;
+                    }
                     final Object value = f2.getType().isEnum() && fieldVal != null
                             ? toEnum(f2.getType(), fieldVal)
                             : fieldVal;
