@@ -289,7 +289,10 @@ public final class ChronicleUtils {
         Object indexKey = null;
         try {
             final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
-            final var index = indexDb.get(dbFileName);
+            var index = indexDb.get(dbFileName);
+            if(index == null) {
+                index = new HashMap<>();
+            }
 
             // remove from the index first
             for (final var entry : prevValues.entrySet()) {
