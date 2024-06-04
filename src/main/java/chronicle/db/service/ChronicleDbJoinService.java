@@ -36,6 +36,16 @@ public final class ChronicleDbJoinService {
 
     public static final ChronicleDbJoinService CHRONICLE_DB_JOIN_SERVICE = new ChronicleDbJoinService();
 
+    private void setIsEmpty(final ConcurrentMap<Object, Object> dbToMap,
+            final Map<String, Map<String, Object>> mapOfObjects,
+            final String daoClassName, final MultiChronicleDao dao) {
+        if (dbToMap.size() == 0) {
+            // add one object just to make sure the join works when no data is available
+            mapOfObjects.get(daoClassName).put("isEmpty", true);
+            dbToMap.put(dao.averageKey(), dao.averageValue());
+        }
+    }
+
     private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
             final MultiChronicleDao dao, final JoinFilter filter, final String file,
             final Map<String, Map<String, Object>> mapOfObjects, final String daoClassName)
@@ -90,26 +100,27 @@ public final class ChronicleDbJoinService {
                     dbToMap = new ConcurrentHashMap<>(db);
                     db.close();
                 }
-                if (dbToMap.size() == 0) {
-                    // add one object just to make sure the join works when no data is available
-                    mapOfObjects.get(daoClassName).put("isEmpty", true);
-                    dbToMap.put(dao.averageKey(), dao.averageValue());
-                }
                 dbToMap = dao.subsetOfValues(dbToMap, filter.subsetFields(), dao.name());
             }
+            setIsEmpty(dbToMap, mapOfObjects, daoClassName, dao);
             recordValueMap.put(file, dbToMap);
         } else {
             final var db = dao.db(file);
             dbToMap = new ConcurrentHashMap<>(db);
             db.close();
-            if (dbToMap.size() == 0) {
-                // add one object just to make sure the join works when no data is available
-                mapOfObjects.get(daoClassName).put("isEmpty", true);
-                dbToMap.put(dao.averageKey(), dao.averageValue());
-            }
+            setIsEmpty(dbToMap, mapOfObjects, daoClassName, dao);
             recordValueMap.put(file, dbToMap);
         }
 
+    }
+
+    private void setIsEmpty(final ConcurrentMap<Object, Object> db, final Map<String, Map<String, Object>> mapOfObjects,
+            final String daoClassName, final SingleChronicleDao dao) {
+        if (db.size() == 0) {
+            // add one object just to make sure the join works when no data is available
+            mapOfObjects.get(daoClassName).put("isEmpty", true);
+            db.put(dao.averageKey(), dao.averageValue());
+        }
     }
 
     private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
@@ -156,25 +167,13 @@ public final class ChronicleDbJoinService {
                 if (db == null) {
                     db = dao.fetch();
                 }
-                if (db.size() == 0) {
-                    // add one object just to make sure the join works when no data is available
-                    mapOfObjects.get(daoClassName).put("isEmpty", true);
-                    db.put(dao.averageKey(), dao.averageValue());
-                }
                 db = dao.subsetOfValues(db, filter.subsetFields(), dao.name());
             }
-            if (db.size() == 0) {
-                // add one object just to make sure the join works when no data is available
-                db.put(dao.averageKey(), dao.averageValue());
-            }
+            setIsEmpty(db, mapOfObjects, daoClassName, dao);
             recordValueMap.put("data", db);
         } else {
             db = dao.fetch();
-            if (db.size() == 0) {
-                // add one object just to make sure the join works when no data is available
-                mapOfObjects.get(daoClassName).put("isEmpty", true);
-                db.put(dao.averageKey(), dao.averageValue());
-            }
+            setIsEmpty(db, mapOfObjects, daoClassName, dao);
             recordValueMap.put("data", db);
         }
     }
@@ -185,14 +184,20 @@ public final class ChronicleDbJoinService {
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
         final var dao = CHRONICLE_DB.getSingleChronicleDao(daoClassName, dataPath);
-        mapOfObjects.put(daoClassName, new HashMap<>() {
-            {
-                put("name", dao.name());
-            }
-        });
-        final var indexPath = dao.getIndexPath(foreignKeyName);
+
+        if (mapOfObjects.get(daoClassName) == null) {
+            mapOfObjects.put(daoClassName, new HashMap<>() {
+                {
+                    put("name", dao.name());
+                }
+            });
+            final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
+            setRecordsFromFilter(recordValueMap, dao, filter, mapOfObjects, daoClassName);
+            records.put(daoClassName, recordValueMap);
+        }
 
         if (isForeign) {
+            final var indexPath = dao.getIndexPath(foreignKeyName);
             mapOfObjects.get(daoClassName).put("foreignKeyIndexPath", indexPath);
 
             if (!Files.exists(Paths.get(indexPath))) {
@@ -200,13 +205,6 @@ public final class ChronicleDbJoinService {
                 dao.initIndex(new String[] { foreignKeyName });
             }
         }
-
-        if (records.get(daoClassName) == null) {
-            final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
-            setRecordsFromFilter(recordValueMap, dao, filter, mapOfObjects, daoClassName);
-            records.put(daoClassName, recordValueMap);
-        }
-
     }
 
     private void setMultiChronicleRecords(final String daoClassName, final String dataPath,
@@ -215,23 +213,14 @@ public final class ChronicleDbJoinService {
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
         final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, dataPath);
-        mapOfObjects.put(daoClassName, new HashMap<>() {
-            {
-                put("name", dao.name());
-            }
-        });
-        final var indexPath = dao.getIndexPath(foreignKeyName);
 
-        if (isForeign) {
-            mapOfObjects.get(daoClassName).put("foreignKeyIndexPath", indexPath);
+        if (mapOfObjects.get(daoClassName) == null) {
+            mapOfObjects.put(daoClassName, new HashMap<>() {
+                {
+                    put("name", dao.name());
+                }
+            });
 
-            if (!Files.exists(Paths.get(indexPath))) {
-                Logger.info("Index is missing for the foreign key: {}. Initilizing.", indexPath);
-                dao.initIndex(new String[] { foreignKeyName });
-            }
-        }
-
-        if (records.get(daoClassName) == null) {
             final List<String> files = dao.getFiles();
             final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
 
@@ -239,6 +228,16 @@ public final class ChronicleDbJoinService {
                 setRecordsFromFilter(recordValueMap, dao, filter, file, mapOfObjects, daoClassName);
             }
             records.put(daoClassName, recordValueMap);
+        }
+
+        if (isForeign) {
+            final var indexPath = dao.getIndexPath(foreignKeyName);
+            mapOfObjects.get(daoClassName).put("foreignKeyIndexPath", indexPath);
+
+            if (!Files.exists(Paths.get(indexPath))) {
+                Logger.info("Index is missing for the foreign key: {}. Initilizing.", indexPath);
+                dao.initIndex(new String[] { foreignKeyName });
+            }
         }
     }
 
@@ -459,42 +458,23 @@ public final class ChronicleDbJoinService {
             }
         }
 
-        if (!isInnerJoin && !foreignIsMainObject) {
+        if (!isInnerJoin && !foreignIsMainObject && !isObjectEmpty) {
             if (e.getValue().size() != 0) {
                 object.keySet().removeAll(e.getValue().keySet());
+            }
+            for (final var o : object.entrySet()) {
+                final var foreignObj = foreignKeyObject.values().toArray()[0];
+                final var foreignObjRow = foreignKeyObjSubsetLength == 0
+                        ? createEmptyObject(foreignObj.getClass()
+                                .getDeclaredFields().length)
+                        : createEmptyObject(foreignKeyObjSubsetLength);
 
-                for (final var key : object.keySet()) {
-                    final var value = object.get(key);
-                    final var foreignObj = foreignKeyObject.values().toArray()[0];
-                    final var foreignObjRow = foreignKeyObjSubsetLength == 0
-                            ? createEmptyObject(foreignObj.getClass()
-                                    .getDeclaredFields().length)
-                            : createEmptyObject(foreignKeyObjSubsetLength);
-
-                    final var objRow = objSubsetLength == 0
-                            ? (Object[]) value.getClass().getDeclaredMethod("row", Object.class)
-                                    .invoke(value, key)
-                            : ((LinkedHashMap) value).values().toArray();
-                    rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
-                    indexMap.put(key, rowList.size() - 1);
-                }
-            } else {
-                if (!isObjectEmpty) {
-                    for (final var o : object.entrySet()) {
-                        final var foreignObj = foreignKeyObject.values().toArray()[0];
-                        final var foreignObjRow = foreignKeyObjSubsetLength == 0
-                                ? createEmptyObject(foreignObj.getClass()
-                                        .getDeclaredFields().length)
-                                : createEmptyObject(foreignKeyObjSubsetLength);
-
-                        final var objRow = objSubsetLength == 0
-                                ? (Object[]) o.getValue().getClass().getDeclaredMethod("row", Object.class)
-                                        .invoke(o.getValue(), o.getKey())
-                                : ((LinkedHashMap) o.getValue()).values().toArray();
-                        rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
-                        indexMap.put(o.getKey(), rowList.size() - 1);
-                    }
-                }
+                final var objRow = objSubsetLength == 0
+                        ? (Object[]) o.getValue().getClass().getDeclaredMethod("row", Object.class)
+                                .invoke(o.getValue(), o.getKey())
+                        : ((LinkedHashMap) o.getValue()).values().toArray();
+                rowList.add(CHRONICLE_UTILS.copyArray(objRow, foreignObjRow));
+                indexMap.put(o.getKey(), rowList.size() - 1);
             }
         }
     }
@@ -558,27 +538,27 @@ public final class ChronicleDbJoinService {
             }
             String[] objSubsetFields = new String[] {};
             String[] foreignKeyObjSubsetFields = new String[] {};
+            final var objectName = mapOfObjects.get(join.objDaoName()).get("name").toString();
+            final var foreignKeyObjName = mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString();
 
             try {
                 if (join.objFilter().subsetFields() != null)
                     objSubsetFields = join.objFilter().subsetFields();
             } catch (final NullPointerException e) {
-                Logger.info("No subset fields set on object.");
+                Logger.info("No subset fields set on object: {}.", objectName);
             }
             try {
                 if (join.foreignKeyObjFilter().subsetFields() != null)
                     foreignKeyObjSubsetFields = join.foreignKeyObjFilter().subsetFields();
             } catch (final NullPointerException e) {
-                Logger.info("No subset fields set on foreign key object.");
+                Logger.info("No subset fields set on foreign key object: {}.", foreignKeyObjName);
             }
             final var objSubsetLength = objSubsetFields.length;
             final var foreignKeyObjSubsetLength = foreignKeyObjSubsetFields.length;
             final var objSubsetIsEmpty = objSubsetLength == 0;
             final var foreignKeyObjSubsetIsEmpty = foreignKeyObjSubsetLength == 0;
-            final var objectName = mapOfObjects.get(join.objDaoName()).get("name").toString();
-            final var foreignKeyObjName = mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString();
-            final var isObjectEmpty = !String.valueOf(mapOfObjects.get(join.objDaoName()).get("isEmpty"))
-                    .equals("null");
+            final var isObjectEmpty = Boolean
+                    .parseBoolean(String.valueOf(mapOfObjects.get(join.objDaoName()).get("isEmpty")));
 
             if (objectHeaderList.indexOf(objectName + join.foreignKeyName()) == -1) {
                 final String[] headerListA = objSubsetIsEmpty
