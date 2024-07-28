@@ -650,13 +650,13 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             if (multiThreaded(files)) {
                 files.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(f -> {
                     final var db = db(f);
-                    CHRONICLE_UTILS.index(db, name(), field, indexDb, f);
+                    CHRONICLE_UTILS.index(db, name(), field, indexDb, f, dataPath());
                     db.close();
                 }));
             } else
                 for (final String f : files) {
                     final var db = db(f);
-                    CHRONICLE_UTILS.index(db, name(), field, indexDb, f);
+                    CHRONICLE_UTILS.index(db, name(), field, indexDb, f, dataPath());
                     db.close();
                 }
             indexDb.close();

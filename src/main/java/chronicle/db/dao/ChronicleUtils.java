@@ -209,9 +209,9 @@ public final class ChronicleUtils {
      * 
      */
     public <K, V> void index(final ConcurrentMap<K, V> db, final String dbName, final String field,
-            final HTreeMap<String, Map<Object, List<K>>> index, final String fileName)
+            final HTreeMap<String, Map<Object, List<K>>> index, final String fileName, final String dataPath)
             throws IOException {
-        Logger.info("Indexing {} db using {}.", dbName, field);
+        Logger.info("Indexing {} db at {} using {}.", dbName, dataPath, field);
         final var copy = new HashMap<Object, List<K>>();
 
         for (final var entry : db.entrySet()) {
@@ -290,7 +290,7 @@ public final class ChronicleUtils {
         try {
             final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
             var index = indexDb.get(dbFileName);
-            if(index == null) {
+            if (index == null) {
                 index = new HashMap<>();
             }
 

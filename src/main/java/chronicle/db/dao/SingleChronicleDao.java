@@ -47,6 +47,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default ConcurrentMap<K, V> fetch() throws IOException {
+        Logger.info("Fetching all data at {}.", dataPath());
         final ChronicleMap<K, V> db = db();
         final ConcurrentMap<K, V> map = new ConcurrentHashMap<>(db);
         db.close();
@@ -61,6 +62,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default V get(final K key) throws IOException {
+        Logger.info("Getting single value using key {} at {}.", key, dataPath());
         final var db = db();
         CHRONICLE_UTILS.getLog(name(), key);
         final var value = db.getUsing(key, using());
@@ -76,6 +78,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default ConcurrentMap<K, V> get(final Set<K> keys) throws IOException {
+        Logger.info("Getting multiple value using keys {} at {}.", keys, dataPath());
         final var map = new ConcurrentHashMap<K, V>();
         final var db = db();
         for (final K key : keys) {
@@ -96,6 +99,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default boolean delete(final K key) throws IOException {
+        Logger.info("Deleting single value using key {} at {}.", key, dataPath());
         final var db = db();
         CHRONICLE_UTILS.deleteLog(name(), key);
         final var value = db.getUsing(key, using());
@@ -120,6 +124,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default boolean delete(final Set<K> keys) throws IOException {
+        Logger.info("Getting multiple values using keys {} at {}.", keys, dataPath());
         final var db = db();
         CHRONICLE_UTILS.deleteAllLog(name());
         final Map<K, V> updatedMap = new HashMap<>();
@@ -187,7 +192,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
                     prevValueMap);
         }
         final var status = updated ? PutStatus.UPDATED : PutStatus.INSERTED;
-        Logger.info("{} into {} using key {}.", status, name(), key);
+        Logger.info("{} into {} using key {} at {}.", status, name(), key, dataPath());
 
         return status;
     }
@@ -211,7 +216,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             return;
         }
 
-        Logger.info("Inserting multiple values into {}.", name());
+        Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
         var db = db();
         final var prevValues = new HashMap<K, V>();
 
@@ -243,6 +248,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default int size() throws IOException {
+        Logger.info("Getting DB size at {}.", dataPath());
         final var db = db();
         final var size = db.size();
         db.close();
@@ -282,7 +288,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             final String path = getIndexPath(field);
             CHRONICLE_UTILS.deleteFileIfExists(path);
             final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(path);
-            CHRONICLE_UTILS.index(db, name(), field, indexDb, "data");
+            CHRONICLE_UTILS.index(db, name(), field, indexDb, "data", dataPath());
             indexDb.close();
         }
         db.close();
@@ -294,6 +300,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default void refreshIndexes() throws IOException {
+        Logger.info("Re-initializing indexes at {}.", dataPath());
         initIndex(deleteIndexes());
     }
 
@@ -348,6 +355,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
     }
 
     default void clearDb() throws IOException {
+        Logger.info("Truncating database at {}.", dataPath());
         final var db = db();
         db.clear();
         db.close();

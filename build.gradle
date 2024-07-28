@@ -13,7 +13,7 @@ repositories {
 }
 
 dependencies {
-    api 'net.openhft:chronicle-map:3.26ea0'
+    api 'net.openhft:chronicle-map:3.26ea3'
     api 'com.jsoniter:jsoniter:0.9.23'
     api 'org.mapdb:mapdb:3.1.0'
     api "org.tinylog:tinylog-impl:$tinyLogVersion"

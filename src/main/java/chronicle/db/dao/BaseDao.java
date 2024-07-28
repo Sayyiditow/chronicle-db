@@ -101,6 +101,7 @@ interface BaseDao<K, V> {
      * @throws IOException
      */
     default ConcurrentMap<K, V> search(final ConcurrentMap<K, V> db, final Search search) throws IOException {
+        Logger.info("Searching DB at {} for {}.", dataPath(), search);
         final ConcurrentMap<K, V> map = new ConcurrentHashMap<>();
 
         for (final var entry : db.entrySet()) {
@@ -124,6 +125,7 @@ interface BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> search(final ConcurrentMap<K, V> db, final Search search, final int limit)
             throws IOException {
+        Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final ConcurrentMap<K, V> map = new ConcurrentHashMap<>();
 
         for (final var entry : db.entrySet()) {
@@ -238,6 +240,7 @@ interface BaseDao<K, V> {
     @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
+        Logger.info("Index searching DB at {} for {}.", dataPath(), search);
         final var match = new ConcurrentHashMap<K, V>();
         if (index != null) {
             final var keys = new ArrayList<K>();
@@ -363,6 +366,7 @@ interface BaseDao<K, V> {
     @SuppressWarnings("unchecked")
     default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
+        Logger.info("Index searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final var match = new ConcurrentHashMap<K, V>();
         if (index != null) {
             final var keys = new ArrayList<K>();
