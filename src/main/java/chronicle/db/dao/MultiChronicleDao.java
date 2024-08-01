@@ -538,7 +538,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                             map.put(file, currentFileMap);
                         } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
                                 | SecurityException e) {
-                            Logger.error("No such field: {} exists on searching. {}", search.field(), e);
+                            Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
                             break;
                         }
                     }
@@ -560,7 +560,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                     map.put(file, currentFileMap);
                 } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
                         | SecurityException e) {
-                    Logger.error("No such field: {} exists on searching. {}", search.field(), e);
+                    Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
                     break;
                 }
             }
@@ -592,7 +592,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                             map.put(file, currentFileMap);
                         } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
                                 | SecurityException e) {
-                            Logger.error("No such field: {} exists on searching. {}", search.field(), e);
+                            Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
                             break;
                         }
                         if (map.size() == limit)
@@ -618,7 +618,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                         map.put(file, currentFileMap);
                     } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException
                             | SecurityException e) {
-                        Logger.error("No such field: {} exists on searching. {}", search.field(), e);
+                        Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
                         break;
                     }
                     if (map.size() == limit)

@@ -108,7 +108,7 @@ interface BaseDao<K, V> {
             try {
                 CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
             } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException | SecurityException e) {
-                Logger.error("No such field: {} exists when searching. {}", search.field(), e);
+                Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
                 break;
             }
         }
@@ -132,7 +132,7 @@ interface BaseDao<K, V> {
             try {
                 CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
             } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException | SecurityException e) {
-                Logger.error("No such field: {} exists when searching. {}", search.field(), e);
+                Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
                 break;
             }
             if (map.size() == limit) {
@@ -494,8 +494,7 @@ interface BaseDao<K, V> {
                         valueMap.put(f, field.get(entry.getValue()));
                     }
                 } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-                    Logger.error("No such field: {} when making a subset of {}. {}", f,
-                            entry.getValue().getClass().getSimpleName(), e);
+                    Logger.error("No such field: {} when making a subset of {}. {}", f, name(), e);
                 }
             }
         }
