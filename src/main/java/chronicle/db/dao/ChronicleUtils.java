@@ -228,7 +228,7 @@ public final class ChronicleUtils {
                 keys.add(entry.getKey());
                 copy.put(currentValue, keys);
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-                Logger.error("No such field exists {} when indexing {}. {}", field, dbName, e);
+                Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath, e);
                 break;
             }
         }
@@ -258,7 +258,7 @@ public final class ChronicleUtils {
             }
             indexDb.close();
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            Logger.error("No such field exists {} when removing from index {}. {}", file, dbName, e);
+            Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath, e);
         }
     }
 
@@ -330,7 +330,7 @@ public final class ChronicleUtils {
             }
             indexDb.close();
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            Logger.error("No such field exists {} when adding to index {}. {}", file, dbName, e);
+            Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
         }
     }
 
