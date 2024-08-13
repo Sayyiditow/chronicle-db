@@ -103,7 +103,7 @@ interface BaseDao<K, V> {
             Files.createDirectories(backupDir);
 
             for (final var file : dataFiles) {
-                Files.copy(Path.of(dataPath() + "/data/" + file), Path.of(dataPath() + "/backup" + file),
+                Files.copy(Path.of(dataPath() + "/data/" + file), Path.of(dataPath() + "/backup/" + file),
                         StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (final IOException e) {
