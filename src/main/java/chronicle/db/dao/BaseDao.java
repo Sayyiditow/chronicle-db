@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -84,11 +85,28 @@ interface BaseDao<K, V> {
     default void createDataDirs() {
         if (!Files.exists(Path.of(dataPath()))) {
             try {
-                Files.createDirectories(Path.of(dataPath() + "/" + "data"));
-                Files.createDirectories(Path.of(dataPath() + "/" + "indexes"));
+                Files.createDirectories(Path.of(dataPath() + "/data"));
+                Files.createDirectories(Path.of(dataPath() + "/indexes"));
+                Files.createDirectories(Path.of(dataPath() + "/files"));
+                Files.createDirectories(Path.of(dataPath() + "/backup"));
             } catch (final IOException e) {
-                Logger.error(e.getMessage());
+                Logger.error("Error on db directory creation for {}. {}.", dataPath(), e.getMessage());
             }
+        }
+    }
+
+    default void backup() {
+        try {
+            final var dataPath = dataPath() + "/data";
+            final var backupDir = Path.of(dataPath() + "/" + "backup");
+            final var dataFiles = ChronicleUtils.getFileList(dataPath);
+            Files.createDirectories(backupDir);
+
+            for (final var file : dataFiles) {
+                Files.copy(Path.of(dataPath() + "/data/" + file), backupDir, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (final IOException e) {
+            Logger.error("Error on db backup for {}. {}.", dataPath(), e.getMessage());
         }
     }
 
