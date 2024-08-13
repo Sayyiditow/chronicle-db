@@ -23,7 +23,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -58,6 +57,38 @@ public final class ChronicleUtils {
 
     public void dbFetchError(final String name, final String file) {
         Logger.error("Error while fetching {} for file {}", name, file);
+    }
+
+    /**
+     * Runs given list of runnables in a thread pool. The thread pool can have as
+     * many threads as needed so tasks are run concurrently. Thread pool is shut
+     * down once the job is completed.
+     *
+     * @param runnableList         the list of runnable commands/methods to run
+     * @param threadPoolIdentifier the unique thread pool identifier to save to
+     * @throws InterruptedException
+     */
+    public static void runInThreadPool(final List<Runnable> runnableList, final String threadpoolId)
+            throws InterruptedException {
+        final ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor();
+        Logger.info("Starting Threadpool: {} with {} tasks.", threadpoolId, runnableList.size());
+        runnableList.forEach(r -> executorService.execute(r));
+        executorService.shutdown();
+        executorService.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        Logger.info("Threadpool: {} successfully shutdown.", threadpoolId);
+    }
+
+    /**
+     * Create new thread to run a runnable process in it and return the thread id,
+     * in case you want to interrupt the thread later.
+     *
+     * @param runnableProcess The runnable process to run in separate thread.
+     * @return returns the thread id
+     * @throws InterruptedException
+     */
+    public static Thread runInNewThreadNonBlocking(final Runnable runnableProcess, final String threadName)
+            throws InterruptedException {
+        return Thread.ofVirtual().name(threadName).start(runnableProcess);
     }
 
     /**
@@ -241,6 +272,7 @@ public final class ChronicleUtils {
         Field field = null;
         Object indexKey = null;
         try {
+            Logger.info("Removing from index {} on object {}.", file, dbName);
             final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
             final var index = indexDb.get(dbFileName);
 
@@ -270,17 +302,31 @@ public final class ChronicleUtils {
      * @param field          the value object field enum
      * @param indexFileNames
      * @throws IOException
+     * @throws InterruptedException
      */
     public <K, V> void removeFromIndex(final String dbFileName, final String dbName, final String dataPath,
-            final List<String> indexFileNames, final Map<K, V> values) throws IOException {
-        if (indexFileNames.size() > 1)
-            indexFileNames.parallelStream().forEach(file -> {
-                removeFromIndex(dbFileName, dbName, dataPath, values, file);
+            final List<String> indexFileNames, final Map<K, V> values) throws IOException, InterruptedException {
+        if (indexFileNames.size() > 3) {
+            final var runnables = new ArrayList<Runnable>();
+            indexFileNames.forEach(file -> {
+                runnables.add(() -> {
+                    removeFromIndex(dbFileName, dbName, dataPath, values, file);
+                });
             });
-        else
+
+            runInThreadPool(runnables, dbName + " Removing Index Threadpool");
+        } else {
+            final var threads = new ArrayList<Thread>();
             for (final String file : indexFileNames) {
-                removeFromIndex(dbFileName, dbName, dataPath, values, file);
+                threads.add(runInNewThreadNonBlocking(() -> {
+                    removeFromIndex(dbFileName, dbName, dataPath, values, file);
+                }, dbName + " Removing Index Thread"));
             }
+
+            for (final var t : threads) {
+                t.join();
+            }
+        }
     }
 
     private <K, V> void updateIndex(final String dbFileName, final String dbName, final String dataPath,
@@ -288,6 +334,7 @@ public final class ChronicleUtils {
         Field field = null;
         Object indexKey = null;
         try {
+            Logger.info("Updating index {} on object {}.", file, dbName);
             final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
             var index = indexDb.get(dbFileName);
             if (index == null) {
@@ -342,18 +389,32 @@ public final class ChronicleUtils {
      * @param field          the value object field enum
      * @param indexFileNames index files
      * @throws IOException
+     * @throws InterruptedException
      */
     public <K, V> void updateIndex(final String dbFileName, final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues)
-            throws IOException {
-        if (indexFileNames.size() > 1)
-            indexFileNames.parallelStream().forEach(file -> {
-                updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
+            throws IOException, InterruptedException {
+        if (indexFileNames.size() > 3) {
+            final var runnables = new ArrayList<Runnable>();
+            indexFileNames.forEach(file -> {
+                runnables.add(() -> {
+                    updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
+                });
             });
-        else
+
+            runInThreadPool(runnables, dbName + " Updating Index Threadpool");
+        } else {
+            final var threads = new ArrayList<Thread>();
             for (final String file : indexFileNames) {
-                updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
+                threads.add(runInNewThreadNonBlocking(() -> {
+                    updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
+                }, dbName + " Updating Index Thread"));
             }
+
+            for (final var t : threads) {
+                t.join();
+            }
+        }
     }
 
     /**
@@ -382,7 +443,7 @@ public final class ChronicleUtils {
 
             return new CsvObject(headerList, rowList);
         }
-        return new CsvObject(new String[] {}, new ArrayList<>());
+        return new CsvObject(new String[] {}, List.of());
     }
 
     /**
@@ -422,7 +483,7 @@ public final class ChronicleUtils {
 
             return new CsvObject(headerList, rowList);
         }
-        return new CsvObject(new String[] {}, new ArrayList<>());
+        return new CsvObject(new String[] {}, List.of());
     }
 
     /**
@@ -496,20 +557,6 @@ public final class ChronicleUtils {
         }
 
         return map;
-    }
-
-    public void runInThreadPool(final List<Runnable> runnableList, final String threadPoolIdentifier)
-            throws InterruptedException {
-        final ThreadFactory factory = Thread.ofVirtual().name(threadPoolIdentifier).factory();
-        try (final ExecutorService executorService = Executors.newThreadPerTaskExecutor(factory)) {
-            runnableList.forEach(r -> executorService.execute(r));
-            executorService.shutdown();
-            if (!executorService.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS)) {
-                executorService.shutdownNow();
-                Logger.info("Threadpool: {} successfully shutdown. {} tasks completed.", threadPoolIdentifier,
-                        runnableList.size());
-            }
-        }
     }
 
     public <K, V> ConcurrentMap<K, Object> moveRecords(final ConcurrentMap<K, V> currentValues,

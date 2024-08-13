@@ -234,8 +234,9 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param file the file
      * @return true if updated else false
      * @throws IOException
+     * @throws InterruptedException
      */
-    default boolean delete(final K key, final String file) throws IOException {
+    default boolean delete(final K key, final String file) throws IOException, InterruptedException {
         var updated = false;
         final var db = db(file);
 
@@ -262,8 +263,9 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param key the key to remove
      * @return true if updated else false
      * @throws IOException
+     * @throws InterruptedException
      */
-    default boolean delete(final K key) throws IOException {
+    default boolean delete(final K key) throws IOException, InterruptedException {
         final var updated = new AtomicBoolean(false);
         final var files = getFiles();
 
@@ -271,7 +273,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             files.parallelStream().allMatch(file -> {
                 try {
                     updated.set(delete(key, file));
-                } catch (final IOException e) {
+                } catch (final IOException | InterruptedException e) {
                     CHRONICLE_UTILS.dbFetchError(name(), file);
                 }
 
@@ -295,9 +297,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param keys a set of keys
      * @param file the file name.
      * @return no of records updated
+     * @throws InterruptedException
      */
     default int delete(final Set<K> keys, final String file)
-            throws IOException {
+            throws IOException, InterruptedException {
         var deleted = 0;
         final var db = db(file);
         final int size = db.size();
@@ -331,8 +334,9 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param keys the keys to remove
      * @return true if updated else false
      * @throws IOException
+     * @throws InterruptedException
      */
-    default int delete(final Set<K> keys) throws IOException {
+    default int delete(final Set<K> keys) throws IOException, InterruptedException {
         final var updated = new AtomicInteger(0);
         final var files = getFiles();
 
@@ -360,10 +364,11 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param value
      * @param file
      * @throws IOException
+     * @throws InterruptedException
      * @returns true/false
      */
     default PutStatus put(final K key, final V value, final String file, final List<String> indexFileNames)
-            throws IOException {
+            throws IOException, InterruptedException {
 
         final var db = db(file);
         final var prevValue = db.put(key, value);
@@ -384,8 +389,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
 
     /**
      * Refers to the method above
+     * 
+     * @throws InterruptedException
      */
-    default PutStatus put(final K key, final V value, final String file) throws IOException {
+    default PutStatus put(final K key, final V value, final String file) throws IOException, InterruptedException {
         return put(key, value, file, indexFileNames());
     }
 
@@ -396,8 +403,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param value the value
      * @return true if updated else false
      * @throws IOException
+     * @throws InterruptedException
      */
-    default PutStatus put(final K key, final V value, final List<String> indexFileNames) throws IOException {
+    default PutStatus put(final K key, final V value, final List<String> indexFileNames)
+            throws IOException, InterruptedException {
         final var getMap = get(key);
 
         if (getMap.size() != 0) {
@@ -410,8 +419,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
 
     /**
      * Refers to the method above
+     * 
+     * @throws InterruptedException
      */
-    default PutStatus put(final K key, final V value) throws IOException {
+    default PutStatus put(final K key, final V value) throws IOException, InterruptedException {
         return put(key, value, indexFileNames());
     }
 
@@ -421,8 +432,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param map  the map to add
      * @param file the file name
      * @throws IOException
+     * @throws InterruptedException
      */
-    default void put(final Map<K, V> map, final String file, final List<String> indexFileNames) throws IOException {
+    default void put(final Map<K, V> map, final String file, final List<String> indexFileNames)
+            throws IOException, InterruptedException {
         if (map.size() > entries()) {
             Logger.error("Insert size bigger than entry size.");
             return;
@@ -445,8 +458,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
 
     /**
      * Refers to the method above
+     * 
+     * @throws InterruptedException
      */
-    default void put(final Map<K, V> map, final String file) throws IOException {
+    default void put(final Map<K, V> map, final String file) throws IOException, InterruptedException {
         put(map, file, indexFileNames());
     }
 
@@ -457,9 +472,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
      * @param map            the map to add
      * @param updateExisting if we should update or just insert.
      * @throws IOException
+     * @throws InterruptedException
      */
     default void put(final Map<K, V> map, final boolean updateExisting, final List<String> indexFileNames)
-            throws IOException {
+            throws IOException, InterruptedException {
         // check for existing records to update them
         if (updateExisting) {
             final var existingRecords = get(map.keySet());
@@ -494,8 +510,10 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
 
     /**
      * Refers to the method above
+     * 
+     * @throws InterruptedException
      */
-    default void put(final Map<K, V> map, final boolean updateExisting) throws IOException {
+    default void put(final Map<K, V> map, final boolean updateExisting) throws IOException, InterruptedException {
         put(map, updateExisting, indexFileNames());
     }
 

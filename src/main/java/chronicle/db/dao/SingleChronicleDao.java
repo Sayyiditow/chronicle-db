@@ -97,8 +97,9 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @param key the key to remove
      * @return true if updated else false
      * @throws IOException
+     * @throws InterruptedException
      */
-    default boolean delete(final K key) throws IOException {
+    default boolean delete(final K key) throws IOException, InterruptedException {
         Logger.info("Deleting single value using key {} at {}.", key, dataPath());
         final var db = db();
         CHRONICLE_UTILS.deleteLog(name(), key);
@@ -122,8 +123,9 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @param keys the keys to remove
      * @return true if updated else false
      * @throws IOException
+     * @throws InterruptedException
      */
-    default boolean delete(final Set<K> keys) throws IOException {
+    default boolean delete(final Set<K> keys) throws IOException, InterruptedException {
         Logger.info("Getting multiple values using keys {} at {}.", keys, dataPath());
         final var db = db();
         CHRONICLE_UTILS.deleteAllLog(name());
@@ -176,8 +178,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @param value the value
      * @return true if updated else false
      * @throws IOException
+     * @throws InterruptedException
      */
-    default PutStatus put(final K key, final V value, final List<String> indexFileNames) throws IOException {
+    default PutStatus put(final K key, final V value, final List<String> indexFileNames)
+            throws IOException, InterruptedException {
         // create a bigger file if records in db are equal to multiple of entries()
         final var db = createNewDb(db());
         final var prevValue = db.put(key, value);
@@ -199,8 +203,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
 
     /**
      * Refer to method above
+     * 
+     * @throws InterruptedException
      */
-    default PutStatus put(final K key, final V value) throws IOException {
+    default PutStatus put(final K key, final V value) throws IOException, InterruptedException {
         return put(key, value, indexFileNames());
     }
 
@@ -209,8 +215,9 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * 
      * @param map the map to add
      * @throws IOException
+     * @throws InterruptedException
      */
-    default void put(final Map<K, V> map, final List<String> indexFileNames) throws IOException {
+    default void put(final Map<K, V> map, final List<String> indexFileNames) throws IOException, InterruptedException {
         if (map.size() > entries()) {
             Logger.error("Insert size bigger than entry size.");
             return;
@@ -236,8 +243,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
 
     /**
      * Refer to method above
+     * 
+     * @throws InterruptedException
      */
-    default void put(final Map<K, V> map) throws IOException {
+    default void put(final Map<K, V> map) throws IOException, InterruptedException {
         put(map, indexFileNames());
     }
 

@@ -5,9 +5,9 @@ import java.util.UUID;
 
 import com.jsoniter.spi.TypeLiteral;
 
-import chronicle.db.dao.MultiChronicleDao;
+import chronicle.db.dao.SingleChronicleDao;
 
-public class LeadDao implements MultiChronicleDao<String, Lead> {
+public class LeadDao implements SingleChronicleDao<String, Lead> {
     private final String dataPath;
 
     public LeadDao(final String dataPath) {
