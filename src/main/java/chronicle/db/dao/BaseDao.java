@@ -98,7 +98,7 @@ interface BaseDao<K, V> {
     default void backup() {
         try {
             final var dataPath = dataPath() + "/data";
-            final var backupDir = Path.of(dataPath() + "/" + "backup");
+            final var backupDir = Path.of(dataPath() + "/backup");
             final var dataFiles = ChronicleUtils.getFileList(dataPath);
             Files.createDirectories(backupDir);
 
