@@ -62,9 +62,12 @@ public final class ChronicleDb {
      * @param valueClass the class of the value (best to implement Value interface
      *                   for complex structures)
      */
-    public <K, V> ChronicleMap<K, V> recoverDb(final String filePath, final Class<K> keyClass,
-            final Class<V> valueClass) throws IOException {
+    public <K, V> ChronicleMap<K, V> recoverDb(final String filePath, final K averageKey, final V averageValue)
+            throws IOException {
         final File file = new File(filePath);
+        final Class<K> keyClass = (Class<K>) averageKey.getClass();
+        final Class<V> valueClass = (Class<V>) averageValue.getClass();
+
         Logger.info("Restoring Chronicle DB at: {}", filePath);
         return ChronicleMap.of(keyClass, valueClass).recoverPersistedTo(file, false);
     }
