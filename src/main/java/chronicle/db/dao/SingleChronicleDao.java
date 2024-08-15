@@ -52,6 +52,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         dbRecovery.putAll(db);
         Files.move(Path.of(dataPath() + "/data/data"), Path.of(dataPath() + "/data/corrupted"), REPLACE_EXISTING);
         Files.move(Path.of(dataPath() + "/data/recovery"), Path.of(dataPath() + "/data/data"), REPLACE_EXISTING);
+        refreshIndexes();
     }
 
     /**
