@@ -6,7 +6,7 @@ import java.beans.IntrospectionException;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -33,11 +33,12 @@ public class LeadDaoTest {
 
     @Test
     public void testInsert() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
-            NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException {
+            NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException,
+            InterruptedException {
         final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
         final var c = CHRONICLE_DB.getObjectConstructor(objectClassName);
         final String sourcePath = "/home/hashim/Downloads/leads/dat.json.aa";
-        final List<Map<String, Object>> source = JsonIterator.deserialize(Files.readAllBytes(Paths.get(sourcePath)),
+        final List<Map<String, Object>> source = JsonIterator.deserialize(Files.readAllBytes(Path.of(sourcePath)),
                 new TypeLiteral<>() {
 
                 });
@@ -96,7 +97,8 @@ public class LeadDaoTest {
 
     @Test
     public void testMultiThreadDelete() throws IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
-            SecurityException, ClassNotFoundException, IOException, InstantiationException, InvocationTargetException {
+            SecurityException, ClassNotFoundException, IOException, InstantiationException, InvocationTargetException,
+            InterruptedException {
         final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
         System.out.println(dao.size());
         dao.delete(new HashSet<>(Arrays.asList("1-99000", "2-99001")));

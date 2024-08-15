@@ -1,12 +1,13 @@
 package chronicle.db.dao;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
+import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import static chronicle.db.service.MapDb.MAP_DB;
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,6 @@ import org.tinylog.Logger;
 
 import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
-import chronicle.db.service.ChronicleDb;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -36,8 +36,22 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * @throws IOException
      */
     default ChronicleMap<K, V> db() throws IOException {
-        return ChronicleDb.CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
+        return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
                 dataPath() + "/data/data", bloatFactor());
+    }
+
+    /**
+     * In cases onf data corruption, we can recover the db using this method
+     */
+    default void recoverData() throws IOException {
+        final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
+                dataPath() + "/data/data", bloatFactor());
+        final var dbRecovery = CHRONICLE_DB.createOrGet(name(), entries(),
+                averageKey(), averageValue(), dataPath() + "/data/recovery",
+                bloatFactor());
+        dbRecovery.putAll(db);
+        Files.move(Path.of(dataPath() + "/data/data"), Path.of(dataPath() + "/data/corrupted"), REPLACE_EXISTING);
+        Files.move(Path.of(dataPath() + "/data/recovery"), Path.of(dataPath() + "/data/data"), REPLACE_EXISTING);
     }
 
     /**
@@ -161,12 +175,11 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             Logger.info("Creating a bigger file, max limit of records reached on {}", name());
             final var dataFile = dataPath() + "/data/data";
             CHRONICLE_UTILS.deleteFileIfExists(dataFile);
-            db = ChronicleDb.CHRONICLE_DB.createOrGet(name(),
+            db = CHRONICLE_DB.createOrGet(name(),
                     entries() * ((currentValues.size() / entries()) + 1) + entries(),
                     averageKey(), averageValue(), dataPath() + "/data/data.tmp", bloatFactor());
             db.putAll(currentValues);
-            Files.move(Paths.get(dataPath() + "/data/data.tmp"), Paths.get(dataFile),
-                    StandardCopyOption.REPLACE_EXISTING);
+            Files.move(Path.of(dataPath() + "/data/data.tmp"), Path.of(dataFile), REPLACE_EXISTING);
         }
         return db;
     }
@@ -318,7 +331,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
-        if (!Files.exists(Paths.get(indexFilePath))) {
+        if (!Files.exists(Path.of(indexFilePath))) {
             Logger.info("Index file does not exist, it will be created.");
             initIndex(new String[] { search.field() });
         }

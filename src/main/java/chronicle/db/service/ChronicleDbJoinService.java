@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -200,7 +199,7 @@ public final class ChronicleDbJoinService {
             final var indexPath = dao.getIndexPath(foreignKeyName);
             mapOfObjects.get(daoClassName).put("foreignKeyIndexPath", indexPath);
 
-            if (!Files.exists(Paths.get(indexPath))) {
+            if (!Files.exists(Path.of(indexPath))) {
                 Logger.info("Index is missing for the foreign key: {}. Initilizing.", indexPath);
                 dao.initIndex(new String[] { foreignKeyName });
             }
@@ -234,7 +233,7 @@ public final class ChronicleDbJoinService {
             final var indexPath = dao.getIndexPath(foreignKeyName);
             mapOfObjects.get(daoClassName).put("foreignKeyIndexPath", indexPath);
 
-            if (!Files.exists(Paths.get(indexPath))) {
+            if (!Files.exists(Path.of(indexPath))) {
                 Logger.info("Index is missing for the foreign key: {}. Initilizing.", indexPath);
                 dao.initIndex(new String[] { foreignKeyName });
             }

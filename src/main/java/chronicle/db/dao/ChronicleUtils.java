@@ -10,7 +10,6 @@ import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -99,7 +98,7 @@ public final class ChronicleUtils {
      * @return a list of files
      */
     public static List<String> getFileList(final String dirPath) throws IOException {
-        try (Stream<Path> stream = Files.list(Paths.get(dirPath))) {
+        try (Stream<Path> stream = Files.list(Path.of(dirPath))) {
             return stream.map(Path::getFileName).map(Path::toString).collect(Collectors.toList());
         }
     }
@@ -529,7 +528,7 @@ public final class ChronicleUtils {
 
     public void deleteFileIfExists(final String filePath) {
         try {
-            Files.delete(Paths.get(filePath));
+            Files.delete(Path.of(filePath));
         } catch (final IOException e) {
             Logger.info("No such index file {}.", filePath);
         }
