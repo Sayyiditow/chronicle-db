@@ -44,11 +44,11 @@ public final class ChronicleDb {
         final Class<V> valueClass = (Class<V>) averageValue.getClass();
 
         if (file.exists()) {
-            Logger.info("Fetching Chronicle DB at: {}", filePath);
+            Logger.info("Fetching Chronicle DB {} at: {}", name, filePath);
             return ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
         }
 
-        Logger.info("Creating Chronicle DB at: {}", filePath);
+        Logger.info("Creating Chronicle DB {} at: {}", name, filePath);
         return ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
                 .averageValue(averageValue).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
     }
@@ -62,15 +62,16 @@ public final class ChronicleDb {
      * @param valueClass the class of the value (best to implement Value interface
      *                   for complex structures)
      */
-    public <K, V> ChronicleMap<K, V> recoverDb(final String filePath, final K averageKey, final V averageValue,
-            final double maxBloatFactor) throws IOException {
+    public <K, V> ChronicleMap<K, V> recoverDb(final String name, final long entries,
+            final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
+            throws IOException {
+        Logger.info("Restoring Chronicle DB {} at: {}", name, filePath);
         final File file = new File(filePath);
         final Class<K> keyClass = (Class<K>) averageKey.getClass();
         final Class<V> valueClass = (Class<V>) averageValue.getClass();
 
-        Logger.info("Restoring Chronicle DB at: {}", filePath);
-        return ChronicleMap.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor)
-                .recoverPersistedTo(file, true);
+        return ChronicleMap.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
+                .averageValue(averageValue).maxBloatFactor(maxBloatFactor).recoverPersistedTo(file, true);
     }
 
     /**
