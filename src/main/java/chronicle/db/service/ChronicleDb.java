@@ -69,7 +69,8 @@ public final class ChronicleDb {
         final Class<V> valueClass = (Class<V>) averageValue.getClass();
 
         Logger.info("Restoring Chronicle DB at: {}", filePath);
-        return ChronicleMap.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor).recoverPersistedTo(file, false);
+        return ChronicleMap.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor)
+                .recoverPersistedTo(file, true);
     }
 
     /**
