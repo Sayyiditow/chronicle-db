@@ -24,6 +24,7 @@ import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
+import net.openhft.chronicle.map.ChronicleMapBuilder;
 
 @SuppressWarnings("unchecked")
 public class LeadDaoTest {
@@ -111,5 +112,29 @@ public class LeadDaoTest {
             NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException {
         final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
         System.out.println(dao.get(new HashSet<>(Arrays.asList("0-10", "0-11"))));
+    }
+
+    @Test
+    public void indexTest() throws IOException {
+        final var values = new ArrayList<Object>();
+
+        final var indexDb = ChronicleMapBuilder.of(Object.class, List.class)
+                .name("indexDb")
+                .entries(1000)
+                .averageKeySize(10000)
+                .averageValue(values)
+                .create();
+
+        int i = 0;
+        while (i < 250000) {
+            values.add(UUID.randomUUID().toString());
+            i++;
+        }
+        // Storing the nested structure
+        indexDb.put("exampleKey", values);
+
+        // Retrieving the data
+        final var retrievedMap = indexDb.get("exampleKey");
+        System.out.println(retrievedMap.size());
     }
 }
