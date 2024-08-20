@@ -270,9 +270,9 @@ public final class ChronicleUtils {
             final Map<K, V> values, final String file) {
         Field field = null;
         Object indexKey = null;
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
         try {
             Logger.info("Removing from index {} on object {}.", file, dbName);
-            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
             final var index = indexDb.get(dbFileName);
 
             for (final var entry : values.entrySet()) {
@@ -289,6 +289,7 @@ public final class ChronicleUtils {
             }
             indexDb.close();
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+            indexDb.close();
             Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath, e);
         }
     }
@@ -319,7 +320,7 @@ public final class ChronicleUtils {
             for (final String file : indexFileNames) {
                 threads.add(runInNewThreadNonBlocking(() -> {
                     removeFromIndex(dbFileName, dbName, dataPath, values, file);
-                }, dbName + " Removing Index Thread"));
+                }, dbName + " Removing Index Thread " + file));
             }
 
             for (final var t : threads) {
@@ -332,9 +333,9 @@ public final class ChronicleUtils {
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
         Field field = null;
         Object indexKey = null;
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
         try {
             Logger.info("Updating index {} on object {}.", file, dbName);
-            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
             var index = indexDb.get(dbFileName);
             if (index == null) {
                 index = new HashMap<>();
@@ -376,6 +377,7 @@ public final class ChronicleUtils {
             }
             indexDb.close();
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+            indexDb.close();
             Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
         }
     }
@@ -407,7 +409,7 @@ public final class ChronicleUtils {
             for (final String file : indexFileNames) {
                 threads.add(runInNewThreadNonBlocking(() -> {
                     updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
-                }, dbName + " Updating Index Thread"));
+                }, dbName + " Updating Index Thread - " + file));
             }
 
             for (final var t : threads) {
