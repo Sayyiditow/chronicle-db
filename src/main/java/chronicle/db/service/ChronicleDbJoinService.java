@@ -335,9 +335,9 @@ public final class ChronicleDbJoinService {
 
         for (final var join : joins) {
             setRequiredObjects(mapOfRecords, mapOfObjects, join);
-            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB
-                    .getDb(mapOfObjects.get(join.foreignKeyObjDaoName()).get("foreignKeyIndexPath")
-                            .toString());
+            final var indexPath = mapOfObjects.get(join.foreignKeyObjDaoName()).get("foreignKeyIndexPath")
+                    .toString();
+            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(indexPath);
 
             final var objRecords = mapOfRecords.get(join.objDaoName());
             final var foreignObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
@@ -361,7 +361,7 @@ public final class ChronicleDbJoinService {
                         toRemove.addAll(objRecords.get(entry.getKey()).keySet());
                     }
                 }
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
         }
 
         joinedMap.keySet().removeAll(toRemove);
@@ -520,9 +520,9 @@ public final class ChronicleDbJoinService {
 
         for (final var join : joins) {
             setRequiredObjects(mapOfRecords, mapOfObjects, join);
-            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB
-                    .getDb(mapOfObjects.get(join.foreignKeyObjDaoName()).get("foreignKeyIndexPath")
-                            .toString());
+            final var indexPath = mapOfObjects.get(join.foreignKeyObjDaoName()).get("foreignKeyIndexPath")
+                    .toString();
+            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(indexPath);
 
             final var objRecords = mapOfRecords.get(join.objDaoName());
             final var foreignKeyObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
@@ -592,7 +592,7 @@ public final class ChronicleDbJoinService {
                                 join.isInnerJoin(), join.foreignIsMainObject(), isObjectEmpty);
                     }
                 }
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
         }
 
         return new CsvObject(headers.toArray(new String[0]), rowList);

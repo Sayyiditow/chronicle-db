@@ -248,7 +248,8 @@ public final class ChronicleUtils {
             final Map<K, V> values, final String file) {
         Field field = null;
         Object indexKey = null;
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
+        final var indexPath = dataPath + "/indexes/" + file;
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
         try {
             Logger.info("Removing from index {} on object {}.", file, dbName);
             final var index = indexDb.get(dbFileName);
@@ -265,9 +266,9 @@ public final class ChronicleUtils {
                     indexDb.put(dbFileName, index);
                 }
             }
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
             Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath, e);
         }
     }
@@ -300,7 +301,8 @@ public final class ChronicleUtils {
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
         Field field = null;
         Object indexKey = null;
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(dataPath + "/indexes/" + file);
+        final var indexPath = dataPath + "/indexes/" + file;
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
         try {
             Logger.info("Updating index {} on object {}.", file, dbName);
             var index = indexDb.get(dbFileName);
@@ -342,9 +344,9 @@ public final class ChronicleUtils {
                     }
                 }
             }
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
             Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
         }
     }

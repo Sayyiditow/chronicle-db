@@ -677,7 +677,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                     CHRONICLE_UTILS.index(db, name(), field, indexDb, f, dataPath());
                     db.close();
                 }
-            indexDb.close();
+            MAP_DB.closeDb(path);
         }
     }
 
@@ -713,7 +713,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                 map.put(file, BaseDao.super.indexedSearch(search, db, indexDb.get(file)));
                 db.close();
             }));
-            indexDb.close();
+            MAP_DB.closeDb(indexFilePath);
             return map;
         }
 
@@ -722,7 +722,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             map.put(file, BaseDao.super.indexedSearch(search, db, indexDb.get(file)));
             db.close();
         }
-        indexDb.close();
+        MAP_DB.closeDb(indexFilePath);
         return map;
     }
 
@@ -735,7 +735,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
     default ConcurrentMap<String, ConcurrentMap<K, V>> indexedSearch(final Search search, final int limit)
             throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var indexPath = getIndexPath(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
         final var files = getFiles();
 
         if (multiThreaded(files)) {
@@ -750,7 +751,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                 return map.size() == limit;
             });
 
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
             return map.entrySet().stream().limit(limit).collect(Collectors.toConcurrentMap(Map.Entry::getKey,
                     Map.Entry::getValue));
         }
@@ -763,7 +764,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                 break;
         }
 
-        indexDb.close();
+        MAP_DB.closeDb(indexPath);
         return map;
     }
 
@@ -777,21 +778,22 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             final ConcurrentMap<String, ConcurrentMap<K, V>> db, final Search search)
             throws IOException, NoSuchFieldException, SecurityException {
         final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var indexPath = getIndexPath(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
         final var files = db.keySet().stream().collect(Collectors.toList());
 
         if (multiThreaded(files)) {
             files.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
                 map.put(file, BaseDao.super.indexedSearch(search, db.get(file), indexDb.get(file)));
             }));
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
             return map;
         }
 
         for (final var file : files) {
             map.put(file, BaseDao.super.indexedSearch(search, db.get(file), indexDb.get(file)));
         }
-        indexDb.close();
+        MAP_DB.closeDb(indexPath);
         return map;
     }
 
@@ -806,7 +808,8 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
             final ConcurrentMap<String, ConcurrentMap<K, V>> db, final Search search, final int limit)
             throws NoSuchFieldException, SecurityException, IOException {
         final var map = new ConcurrentHashMap<String, ConcurrentMap<K, V>>();
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var indexPath = getIndexPath(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
         final var files = db.keySet().stream().collect(Collectors.toList());
 
         if (multiThreaded(files)) {
@@ -819,7 +822,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                 return map.size() == limit;
             });
 
-            indexDb.close();
+            MAP_DB.closeDb(indexPath);
             return map.entrySet().stream().limit(limit).collect(Collectors.toConcurrentMap(Map.Entry::getKey,
                     Map.Entry::getValue));
         }
@@ -830,7 +833,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
                 break;
         }
 
-        indexDb.close();
+        MAP_DB.closeDb(indexPath);
         return map;
     }
 

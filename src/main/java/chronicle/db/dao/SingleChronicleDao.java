@@ -312,7 +312,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             CHRONICLE_UTILS.deleteFileIfExists(path);
             final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(path);
             CHRONICLE_UTILS.index(db, name(), field, indexDb, "data", dataPath());
-            indexDb.close();
+            MAP_DB.closeDb(path);
         }
         db.close();
     }
@@ -339,7 +339,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexFilePath);
         final var db = db();
         final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"));
-        indexDb.close();
+        MAP_DB.closeDb(indexFilePath);
         db.close();
         return result;
     }
@@ -348,10 +348,11 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * Refer to @BaseDao.super.indexedSearch
      */
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var indexPath = getIndexPath(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
         final var db = db();
         final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"), limit);
-        indexDb.close();
+        MAP_DB.closeDb(indexPath);
         db.close();
         return result;
     }
@@ -360,9 +361,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      * Refer to @BaseDao.super.indexedSearch
      */
     default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search) throws IOException {
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var indexPath = getIndexPath(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
         final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"));
-        indexDb.close();
+        MAP_DB.closeDb(indexPath);
         return result;
     }
 
@@ -371,9 +373,10 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
      */
     default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search, final int limit)
             throws IOException {
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(getIndexPath(search.field()));
+        final var indexPath = getIndexPath(search.field());
+        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
         final var result = BaseDao.super.indexedSearch(search, db, indexDb.get("data"), limit);
-        indexDb.close();
+        MAP_DB.closeDb(indexPath);
         return result;
     }
 
