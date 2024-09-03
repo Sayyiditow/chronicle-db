@@ -46,13 +46,13 @@ public final class MapDb {
     }
 
     public synchronized void closeDb(final String filePath) {
-        Logger.info("Closing index file at: {}", filePath);
         var refCount = REF_COUNTS.get(filePath);
         if (refCount != null) {
             refCount--;
             REF_COUNTS.put(filePath, refCount);
 
             if (refCount == 0) {
+                Logger.info("Closing index file at: {}", filePath);
                 final var db = INSTANCES.get(filePath);
                 if (db != null) {
                     db.close();
