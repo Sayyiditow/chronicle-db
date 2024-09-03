@@ -58,7 +58,6 @@ public final class MapDb {
                     db.close();
                     REF_COUNTS.remove(filePath);
                     INSTANCES.remove(filePath);
-                    Logger.info("Index file at: {} closed.", filePath);
                 }
             }
         }
