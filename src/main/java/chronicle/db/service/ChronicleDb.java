@@ -6,9 +6,9 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
-import java.util.HashMap;
 import java.util.Map;
 
+import org.eclipse.collections.impl.map.mutable.ConcurrentHashMap;
 import org.tinylog.Logger;
 
 import chronicle.db.dao.MultiChronicleDao;
@@ -156,6 +156,6 @@ public final class ChronicleDb {
     }
 
     public <K, V> Map<K, V> getMapForMultiInserts(final SingleChronicleDao<K, V> dao) {
-        return new HashMap<K, V>();
+        return new ConcurrentHashMap<K, V>();
     }
 }
