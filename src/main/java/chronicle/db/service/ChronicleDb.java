@@ -6,6 +6,8 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.tinylog.Logger;
 
@@ -151,5 +153,9 @@ public final class ChronicleDb {
             SecurityException, InstantiationException, InvocationTargetException {
         final var c = getObjectConstructor(daoClassName);
         return (SingleChronicleDao) c.newInstance(dataPath);
+    }
+
+    public <K, V> Map<K, V> getMapForMultiInserts(final SingleChronicleDao<K, V> dao) {
+        return new HashMap<K, V>();
     }
 }
