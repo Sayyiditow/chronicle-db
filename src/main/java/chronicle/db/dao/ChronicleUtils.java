@@ -56,19 +56,6 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Create new thread to run a runnable process in it and return the thread id,
-     * in case you want to interrupt the thread later.
-     *
-     * @param runnableProcess The runnable process to run in separate thread.
-     * @return returns the thread id
-     * @throws InterruptedException
-     */
-    public static Thread runInNewThreadNonBlocking(final Runnable runnableProcess, final String threadName)
-            throws InterruptedException {
-        return Thread.ofVirtual().name(threadName).start(runnableProcess);
-    }
-
-    /**
      * Retrieve a list of files in a dirPath and throw an exception is dirPath is
      * null
      *
@@ -285,15 +272,14 @@ public final class ChronicleUtils {
      */
     public <K, V> void removeFromIndex(final String dbFileName, final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values) throws IOException, InterruptedException {
-        final var threads = new ArrayList<Thread>();
-        for (final String file : indexFileNames) {
-            threads.add(runInNewThreadNonBlocking(() -> {
+        if (indexFileNames.size() > 2) {
+            indexFileNames.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
                 removeFromIndex(dbFileName, dbName, dataPath, values, file);
-            }, dbName + " Removing Index Thread " + file));
-        }
-
-        for (final var t : threads) {
-            t.join();
+            }));
+        } else {
+            for (final String file : indexFileNames) {
+                removeFromIndex(dbFileName, dbName, dataPath, values, file);
+            }
         }
     }
 
@@ -364,15 +350,14 @@ public final class ChronicleUtils {
     public <K, V> void updateIndex(final String dbFileName, final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues)
             throws IOException, InterruptedException {
-        final var threads = new ArrayList<Thread>();
-        for (final String file : indexFileNames) {
-            threads.add(runInNewThreadNonBlocking(() -> {
+        if (indexFileNames.size() > 2) {
+            indexFileNames.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
                 updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
-            }, dbName + " Updating Index Thread - " + file));
-        }
-
-        for (final var t : threads) {
-            t.join();
+            }));
+        } else {
+            for (final String file : indexFileNames) {
+                updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
+            }
         }
     }
 
