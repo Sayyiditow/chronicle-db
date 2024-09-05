@@ -217,7 +217,7 @@ public final class ChronicleUtils {
                 if (currentValue == null)
                     currentValue = "null";
                 List<K> keys = copy.get(currentValue);
-                if (Objects.isNull(keys)) {
+                if (keys == null) {
                     keys = new ArrayList<>();
                 }
                 keys.add(entry.getKey());
@@ -231,8 +231,8 @@ public final class ChronicleUtils {
         index.put(fileName, copy);
     }
 
-    private <K, V> void removeFromIndex(final String dbFileName, final String dbName, final String dataPath,
-            final Map<K, V> values, final String file) {
+    private <K, V> void removeFromIndex(final String dbFileName, final String dbName,
+            final String dataPath, final Map<K, V> values, final String file) {
         Field field = null;
         Object indexKey = null;
         final var indexPath = dataPath + "/indexes/" + file;
@@ -245,7 +245,7 @@ public final class ChronicleUtils {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 indexKey = field.get(value);
-                if (Objects.isNull(indexKey))
+                if (indexKey == null)
                     indexKey = "null";
                 final List<K> keys = index.get(indexKey);
                 if (keys.remove(entry.getKey())) {
@@ -253,10 +253,10 @@ public final class ChronicleUtils {
                     indexDb.put(dbFileName, index);
                 }
             }
-            MAP_DB.closeDb(indexPath);
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            MAP_DB.closeDb(indexPath);
             Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath, e);
+        } finally {
+            MAP_DB.closeDb(indexPath);
         }
     }
 
@@ -301,7 +301,7 @@ public final class ChronicleUtils {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 indexKey = field.get(value);
-                if (Objects.isNull(indexKey))
+                if (indexKey == null)
                     indexKey = "null";
                 final List<K> keys = index.get(indexKey);
                 if (Objects.nonNull(keys))
@@ -315,11 +315,11 @@ public final class ChronicleUtils {
                 final var value = entry.getValue();
                 field = value.getClass().getField(file);
                 indexKey = field.get(value);
-                if (Objects.isNull(indexKey))
+                if (indexKey == null)
                     indexKey = "null";
 
                 List<K> keys = index.get(indexKey);
-                if (Objects.isNull(keys)) {
+                if (keys == null) {
                     keys = new ArrayList<>();
                 }
 
@@ -330,10 +330,10 @@ public final class ChronicleUtils {
                     }
                 }
             }
-            MAP_DB.closeDb(indexPath);
         } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            MAP_DB.closeDb(indexPath);
             Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
+        } finally {
+            MAP_DB.closeDb(indexPath);
         }
     }
 
