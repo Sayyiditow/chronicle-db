@@ -34,6 +34,7 @@ import chronicle.db.service.HandleConsumer;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
+    private final ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
 
     public <K> void getLog(final String name, final K key) {
         Logger.info("Querying {} using key {}.", name, key);
@@ -236,27 +237,35 @@ public final class ChronicleUtils {
         Field field = null;
         Object indexKey = null;
         final var indexPath = dataPath + "/indexes/" + file;
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
-        try {
-            Logger.info("Removing from index {} on object {}.", file, dbName);
-            final var index = indexDb.get(dbFileName);
+        final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
+        synchronized (lock) {
+            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
+            try {
+                Logger.info("Removing from index {} on object {}.", file, dbName);
+                final var index = indexDb.get(dbFileName);
 
-            for (final var entry : values.entrySet()) {
-                final var value = entry.getValue();
-                field = value.getClass().getField(file);
-                indexKey = field.get(value);
-                if (indexKey == null)
-                    indexKey = "null";
-                final List<K> keys = index.get(indexKey);
-                if (keys.remove(entry.getKey())) {
-                    index.put(indexKey, keys);
-                    indexDb.put(dbFileName, index);
+                for (final var entry : values.entrySet()) {
+                    final var value = entry.getValue();
+                    field = value.getClass().getField(file);
+                    indexKey = field.get(value);
+                    if (indexKey == null)
+                        indexKey = "null";
+                    final List<K> keys = index.get(indexKey);
+                    if (keys.remove(entry.getKey())) {
+                        if (keys.isEmpty()) {
+                            index.remove(indexKey); // Remove if no entries left
+                        } else {
+                            index.put(indexKey, keys);
+                        }
+                        indexDb.put(dbFileName, index);
+                    }
                 }
+            } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+                Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath,
+                        e);
+            } finally {
+                MAP_DB.closeDb(indexPath);
             }
-        } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath, e);
-        } finally {
-            MAP_DB.closeDb(indexPath);
         }
     }
 
@@ -288,52 +297,55 @@ public final class ChronicleUtils {
         Field field = null;
         Object indexKey = null;
         final var indexPath = dataPath + "/indexes/" + file;
-        final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
-        try {
-            Logger.info("Updating index {} on object {}.", file, dbName);
-            var index = indexDb.get(dbFileName);
-            if (index == null) {
-                index = new HashMap<>();
-            }
-
-            // remove from the index first
-            for (final var entry : prevValues.entrySet()) {
-                final var value = entry.getValue();
-                field = value.getClass().getField(file);
-                indexKey = field.get(value);
-                if (indexKey == null)
-                    indexKey = "null";
-                final List<K> keys = index.get(indexKey);
-                if (Objects.nonNull(keys))
-                    if (keys.remove(entry.getKey())) {
-                        index.put(indexKey, keys);
-                        indexDb.put(dbFileName, index);
-                    }
-            }
-
-            for (final var entry : values.entrySet()) {
-                final var value = entry.getValue();
-                field = value.getClass().getField(file);
-                indexKey = field.get(value);
-                if (indexKey == null)
-                    indexKey = "null";
-
-                List<K> keys = index.get(indexKey);
-                if (keys == null) {
-                    keys = new ArrayList<>();
+        final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
+        synchronized (lock) {
+            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
+            try {
+                Logger.info("Updating index {} on object {}.", file, dbName);
+                var index = indexDb.get(dbFileName);
+                if (index == null) {
+                    index = new HashMap<>();
                 }
 
-                if (!keys.contains(entry.getKey())) {
-                    if (keys.add(entry.getKey())) {
-                        index.put(indexKey, keys);
-                        indexDb.put(dbFileName, index);
+                // remove from the index first
+                for (final var entry : prevValues.entrySet()) {
+                    final var value = entry.getValue();
+                    field = value.getClass().getField(file);
+                    indexKey = field.get(value);
+                    if (indexKey == null)
+                        indexKey = "null";
+                    final List<K> keys = index.get(indexKey);
+                    if (Objects.nonNull(keys))
+                        if (keys.remove(entry.getKey())) {
+                            index.put(indexKey, keys);
+                            indexDb.put(dbFileName, index);
+                        }
+                }
+
+                for (final var entry : values.entrySet()) {
+                    final var value = entry.getValue();
+                    field = value.getClass().getField(file);
+                    indexKey = field.get(value);
+                    if (indexKey == null)
+                        indexKey = "null";
+
+                    List<K> keys = index.get(indexKey);
+                    if (keys == null) {
+                        keys = new ArrayList<>();
+                    }
+
+                    if (!keys.contains(entry.getKey())) {
+                        if (keys.add(entry.getKey())) {
+                            index.put(indexKey, keys);
+                            indexDb.put(dbFileName, index);
+                        }
                     }
                 }
+            } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+                Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
+            } finally {
+                MAP_DB.closeDb(indexPath);
             }
-        } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
-        } finally {
-            MAP_DB.closeDb(indexPath);
         }
     }
 
