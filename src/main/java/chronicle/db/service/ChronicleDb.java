@@ -6,7 +6,7 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
-import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 
 import org.eclipse.collections.impl.map.mutable.ConcurrentHashMap;
 import org.tinylog.Logger;
@@ -155,7 +155,7 @@ public final class ChronicleDb {
         return (SingleChronicleDao) c.newInstance(dataPath);
     }
 
-    public <K, V> Map<K, V> getMapForMultiInserts(final SingleChronicleDao<K, V> dao) {
+    public <K, V> ConcurrentMap<K, V> getMapForMultiInserts(final SingleChronicleDao<K, V> dao) {
         return new ConcurrentHashMap<K, V>();
     }
 }
