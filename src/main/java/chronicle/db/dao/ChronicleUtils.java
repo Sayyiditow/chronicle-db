@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
@@ -44,8 +45,8 @@ public final class ChronicleUtils {
         Logger.info("Deleting from {} using key {}.", name, key);
     }
 
-    public void deleteAllLog(final String name) {
-        Logger.info("Deleting from db: {} using multiple keys", name);
+    public <K> void deleteAllLog(final String name, final Set<K> keys) {
+        Logger.info("Deleting from db: {} using multiple keys {}.", name, keys);
     }
 
     public <K> void successDeleteLog(final String name, final K key) {

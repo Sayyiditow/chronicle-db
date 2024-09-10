@@ -143,7 +143,7 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
     default boolean delete(final Set<K> keys) throws IOException, InterruptedException {
         Logger.info("Getting multiple values using keys {} at {}.", keys, dataPath());
         final var db = db();
-        CHRONICLE_UTILS.deleteAllLog(name());
+        CHRONICLE_UTILS.deleteAllLog(name(), keys);
         final Map<K, V> updatedMap = new HashMap<>();
 
         if (containsIndexes()) {

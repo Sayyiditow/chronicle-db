@@ -307,7 +307,7 @@ public interface MultiChronicleDao<K, V> extends BaseDao<K, V> {
         final Map<K, V> updated = new HashMap<>();
 
         if (size != 0) {
-            CHRONICLE_UTILS.deleteAllLog(name() + " at file " + file);
+            CHRONICLE_UTILS.deleteAllLog(name() + " at file " + file, keys);
             for (final K key : keys) {
                 final var value = db.getUsing(key, using());
                 if (Objects.nonNull(value)) {
