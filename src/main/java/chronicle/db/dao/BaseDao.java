@@ -269,7 +269,7 @@ interface BaseDao<K, V> {
             if (keySet.size() > 0) {
                 final var fieldClass = keySet.stream().filter(Objects::nonNull).findFirst().get().getClass();
                 final Object searchTerm = CHRONICLE_UTILS.setSearchTerm(search.searchTerm(), fieldClass);
-                if (List.of(SearchType.IN, SearchType.NOT_IN).indexOf(search.searchType()) != -1) {
+                if (search.searchType() == SearchType.IN || search.searchType() == SearchType.NOT_IN) {
                     searchTermList = CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass);
                 }
 
@@ -395,7 +395,7 @@ interface BaseDao<K, V> {
             if (keySet.size() > 0) {
                 final var fieldClass = keySet.iterator().next().getClass();
                 final Object searchTerm = CHRONICLE_UTILS.setSearchTerm(search.searchTerm(), fieldClass);
-                if (List.of(SearchType.IN, SearchType.NOT_IN).indexOf(search.searchType()) != -1) {
+                if (search.searchType() == SearchType.IN || search.searchType() == SearchType.NOT_IN) {
                     searchTermList = CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass);
                 }
 

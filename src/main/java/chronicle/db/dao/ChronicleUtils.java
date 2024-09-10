@@ -124,7 +124,7 @@ public final class ChronicleUtils {
 
         if (Objects.nonNull(field)) {
             final Object searchTerm = setSearchTerm(search.searchTerm(), field.getType());
-            if (List.of(SearchType.IN, SearchType.NOT_IN).indexOf(search.searchType()) != -1) {
+            if (search.searchType() == SearchType.IN || search.searchType() == SearchType.NOT_IN) {
                 searchTermList = setSearchTerm((List<Object>) search.searchTerm(), field.getType());
             }
             final Object currentValue = field.get(value);
