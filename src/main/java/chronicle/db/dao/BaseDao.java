@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -207,18 +208,18 @@ interface BaseDao<K, V> {
      */
     default void initDefaultIndexes(final String[] fields) throws IOException {
         if (getFileList(dataPath() + "/data").size() != 0) {
-            final var indexFiles = indexFileNames();
+            final var indexFiles = new HashSet<>(indexFileNames());
             if (indexFiles.size() != fields.length) {
                 final var toIndex = new ArrayList<String>();
 
                 for (final var field : fields) {
-                    if (indexFiles.indexOf(field) == -1) {
+                    if (!indexFiles.contains(field)) {
                         toIndex.add(field);
                     }
                 }
 
                 if (toIndex.size() > 0) {
-                    initIndex(toIndex.toArray(new String[0]));
+                    initIndex(toIndex.toArray(new String[toIndex.size()]));
                 }
             }
         }
