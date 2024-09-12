@@ -52,19 +52,22 @@ public final class MapDb {
         return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
     }
 
-    public synchronized void closeDb(final String filePath) {
-        var refCount = REF_COUNTS.get(filePath);
-        if (refCount != null) {
-            refCount--;
-            REF_COUNTS.put(filePath, refCount);
+    public void closeDb(final String filePath) {
+        final Object lock = locks.computeIfAbsent(filePath, k -> new Object());
+        synchronized (lock) {
+            var refCount = REF_COUNTS.get(filePath);
+            if (refCount != null) {
+                refCount--;
+                REF_COUNTS.put(filePath, refCount);
 
-            if (refCount == 0) {
-                Logger.info("Closing index file at: {}", filePath);
-                final var db = INSTANCES.get(filePath);
-                if (db != null) {
-                    db.close();
-                    REF_COUNTS.remove(filePath);
-                    INSTANCES.remove(filePath);
+                if (refCount == 0) {
+                    Logger.info("Closing index file at: {}", filePath);
+                    final var db = INSTANCES.get(filePath);
+                    if (db != null) {
+                        db.close();
+                        REF_COUNTS.remove(filePath);
+                        INSTANCES.remove(filePath);
+                    }
                 }
             }
         }
