@@ -43,11 +43,12 @@ public final class MapDb {
                         .fileLockDisable()
                         .make();
                 INSTANCES.put(filePath, db);
-                REF_COUNTS.put(filePath, 0);
+                REF_COUNTS.put(filePath, 1);
+            } else {
+                REF_COUNTS.put(filePath, REF_COUNTS.get(filePath) + 1);
             }
         }
 
-        REF_COUNTS.put(filePath, REF_COUNTS.get(filePath) + 1);
         return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
     }
 
