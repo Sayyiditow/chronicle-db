@@ -12,6 +12,7 @@ import org.tinylog.Logger;
 public final class MapDb {
     private static final ConcurrentMap<String, DB> INSTANCES = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Integer> REF_COUNTS = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
 
     private MapDb() {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -27,9 +28,11 @@ public final class MapDb {
      */
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
         Logger.info("Opening index file at: {}", filePath);
-        var db = INSTANCES.get(filePath);
-        if (db == null) {
-            synchronized (this) {
+        final Object lock = locks.computeIfAbsent(filePath, k -> new Object());
+        DB db;
+        synchronized (lock) {
+            db = INSTANCES.get(filePath);
+            if (db == null) {
                 db = DBMaker
                         .fileDB(filePath)
                         .fileMmapEnable() // Always enable mmap
@@ -43,6 +46,7 @@ public final class MapDb {
                 REF_COUNTS.put(filePath, 0);
             }
         }
+
         REF_COUNTS.put(filePath, REF_COUNTS.get(filePath) + 1);
         return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
     }
