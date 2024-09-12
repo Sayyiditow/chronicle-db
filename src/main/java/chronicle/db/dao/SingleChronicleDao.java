@@ -169,20 +169,19 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         return updated;
     }
 
-    private ChronicleMap<K, V> createNewDb(ChronicleMap<K, V> db) throws IOException {
-        if (db.size() != 0 && db.size() % entries() == 0) {
-            final var currentValues = new ConcurrentHashMap<>(db);
-            db.close();
-            Logger.info("Creating a bigger file, max limit of records reached on {}", name());
-            final var dataFile = dataPath() + "/data/data";
-            CHRONICLE_UTILS.deleteFileIfExists(dataFile);
-            db = CHRONICLE_DB.createOrGet(name(),
-                    entries() * ((currentValues.size() / entries()) + 1) + entries(),
-                    averageKey(), averageValue(), dataPath() + "/data/data.tmp", bloatFactor());
-            db.putAll(currentValues);
-            Files.move(Path.of(dataPath() + "/data/data.tmp"), Path.of(dataFile), REPLACE_EXISTING);
-        }
-        return db;
+    private ChronicleMap<K, V> createNewDb(final ChronicleMap<K, V> db) throws IOException {
+        Logger.info("Increasing entry size on db {}.", name());
+        final var dataFile = dataPath() + "/data/data";
+        final var backupDataFile = dataPath() + "/backup/data";
+        final var tempDataFile = dataPath() + "/data/data.tmp";
+        final var newSize = entries() * ((db.size() / entries()) + 1) + entries();
+        final var newDb = CHRONICLE_DB.createOrGet(name(), newSize, averageKey(), averageValue(), tempDataFile,
+                bloatFactor());
+        newDb.putAll(db);
+        db.close();
+        Files.move(Path.of(dataFile), Path.of(backupDataFile), REPLACE_EXISTING);
+        Files.move(Path.of(tempDataFile), Path.of(dataFile), REPLACE_EXISTING);
+        return newDb;
     }
 
     /**
@@ -197,7 +196,9 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
     default PutStatus put(final K key, final V value, final List<String> indexFileNames)
             throws IOException, InterruptedException {
         // create a bigger file if records in db are equal to multiple of entries()
-        final var db = createNewDb(db());
+        var db = db();
+        if (db.size() != 0 && db.size() % entries() == 0)
+            db = createNewDb(db);
         final var prevValue = db.put(key, value);
         final var updated = prevValue != null;
         final var prevValueMap = new HashMap<K, V>();
@@ -242,7 +243,8 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         final var prevValues = new HashMap<K, V>();
 
         for (final var entry : map.entrySet()) {
-            db = createNewDb(db);
+            if (db.size() != 0 && db.size() % entries() == 0)
+                db = createNewDb(db);
             final var updated = db.put(entry.getKey(), entry.getValue());
             if (updated != null)
                 prevValues.put(entry.getKey(), updated);

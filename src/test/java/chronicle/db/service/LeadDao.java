@@ -19,7 +19,7 @@ public class LeadDao implements SingleChronicleDao<String, Lead> {
 
     @Override
     public long entries() {
-        return 100000;
+        return 100;
     }
 
     @Override

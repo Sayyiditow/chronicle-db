@@ -5,22 +5,17 @@ import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import java.beans.IntrospectionException;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ConcurrentSkipListMap;
 
 import org.junit.jupiter.api.Test;
 
-import com.jsoniter.JsonIterator;
 import com.jsoniter.output.JsonStream;
-import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
@@ -30,38 +25,27 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 public class LeadDaoTest {
     private final String objectClassName = "chronicle.db.service.Lead";
     private final String daoClassName = "chronicle.db.service.LeadDao";
-    private static final String DATA_PATH = "src/main/resources/.data/chronicle/";
+    private static final String DATA_PATH = "src/test/.data/";
 
     @Test
     public void testInsert() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException,
             InterruptedException {
-        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
-        final var c = CHRONICLE_DB.getObjectConstructor(objectClassName);
-        final String sourcePath = "/home/hashim/Downloads/leads/dat.json.aa";
-        final List<Map<String, Object>> source = JsonIterator.deserialize(Files.readAllBytes(Path.of(sourcePath)),
-                new TypeLiteral<>() {
+        final var dao = CHRONICLE_DB.getSingleChronicleDao(daoClassName, DATA_PATH);
+        final ConcurrentMap<String, Object> objects = new ConcurrentHashMap<>();
+        int i = 100;
+        dao.put(UUID.randomUUID().toString(),
+                new Lead("Hashim Sayyid", "hashim-sayyind-12912", "", "", "abas@asa.com", "012109012",
+                        "test engineer", "asa", new ArrayList<>()));
 
-                });
-        final ConcurrentMap<String, Object> objects = new ConcurrentSkipListMap<>();
-
-        for (final var map : source) {
-            final var emails = (List<Map<String, String>>) map.get("emails");
-            final var emailList = new ArrayList<Email>();
-            emails.forEach((e) -> emailList.add(new Email(e.get("address"), e.get("type"))));
-            final Object obj = c.newInstance(
-                    map.get("full_name"),
-                    map.get("linkedin_username"),
-                    map.get("facebook_username"),
-                    map.get("twitter_username"),
-                    map.get("work_email"),
-                    map.get("mobile_phone"),
-                    map.get("job_title"),
-                    map.get("location_name"),
-                    emailList);
+        while (i > 0) {
+            final var obj = new Lead("Hashim Sayyid", "hashim-sayyind-12912", "", "", "abas@asa.com", "012109012",
+                    "test engineer",
+                    "asa", new ArrayList<>());
             objects.put(UUID.randomUUID().toString(), obj);
+            i--;
         }
-        dao.put(objects, false);
+        dao.put(objects, List.of());
         System.out.println(dao.size());
     }
 
