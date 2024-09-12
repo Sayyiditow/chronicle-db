@@ -29,6 +29,8 @@ import net.openhft.chronicle.map.ChronicleMap;
  * @param <V> Type of the single element
  */
 public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
+    ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
+
     /**
      * Get the db object, you must close the object manually
      * 
@@ -46,9 +48,8 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
     default void recoverData() throws IOException {
         final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
                 dataPath() + "/data/data", bloatFactor());
-        final var dbRecovery = CHRONICLE_DB.createOrGet(name(), entries(),
-                averageKey(), averageValue(), dataPath() + "/data/recovery",
-                bloatFactor());
+        final var dbRecovery = CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
+                dataPath() + "/data/recovery", bloatFactor());
         dbRecovery.putAll(db);
         Files.move(Path.of(dataPath() + "/data/data"), Path.of(dataPath() + "/data/corrupted"), REPLACE_EXISTING);
         Files.move(Path.of(dataPath() + "/data/recovery"), Path.of(dataPath() + "/data/data"), REPLACE_EXISTING);
@@ -197,8 +198,11 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
             throws IOException, InterruptedException {
         // create a bigger file if records in db are equal to multiple of entries()
         var db = db();
-        if (db.size() != 0 && db.size() % entries() == 0)
-            db = createNewDb(db);
+        final Object lock = locks.computeIfAbsent(name(), k -> new Object());
+        synchronized (lock) {
+            if (db.size() != 0 && db.size() % entries() == 0)
+                db = createNewDb(db);
+        }
         final var prevValue = db.put(key, value);
         final var updated = prevValue != null;
         final var prevValueMap = new HashMap<K, V>();
@@ -241,10 +245,13 @@ public interface SingleChronicleDao<K, V> extends BaseDao<K, V> {
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
         var db = db();
         final var prevValues = new HashMap<K, V>();
+        final Object lock = locks.computeIfAbsent(name(), k -> new Object());
+        synchronized (lock) {
+            if (db.size() + map.size() > entries())
+                db = createNewDb(db);
+        }
 
         for (final var entry : map.entrySet()) {
-            if (db.size() != 0 && db.size() % entries() == 0)
-                db = createNewDb(db);
             final var updated = db.put(entry.getKey(), entry.getValue());
             if (updated != null)
                 prevValues.put(entry.getKey(), updated);

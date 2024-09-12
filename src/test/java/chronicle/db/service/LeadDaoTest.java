@@ -23,15 +23,15 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 
 @SuppressWarnings("unchecked")
 public class LeadDaoTest {
-    private final String objectClassName = "chronicle.db.service.Lead";
-    private final String daoClassName = "chronicle.db.service.LeadDao";
+    private static final String OBJECT = "chronicle.db.service.Lead";
+    private static final String DAO = "chronicle.db.service.LeadDao";
     private static final String DATA_PATH = "src/test/.data/";
 
     @Test
     public void testInsert() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException,
             InterruptedException {
-        final var dao = CHRONICLE_DB.getSingleChronicleDao(daoClassName, DATA_PATH);
+        final var dao = CHRONICLE_DB.getSingleChronicleDao(DAO, DATA_PATH);
         final ConcurrentMap<String, Object> objects = new ConcurrentHashMap<>();
         int i = 100;
         dao.put(UUID.randomUUID().toString(),
@@ -54,7 +54,7 @@ public class LeadDaoTest {
             IllegalAccessException, NoSuchFieldException, SecurityException, IntrospectionException,
             InstantiationException, InvocationTargetException {
         final long time = System.currentTimeMillis();
-        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
+        final var dao = CHRONICLE_DB.getMultiChronicleDao(DAO, DATA_PATH);
         System.out.println(dao.size());
         final var searchValues = dao.search(new Search("fullName", Search.SearchType.LIKE, "pheakdey ton"));
         System.out.println(JsonStream.serialize(searchValues));
@@ -65,7 +65,7 @@ public class LeadDaoTest {
     @Test
     public void index() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException {
-        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
+        final var dao = CHRONICLE_DB.getMultiChronicleDao(DAO, DATA_PATH);
         dao.initIndex(new String[] { "fullName" });
     }
 
@@ -73,7 +73,7 @@ public class LeadDaoTest {
     public void indexedSearch() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException {
         final long time = System.currentTimeMillis();
-        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
+        final var dao = CHRONICLE_DB.getMultiChronicleDao(DAO, DATA_PATH);
         final var map = dao.indexedSearch(new Search("fullName", SearchType.EQUAL, "pheakdey ton"));
         final long end = System.currentTimeMillis();
         System.out.println(end - time);
@@ -84,7 +84,7 @@ public class LeadDaoTest {
     public void testMultiThreadDelete() throws IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, ClassNotFoundException, IOException, InstantiationException, InvocationTargetException,
             InterruptedException {
-        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
+        final var dao = CHRONICLE_DB.getMultiChronicleDao(DAO, DATA_PATH);
         System.out.println(dao.size());
         dao.delete(new HashSet<>(Arrays.asList("1-99000", "2-99001")));
         System.out.println(dao.size());
@@ -94,7 +94,7 @@ public class LeadDaoTest {
     @Test
     public void testGetAll() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException {
-        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, DATA_PATH);
+        final var dao = CHRONICLE_DB.getMultiChronicleDao(DAO, DATA_PATH);
         System.out.println(dao.get(new HashSet<>(Arrays.asList("0-10", "0-11"))));
     }
 
