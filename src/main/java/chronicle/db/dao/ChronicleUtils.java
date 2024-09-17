@@ -90,15 +90,12 @@ public final class ChronicleUtils {
 
     public List<Object> setSearchTerm(final List<Object> searchTerms, final Class<?> fieldClass) {
         for (int i = 0; i < searchTerms.size(); i++) {
-            if (fieldClass.isEnum() && (searchTerms.get(i) instanceof String)) {
-                searchTerms.set(i, toEnum(fieldClass, searchTerms.get(i)));
-                continue;
-            }
-            if (fieldClass.isAssignableFrom(long.class)
+            if (fieldClass.isEnum() && !(searchTerms.get(i) instanceof String)) {
+                searchTerms.set(i, String.valueOf(searchTerms.get(i)));
+            } else if (fieldClass.isAssignableFrom(long.class)
                     && (searchTerms.get(i) instanceof String || searchTerms.get(i) instanceof Integer
                             || searchTerms.get(i).getClass().isAssignableFrom(int.class))) {
                 searchTerms.set(i, toEnum(fieldClass, Long.parseLong(searchTerms.get(i).toString())));
-                continue;
             }
 
         }
@@ -107,11 +104,11 @@ public final class ChronicleUtils {
     }
 
     public Object setSearchTerm(final Object searchTerm, final Class<?> fieldClass) {
-        if (fieldClass.isEnum() && (searchTerm instanceof String))
-            return toEnum(fieldClass, searchTerm);
-
-        if (fieldClass.isAssignableFrom(long.class) && (searchTerm instanceof String || searchTerm instanceof Integer
-                || searchTerm.getClass().isAssignableFrom(int.class)))
+        if (fieldClass.isEnum() && !(searchTerm instanceof String))
+            return String.valueOf(searchTerm);
+        else if (fieldClass.isAssignableFrom(long.class)
+                && (searchTerm instanceof String || searchTerm instanceof Integer
+                        || searchTerm.getClass().isAssignableFrom(int.class)))
             return Long.parseLong(searchTerm.toString());
 
         return searchTerm;
@@ -206,33 +203,34 @@ public final class ChronicleUtils {
      * 
      */
     public <K, V> void index(final ConcurrentMap<K, V> db, final String dbName, final String field,
-            final HTreeMap<Object, List<K>> indexDb, final String dataPath) {
+            final String dataPath, final String indexPath) {
         Logger.info("Indexing {} db at {} using {}.", dbName, dataPath, field);
+        final Map<Object, List<K>> tempIndexMap = new HashMap<>();
 
         for (final var entry : db.entrySet()) {
             Field f = null;
             try {
                 f = entry.getValue().getClass().getField(field);
                 Object currentValue = f.get(entry.getValue());
-                if (currentValue == null)
+                if (f.getType().isEnum())
+                    currentValue = String.valueOf(currentValue);
+                else if (currentValue == null)
                     currentValue = "null";
-                List<K> keys = indexDb.get(currentValue);
-                if (keys == null) {
-                    keys = new ArrayList<>();
-                }
-                keys.add(entry.getKey());
-                indexDb.put(currentValue, keys);
+                tempIndexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(entry.getKey());
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath, e);
                 break;
             }
         }
+
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+        indexDb.putAll(tempIndexMap);
+        MAP_DB.closeDb(indexPath);
     }
 
     private <K, V> void removeFromIndex(final String dbName, final String dataPath, final Map<K, V> values,
             final String file) {
         Field field = null;
-        Object indexKey = null;
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
@@ -242,8 +240,10 @@ public final class ChronicleUtils {
                 for (final var entry : values.entrySet()) {
                     final var value = entry.getValue();
                     field = value.getClass().getField(file);
-                    indexKey = field.get(value);
-                    if (indexKey == null)
+                    var indexKey = field.get(value);
+                    if (field.getType().isEnum())
+                        indexKey = String.valueOf(indexKey);
+                    else if (indexKey == null)
                         indexKey = "null";
                     final List<K> keys = indexDb.get(indexKey);
                     if (keys.remove(entry.getKey())) {
@@ -289,7 +289,6 @@ public final class ChronicleUtils {
     private <K, V> void updateIndex(final String dbName, final String dataPath,
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
         Field field = null;
-        Object indexKey = null;
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
@@ -301,9 +300,12 @@ public final class ChronicleUtils {
                 for (final var entry : prevValues.entrySet()) {
                     final V value = entry.getValue();
                     field = value.getClass().getField(file);
-                    indexKey = field.get(value);
-                    if (indexKey == null)
+                    var indexKey = field.get(value);
+                    if (field.getType().isEnum())
+                        indexKey = String.valueOf(indexKey);
+                    else if (indexKey == null)
                         indexKey = "null";
+
                     final List<K> keys = indexDb.get(indexKey);
                     if (Objects.nonNull(keys) && keys.remove(entry.getKey())) {
                         indexDb.put(indexKey, keys);
@@ -313,12 +315,13 @@ public final class ChronicleUtils {
                 for (final var entry : values.entrySet()) {
                     final V value = entry.getValue();
                     field = value.getClass().getField(file);
-                    indexKey = field.get(value);
-                    if (indexKey == null)
+                    var indexKey = field.get(value);
+                    if (field.getType().isEnum())
+                        indexKey = String.valueOf(indexKey);
+                    else if (indexKey == null)
                         indexKey = "null";
 
                     final List<K> keys = indexDb.computeIfAbsent(indexKey, k -> new ArrayList<>());
-
                     if (!keys.contains(entry.getKey()) && keys.add(entry.getKey())) {
                         indexDb.put(indexKey, keys);
                     }

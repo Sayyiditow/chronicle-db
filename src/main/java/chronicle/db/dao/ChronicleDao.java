@@ -22,7 +22,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
-import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
 import com.jsoniter.spi.TypeLiteral;
@@ -184,9 +183,7 @@ public interface ChronicleDao<K, V> {
         for (final var field : fields) {
             final String path = getIndexPath(field);
             CHRONICLE_UTILS.deleteFileIfExists(path);
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(path);
-            CHRONICLE_UTILS.index(db, name(), field, indexDb, dataPath());
-            MAP_DB.closeDb(path);
+            CHRONICLE_UTILS.index(db, name(), field, dataPath(), path);
         }
         db.close();
     }
