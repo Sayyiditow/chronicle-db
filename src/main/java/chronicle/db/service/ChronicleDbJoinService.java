@@ -247,8 +247,9 @@ public final class ChronicleDbJoinService {
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         for (final var keyEntry : indexDb.entrySet()) {
-            if (keyEntry.getKey() != null) {
-                final var objIndex = indexMap.get(keyEntry.getKey());
+            final var keyEntryKey = keyEntry.getKey();
+            if (keyEntryKey != null) {
+                final var objIndex = indexMap.get(keyEntryKey);
                 final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
 
                 for (final var key : keyEntry.getValue()) {
@@ -264,7 +265,7 @@ public final class ChronicleDbJoinService {
                     } else {
                         final var foreignIndex = indexMap.get(key);
                         final var foreignObjPrev = foreignIndex != null ? rowList.get(foreignIndex) : null;
-                        final var obj = object.get(keyEntry.getKey());
+                        final var obj = object.get(keyEntryKey);
                         final var objIsNull = obj == null;
 
                         if (objIsNull && isInnerJoin)
@@ -349,7 +350,7 @@ public final class ChronicleDbJoinService {
      * @throws NoSuchFieldException
      * @throws ClassNotFoundException
      */
-    public <K> CsvObject joinToCsv(final List<Join> joins)
+    public CsvObject joinToCsv(final List<Join> joins)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException, ClassNotFoundException, NoSuchFieldException, InstantiationException,
             IOException {
