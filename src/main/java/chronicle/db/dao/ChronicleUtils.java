@@ -115,15 +115,42 @@ public final class ChronicleUtils {
 
     }
 
+    public List<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
+        for (int i = 0; i < searchTerms.size(); i++) {
+            if (fieldClass.isEnum() && (searchTerms.get(i) instanceof String)) {
+                searchTerms.set(i, toEnum(fieldClass, searchTerms.get(i)));
+            } else if (fieldClass.isAssignableFrom(long.class)
+                    && (searchTerms.get(i) instanceof String || searchTerms.get(i) instanceof Integer
+                            || searchTerms.get(i).getClass().isAssignableFrom(int.class))) {
+                searchTerms.set(i, toEnum(fieldClass, Long.parseLong(searchTerms.get(i).toString())));
+            }
+
+        }
+
+        return searchTerms;
+    }
+
+    public Object setSearchTermNonIndexed(final Object searchTerm, final Class<?> fieldClass) {
+        if (fieldClass.isEnum() && (searchTerm instanceof String)) {
+            return toEnum(fieldClass, searchTerm);
+        } else if (fieldClass.isAssignableFrom(long.class)
+                && (searchTerm instanceof String || searchTerm instanceof Integer
+                        || searchTerm.getClass().isAssignableFrom(int.class)))
+            return Long.parseLong(searchTerm.toString());
+
+        return searchTerm;
+
+    }
+
     public <K, V> void search(final Search search, final K key, final V value, final ConcurrentMap<K, V> map)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
         final Field field = value.getClass().getField(search.field());
         List<Object> searchTermList = new ArrayList<>();
 
         if (Objects.nonNull(field)) {
-            final Object searchTerm = setSearchTerm(search.searchTerm(), field.getType());
+            final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), field.getType());
             if (search.searchType() == SearchType.IN || search.searchType() == SearchType.NOT_IN) {
-                searchTermList = setSearchTerm((List<Object>) search.searchTerm(), field.getType());
+                searchTermList = setSearchTermNonIndexed((List<Object>) search.searchTerm(), field.getType());
             }
             final Object currentValue = field.get(value);
 
