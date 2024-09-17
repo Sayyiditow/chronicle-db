@@ -1,34 +1,48 @@
 package chronicle.db.dao;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
+import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
+import static chronicle.db.service.MapDb.MAP_DB;
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.stream.Collectors;
 
+import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
 import com.jsoniter.spi.TypeLiteral;
 
+import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
+import net.openhft.chronicle.map.ChronicleMap;
 
 /**
  *
  * @param <K> Type of the unique identifier
  * @param <V> Type of the single element
  */
-interface BaseDao<K, V> {
+public interface ChronicleDao<K, V> {
+    ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
+    String dataDir = "/data/", indexDir = "/indexes/", filesDir = "/files/", backupDir = "/backup/", dataFile = "/data",
+            corruptedFile = "/corrupted", recoverFile = "/recovery";
+    String[] dbDirs = { dataDir, indexDir, filesDir, backupDir };
+
     /**
      * Name of db for logging purposes
      */
@@ -67,8 +81,6 @@ interface BaseDao<K, V> {
      */
     TypeLiteral<V> jsonType();
 
-    void initIndex(final String[] fields) throws IOException;
-
     /**
      * The bloatFactor is used when the file contents can grow much more than the
      * average value,
@@ -83,31 +95,357 @@ interface BaseDao<K, V> {
      */
     default void createDataDirs() {
         if (!Files.exists(Path.of(dataPath()))) {
-            try {
-                Files.createDirectories(Path.of(dataPath() + "/data"));
-                Files.createDirectories(Path.of(dataPath() + "/indexes"));
-                Files.createDirectories(Path.of(dataPath() + "/files"));
-                Files.createDirectories(Path.of(dataPath() + "/backup"));
-            } catch (final IOException e) {
-                Logger.error("Error on db directory creation for {}. {}.", dataPath(), e.getMessage());
+            for (final String dir : dbDirs) {
+                try {
+                    Files.createDirectories(Path.of(dataPath() + dir));
+                } catch (final IOException e) {
+                    Logger.error("Error on db directory creation for {}. {}.", dataPath(), e.getMessage());
+                }
             }
         }
     }
 
+    /**
+     * Helps to backup all data files in /data to /backup
+     */
     default void backup() {
         try {
-            final var dataPath = dataPath() + "/data";
-            final var backupDir = Path.of(dataPath() + "/backup");
+            final var dataPath = dataPath() + dataDir;
+            final var backupDirPath = Path.of(dataPath() + backupDir);
             final var dataFiles = CHRONICLE_UTILS.getFileList(dataPath);
-            Files.createDirectories(backupDir);
+            Files.createDirectories(backupDirPath);
 
             for (final var file : dataFiles) {
-                Files.copy(Path.of(dataPath() + "/data/" + file), Path.of(dataPath() + "/backup/" + file),
-                        StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(Path.of(dataPath + file), Path.of(backupDirPath + file), REPLACE_EXISTING);
             }
         } catch (final IOException e) {
             Logger.error("Error on db backup for {}. {}.", dataPath(), e.getMessage());
         }
+    }
+
+    /**
+     * If this database object contains indexes
+     * 
+     * @throws IOException
+     */
+    default boolean containsIndexes() throws IOException {
+        return CHRONICLE_UTILS.getFileList(dataPath() + indexDir).size() > 0;
+    }
+
+    default List<String> indexFileNames() throws IOException {
+        return CHRONICLE_UTILS.getFileList(dataPath() + indexDir);
+    }
+
+    /**
+     * Delete and rerun all indexes. Faster when inserting a lot of records.
+     * 
+     * @throws IOException
+     */
+    default String[] deleteIndexes() throws IOException {
+        final var available = indexFileNames();
+        available.forEach(f -> {
+            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + indexDir + f);
+        });
+
+        return available.toArray(new String[available.size()]);
+    }
+
+    /**
+     * Get the index map to use
+     * 
+     * @param field the field of the V value object
+     * @return map of the index
+     * @throws IOException
+     */
+    default String getIndexPath(final String field) {
+        return dataPath() + indexDir + field;
+    }
+
+    /**
+     * Get the db object, you must close the object manually
+     * 
+     * @return ChronicleMap<K, V>
+     * @throws IOException
+     */
+    default ChronicleMap<K, V> db() throws IOException {
+        return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
+                dataPath() + dataDir + dataFile, bloatFactor());
+    }
+
+    /**
+     * Only runs to initialize an index on the field first time
+     * 
+     * @param field the field of the V value object
+     * @throws IOException
+     * 
+     */
+    default void initIndex(final String[] fields) throws IOException {
+        final var db = db();
+        for (final var field : fields) {
+            final String path = getIndexPath(field);
+            CHRONICLE_UTILS.deleteFileIfExists(path);
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(path);
+            CHRONICLE_UTILS.index(db, name(), field, indexDb, dataPath());
+            MAP_DB.closeDb(path);
+        }
+        db.close();
+    }
+
+    /**
+     * Delete and rerun all indexes. Faster when inserting a lot of records.
+     * 
+     * @throws IOException
+     */
+    default void refreshIndexes() throws IOException {
+        Logger.info("Re-initializing indexes at {}.", dataPath());
+        initIndex(deleteIndexes());
+    }
+
+    /**
+     * Initialize indexes at dao creation
+     * 
+     * @param fields
+     * @throws IOException
+     */
+    default void initDefaultIndexes(final String[] fields) throws IOException {
+        if (!CHRONICLE_UTILS.getFileList(dataPath() + dataDir).isEmpty()) {
+            final var indexFiles = new HashSet<>(indexFileNames());
+            if (indexFiles.size() != fields.length) {
+                final var toIndex = Arrays.stream(fields).filter(field -> !indexFiles.contains(field))
+                        .collect(Collectors.toList());
+
+                if (!toIndex.isEmpty()) {
+                    initIndex(toIndex.toArray(new String[toIndex.size()]));
+                }
+            }
+        }
+    }
+
+    /**
+     * In cases onf data corruption, we can recover the db using this method
+     */
+    default void recoverData() throws IOException {
+        final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
+                dataPath() + dataDir + dataFile, bloatFactor());
+        final var dbRecovery = CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
+                dataPath() + dataDir + recoverFile, bloatFactor());
+        dbRecovery.putAll(db);
+        Files.move(Path.of(dataPath() + dataDir + dataFile), Path.of(dataPath() + dataDir + corruptedFile),
+                REPLACE_EXISTING);
+        Files.move(Path.of(dataPath() + dataDir + recoverFile), Path.of(dataPath() + dataDir + dataFile),
+                REPLACE_EXISTING);
+        refreshIndexes();
+    }
+
+    /**
+     * Fetches all records in the db
+     * 
+     * @return ConcurrentMap<K, V>
+     * @throws IOException
+     */
+    default ConcurrentMap<K, V> fetch() throws IOException {
+        Logger.info("Fetching all data at {}.", dataPath());
+        final ChronicleMap<K, V> db = db();
+        final ConcurrentMap<K, V> map = new ConcurrentHashMap<>(db);
+        db.close();
+        return map;
+    }
+
+    /**
+     * Get a value using key
+     * 
+     * @param key the key to search in the db
+     * @return V value
+     * @throws IOException
+     */
+    default V get(final K key) throws IOException {
+        final var db = db();
+        CHRONICLE_UTILS.getLog(name(), key, dataPath());
+        final V value = db.getUsing(key, using());
+        db.close();
+        return value;
+    }
+
+    /**
+     * Get all the values for a list of keys
+     * 
+     * @param keys list of keys
+     * @return ConcurrentMap<K, V> values
+     * @throws IOException
+     */
+    default ConcurrentMap<K, V> get(final Set<K> keys) throws IOException {
+        Logger.info("Querying {} using multiple keys {} at {}.", name(), keys, dataPath());
+        final var map = new ConcurrentHashMap<K, V>(keys.size());
+        final var db = db();
+        for (final K key : keys) {
+            final V value = db.getUsing(key, using());
+            if (Objects.nonNull(value))
+                map.put(key, value);
+        }
+        db.close();
+        return map;
+    }
+
+    /**
+     * Remove a value using key
+     * 
+     * @param key the key to remove
+     * @return true if updated else false
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    default boolean delete(final K key) throws IOException, InterruptedException {
+        final var db = db();
+        CHRONICLE_UTILS.deleteLog(name(), key, dataPath());
+        final V value = db.remove(key);
+        db.close();
+
+        if (value != null) {
+            CHRONICLE_UTILS.successDeleteLog(name(), key, dataPath());
+            if (containsIndexes()) {
+                CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, value));
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Remove a value using a list of keys
+     * 
+     * @param keys the keys to remove
+     * @return true if updated else false
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    default boolean delete(final Set<K> keys) throws IOException, InterruptedException {
+        Logger.info("Deleting multiple values from {} using keys {} at {}.", name(), keys, dataPath());
+        final var db = db();
+        ConcurrentMap<K, V> updatedMap = new ConcurrentHashMap<>();
+
+        if (containsIndexes()) {
+            updatedMap = get(keys);
+        }
+
+        final var updated = db.keySet().removeAll(keys);
+
+        if (updated) {
+            Logger.info("Objects with keys {} deleted from {} at {}.", keys, name(), dataPath());
+            if (containsIndexes()) {
+                CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), updatedMap);
+            }
+        }
+        db.close();
+
+        return updated;
+    }
+
+    /**
+     * Create a bigger file if size == entries
+     * 
+     * @param db
+     * @return
+     * @throws IOException
+     */
+    private ChronicleMap<K, V> createNewDb(final ChronicleMap<K, V> db) throws IOException {
+        Logger.info("Increasing entry size on db {}.", name());
+        final var dataFilePath = dataPath() + dataDir + dataFile;
+        final var backupDataFilePath = dataPath() + backupDir + dataFile;
+        final var tempDataFilePath = dataPath() + dataDir + "data.tmp";
+        final var newSize = entries() * ((db.size() / entries()) + 1) + entries();
+        final var newDb = CHRONICLE_DB.createOrGet(name(), newSize, averageKey(), averageValue(), tempDataFilePath,
+                bloatFactor());
+        newDb.putAll(db);
+        db.close();
+        Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
+        Files.move(Path.of(tempDataFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
+        return newDb;
+    }
+
+    /**
+     * Add a value
+     * 
+     * @param key   the key
+     * @param value the value
+     * @return true if updated else false
+     * @throws IOException
+     */
+    default PutStatus put(final K key, final V value, final List<String> indexFileNames)
+            throws IOException {
+        // create a bigger file if records in db are equal to multiple of entries()
+        var status = PutStatus.INSERTED;
+        var db = db();
+        final Object lock = locks.computeIfAbsent(name(), k -> new Object());
+        synchronized (lock) {
+            if (db.size() != 0 && db.size() % entries() == 0)
+                db = createNewDb(db);
+        }
+        final V prevValue = db.put(key, value);
+        db.close();
+        final var updated = prevValue != null;
+        final var prevValueMap = new HashMap<K, V>(1);
+        if (updated) {
+            prevValueMap.put(key, prevValue);
+            status = PutStatus.UPDATED;
+        }
+        if (containsIndexes()) {
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), prevValueMap);
+        }
+
+        Logger.info("{} into {} using key {} at {}.", status, name(), key, dataPath());
+
+        return status;
+    }
+
+    /**
+     * Refer to method above
+     * 
+     */
+    default PutStatus put(final K key, final V value) throws IOException {
+        return put(key, value, indexFileNames());
+    }
+
+    /**
+     * Add multiple keys and values into the db
+     * 
+     * @param map the map to add
+     * @throws IOException
+     */
+    default void put(final Map<K, V> map, final List<String> indexFileNames) throws IOException {
+        if (map.size() > entries()) {
+            Logger.error("Insert size bigger than entry size.");
+            return;
+        }
+
+        Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
+        var db = db();
+        final var prevValues = new HashMap<K, V>(map.size());
+        final Object lock = locks.computeIfAbsent(name(), k -> new Object());
+        synchronized (lock) {
+            if (db.size() + map.size() > entries())
+                db = createNewDb(db);
+        }
+
+        for (final var entry : map.entrySet()) {
+            final K key = entry.getKey();
+            final V updated = db.put(key, entry.getValue());
+            if (updated != null)
+                prevValues.put(key, updated);
+        }
+        db.close();
+
+        if (containsIndexes()) {
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, map, prevValues);
+        }
+    }
+
+    /**
+     * Refer to method above
+     * 
+     */
+    default void put(final Map<K, V> map) throws IOException {
+        put(map, indexFileNames());
     }
 
     /**
@@ -162,65 +500,35 @@ interface BaseDao<K, V> {
     }
 
     /**
-     * If this database object contains indexes
+     * Search the chronicle map based on values
      * 
+     * @param db     the map
+     * @param search object search
+     * @return a map of the fitting values
      * @throws IOException
      */
-    default boolean containsIndexes() throws IOException {
-        return CHRONICLE_UTILS.getFileList(dataPath() + "/indexes/").size() > 0;
-    }
-
-    default List<String> indexFileNames() throws IOException {
-        return CHRONICLE_UTILS.getFileList(dataPath() + "/indexes/");
+    default ConcurrentMap<K, V> search(final Search search) throws IOException {
+        Logger.info("Searching DB at {} for {}.", dataPath(), search);
+        final var db = db();
+        final ConcurrentMap<K, V> map = search(db, search);
+        db.close();
+        return map;
     }
 
     /**
-     * Delete and rerun all indexes. Faster when inserting a lot of records.
+     * Search the chronicle map based on values
      * 
+     * @param search object search
+     * @return a map of the fitting values
      * @throws IOException
      */
-    default String[] deleteIndexes() throws IOException {
-        final var available = indexFileNames();
-        available.forEach(f -> {
-            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + "/indexes/" + f);
-        });
-
-        return available.toArray(new String[0]);
-    }
-
-    /**
-     * Get the index map to use
-     * 
-     * @param field the field of the V value object
-     * @return map of the index
-     * @throws IOException
-     */
-    default String getIndexPath(final String field) {
-        return dataPath() + "/indexes/" + field;
-    }
-
-    /**
-     * Initialize indexes at dao creation
-     * 
-     * @param fields the fields required
-     */
-    default void initDefaultIndexes(final String[] fields) throws IOException {
-        if (CHRONICLE_UTILS.getFileList(dataPath() + "/data").size() != 0) {
-            final var indexFiles = new HashSet<>(indexFileNames());
-            if (indexFiles.size() != fields.length) {
-                final var toIndex = new ArrayList<String>();
-
-                for (final var field : fields) {
-                    if (!indexFiles.contains(field)) {
-                        toIndex.add(field);
-                    }
-                }
-
-                if (toIndex.size() > 0) {
-                    initIndex(toIndex.toArray(new String[toIndex.size()]));
-                }
-            }
-        }
+    default ConcurrentMap<K, V> search(final Search search, final int limit)
+            throws IOException {
+        Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
+        final var db = db();
+        final ConcurrentMap<K, V> map = search(db, search, limit);
+        db.close();
+        return map;
     }
 
     private void addSearchedValues(final List<K> keys, final ConcurrentMap<K, V> db, final ConcurrentMap<K, V> match) {
@@ -251,12 +559,12 @@ interface BaseDao<K, V> {
      * Only useful for @code SearchType.EQUAL and @code SearchType.NOT_EQUAL
      * 
      * @param search the Search object
-     * @param key    the key of the map
-     * @param db     the db to search
+     * @param db
+     * @param index
      * @throws IOException
      */
     @SuppressWarnings("unchecked")
-    default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
+    private ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
         Logger.info("Index searching DB at {} for {}.", dataPath(), search);
         final var match = new ConcurrentHashMap<K, V>();
@@ -377,12 +685,13 @@ interface BaseDao<K, V> {
      * Only useful for @code SearchType.EQUAL and @code SearchType.NOT_EQUAL
      * 
      * @param search the Search object
-     * @param key    the key of the map
-     * @param db     the db to search
+     * @param db
+     * @param index
+     * @param limit
      * @throws IOException
      */
     @SuppressWarnings("unchecked")
-    default ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
+    private ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
         Logger.info("Index searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final var match = new ConcurrentHashMap<K, V>();
@@ -498,6 +807,43 @@ interface BaseDao<K, V> {
         return match;
     }
 
+    default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
+        final var indexFilePath = getIndexPath(search.field());
+        if (!Files.exists(Path.of(indexFilePath))) {
+            Logger.info("Index file does not exist, it will be created.");
+            initIndex(new String[] { search.field() });
+        }
+        final var db = db();
+        final var result = indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
+        MAP_DB.closeDb(indexFilePath);
+        db.close();
+        return result;
+    }
+
+    default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
+        final var indexFilePath = getIndexPath(search.field());
+        final var db = db();
+        final var result = indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
+        MAP_DB.closeDb(indexFilePath);
+        db.close();
+        return result;
+    }
+
+    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search) throws IOException {
+        final var indexFilePath = getIndexPath(search.field());
+        final var result = indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
+        MAP_DB.closeDb(indexFilePath);
+        return result;
+    }
+
+    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search, final int limit)
+            throws IOException {
+        final var indexFilePath = getIndexPath(search.field());
+        final var result = indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
+        MAP_DB.closeDb(indexFilePath);
+        return result;
+    }
+
     /**
      * Cases where the data being selected is a subset of the whole object
      * this will be used to return a map of key, map of required fields and the
@@ -514,5 +860,30 @@ interface BaseDao<K, V> {
             CHRONICLE_UTILS.subsetOfValues(fields, entry, map, name());
         }
         return map;
+    }
+
+    /**
+     * Current size of the data
+     * 
+     * @return int size
+     * @throws IOException
+     */
+    default int size() throws IOException {
+        Logger.info("Getting DB size at {}.", dataPath());
+        final var db = db();
+        final var size = db.size();
+        db.close();
+        return size;
+    }
+
+    default void clearDb() throws IOException {
+        Logger.info("Truncating database at {}.", dataPath());
+        final var db = db();
+        db.clear();
+        db.close();
+    }
+
+    default void deleteDataFiles() throws IOException {
+        ChronicleUtils.CHRONICLE_UTILS.deleteFileIfExists(dataPath() + dataDir + dataFile);
     }
 }

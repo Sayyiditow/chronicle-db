@@ -37,20 +37,20 @@ public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
     private final ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
 
-    public <K> void getLog(final String name, final K key) {
-        Logger.info("Querying {} using key {}.", name, key);
+    public <K> void getLog(final String name, final K key, final String path) {
+        Logger.info("Querying {} using key {} at {}.", name, key, path);
     }
 
-    public <K> void deleteLog(final String name, final K key) {
-        Logger.info("Deleting from {} using key {}.", name, key);
+    public <K> void deleteLog(final String name, final K key, final String path) {
+        Logger.info("Deleting from {} using key {} at {}.", name, key, path);
     }
 
     public <K> void deleteAllLog(final String name, final Set<K> keys) {
         Logger.info("Deleting from db: {} using multiple keys {}.", name, keys);
     }
 
-    public <K> void successDeleteLog(final String name, final K key) {
-        Logger.info("Object with key {} deleted from {}.", key, name);
+    public <K> void successDeleteLog(final String name, final K key, final String path) {
+        Logger.info("Object with key {} deleted from {} at {}.", key, name, path);
     }
 
     public void dbFetchError(final String name, final String file) {
@@ -64,7 +64,7 @@ public final class ChronicleUtils {
      * @param dirPath dirPath to retrieve files from
      * @return a list of files
      */
-    public static List<String> getFileList(final String dirPath) throws IOException {
+    public List<String> getFileList(final String dirPath) throws IOException {
         try (Stream<Path> stream = Files.list(Path.of(dirPath))) {
             return stream.map(Path::getFileName).map(Path::toString).collect(Collectors.toList());
         }
@@ -206,10 +206,8 @@ public final class ChronicleUtils {
      * 
      */
     public <K, V> void index(final ConcurrentMap<K, V> db, final String dbName, final String field,
-            final HTreeMap<String, Map<Object, List<K>>> index, final String fileName, final String dataPath)
-            throws IOException {
+            final HTreeMap<Object, List<K>> indexDb, final String dataPath) {
         Logger.info("Indexing {} db at {} using {}.", dbName, dataPath, field);
-        final var copy = new HashMap<Object, List<K>>();
 
         for (final var entry : db.entrySet()) {
             Field f = null;
@@ -218,47 +216,42 @@ public final class ChronicleUtils {
                 Object currentValue = f.get(entry.getValue());
                 if (currentValue == null)
                     currentValue = "null";
-                List<K> keys = copy.get(currentValue);
+                List<K> keys = indexDb.get(currentValue);
                 if (keys == null) {
                     keys = new ArrayList<>();
                 }
                 keys.add(entry.getKey());
-                copy.put(currentValue, keys);
+                indexDb.put(currentValue, keys);
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath, e);
                 break;
             }
         }
-
-        index.put(fileName, copy);
     }
 
-    private <K, V> void removeFromIndex(final String dbFileName, final String dbName,
-            final String dataPath, final Map<K, V> values, final String file) {
+    private <K, V> void removeFromIndex(final String dbName, final String dataPath, final Map<K, V> values,
+            final String file) {
         Field field = null;
         Object indexKey = null;
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
-            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
                 Logger.info("Removing from index {} on object {}.", file, dbName);
-                final var index = indexDb.get(dbFileName);
-
                 for (final var entry : values.entrySet()) {
                     final var value = entry.getValue();
                     field = value.getClass().getField(file);
                     indexKey = field.get(value);
                     if (indexKey == null)
                         indexKey = "null";
-                    final List<K> keys = index.get(indexKey);
+                    final List<K> keys = indexDb.get(indexKey);
                     if (keys.remove(entry.getKey())) {
                         if (keys.isEmpty()) {
-                            index.remove(indexKey); // Remove if no entries left
+                            indexDb.remove(indexKey); // Remove if no entries left
                         } else {
-                            index.put(indexKey, keys);
+                            indexDb.put(indexKey, keys);
                         }
-                        indexDb.put(dbFileName, index);
                     }
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
@@ -280,66 +273,54 @@ public final class ChronicleUtils {
      * @throws IOException
      * @throws InterruptedException
      */
-    public <K, V> void removeFromIndex(final String dbFileName, final String dbName, final String dataPath,
+    public <K, V> void removeFromIndex(final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values) throws IOException, InterruptedException {
         if (indexFileNames.size() > 2) {
             indexFileNames.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
-                removeFromIndex(dbFileName, dbName, dataPath, values, file);
+                removeFromIndex(dbName, dataPath, values, file);
             }));
         } else {
             for (final String file : indexFileNames) {
-                removeFromIndex(dbFileName, dbName, dataPath, values, file);
+                removeFromIndex(dbName, dataPath, values, file);
             }
         }
     }
 
-    private <K, V> void updateIndex(final String dbFileName, final String dbName, final String dataPath,
+    private <K, V> void updateIndex(final String dbName, final String dataPath,
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
         Field field = null;
         Object indexKey = null;
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
-            final HTreeMap<String, Map<Object, List<K>>> indexDb = MAP_DB.getDb(indexPath);
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
                 Logger.info("Updating index {} on object {}.", file, dbName);
-                var index = indexDb.get(dbFileName);
-                if (index == null) {
-                    index = new HashMap<>();
-                }
 
                 // remove from the index first
                 for (final var entry : prevValues.entrySet()) {
-                    final var value = entry.getValue();
+                    final V value = entry.getValue();
                     field = value.getClass().getField(file);
                     indexKey = field.get(value);
                     if (indexKey == null)
                         indexKey = "null";
-                    final List<K> keys = index.get(indexKey);
-                    if (Objects.nonNull(keys))
-                        if (keys.remove(entry.getKey())) {
-                            index.put(indexKey, keys);
-                            indexDb.put(dbFileName, index);
-                        }
+                    final List<K> keys = indexDb.get(indexKey);
+                    if (Objects.nonNull(keys) && keys.remove(entry.getKey())) {
+                        indexDb.put(indexKey, keys);
+                    }
                 }
 
                 for (final var entry : values.entrySet()) {
-                    final var value = entry.getValue();
+                    final V value = entry.getValue();
                     field = value.getClass().getField(file);
                     indexKey = field.get(value);
                     if (indexKey == null)
                         indexKey = "null";
 
-                    List<K> keys = index.get(indexKey);
-                    if (keys == null) {
-                        keys = new ArrayList<>();
-                    }
+                    final List<K> keys = indexDb.computeIfAbsent(indexKey, k -> new ArrayList<>());
 
-                    if (!keys.contains(entry.getKey())) {
-                        if (keys.add(entry.getKey())) {
-                            index.put(indexKey, keys);
-                            indexDb.put(dbFileName, index);
-                        }
+                    if (!keys.contains(entry.getKey()) && keys.add(entry.getKey())) {
+                        indexDb.put(indexKey, keys);
                     }
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
@@ -353,23 +334,21 @@ public final class ChronicleUtils {
     /**
      * Update indexes by removing first then adding them
      * 
-     * @param dbFileName     the file where the data is stored
      * @param dataPath       the folder path
      * @param field          the value object field enum
      * @param indexFileNames index files
      * @throws IOException
      * @throws InterruptedException
      */
-    public <K, V> void updateIndex(final String dbFileName, final String dbName, final String dataPath,
-            final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues)
-            throws IOException, InterruptedException {
+    public <K, V> void updateIndex(final String dbName, final String dataPath,
+            final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues) {
         if (indexFileNames.size() > 2) {
             indexFileNames.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
-                updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
+                updateIndex(dbName, dataPath, values, file, previousValues);
             }));
         } else {
             for (final String file : indexFileNames) {
-                updateIndex(dbFileName, dbName, dataPath, values, file, previousValues);
+                updateIndex(dbName, dataPath, values, file, previousValues);
             }
         }
     }
@@ -384,7 +363,7 @@ public final class ChronicleUtils {
      * @throws IllegalArgumentException
      * @throws IllegalAccessException
      */
-    public <K, V> CsvObject formatSingleChronicleDataToCsv(final ConcurrentMap<K, V> map)
+    public <K, V> CsvObject formatChronicleDataToCsv(final ConcurrentMap<K, V> map)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         if (map.size() != 0) {
@@ -403,44 +382,25 @@ public final class ChronicleUtils {
         return new CsvObject(new String[] {}, List.of());
     }
 
-    /**
-     * Only for chronicle db object types to convert to csv for table display on
-     * frontend
-     * 
-     * @throws SecurityException
-     * @throws NoSuchMethodException
-     * @throws InvocationTargetException
-     * @throws IllegalArgumentException
-     * @throws IllegalAccessException
-     */
-    public static <K, V> CsvObject formatMultiChronicleDataToCsv(final ConcurrentMap<String, ConcurrentMap<K, V>> map)
-            throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
-            InvocationTargetException {
-        if (map.size() != 0) {
-            final V value = map.values().iterator().next().values().iterator().next();
-            final Method headersMethod = value.getClass().getDeclaredMethod("header");
-            final Method rowMethod = value.getClass().getDeclaredMethod("row", Object.class);
-            final String[] headerList = (String[]) headersMethod.invoke(value);
-            final List<Object[]> rowList = new ArrayList<>();
-
-            if (map.size() > 2) {
-                map.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(entry -> {
-                    for (final var e : entry.getValue().entrySet()) {
-                        rowList.add((Object[]) rowMethod.invoke(e.getValue(), entry.getKey(), e.getKey()));
+    public <K, V> void subsetOfValues(final String[] fields, final Map.Entry<K, V> entry,
+            final ConcurrentMap<K, LinkedHashMap<String, Object>> map, final String objectName) {
+        Field field = null;
+        final var valueMap = new LinkedHashMap<String, Object>();
+        for (final var f : fields) {
+            if (f.equals("id")) {
+                valueMap.put(objectName + ".id", entry.getKey());
+            } else {
+                try {
+                    field = entry.getValue().getClass().getField(f);
+                    if (Objects.nonNull(field)) {
+                        valueMap.put(f, field.get(entry.getValue()));
                     }
-                }));
-                return new CsvObject(headerList, rowList);
-            }
-
-            for (final var entry : map.entrySet()) {
-                for (final var e : entry.getValue().entrySet()) {
-                    rowList.add((Object[]) rowMethod.invoke(e.getValue(), entry.getKey(), e.getKey()));
+                } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+                    Logger.error("No such field: {} when making a subset of {}. {}", f, objectName, e);
                 }
             }
-
-            return new CsvObject(headerList, rowList);
         }
-        return new CsvObject(new String[] {}, List.of());
+        map.put(entry.getKey(), valueMap);
     }
 
     /**
@@ -488,7 +448,7 @@ public final class ChronicleUtils {
         try {
             Files.delete(Path.of(filePath));
         } catch (final IOException e) {
-            Logger.info("No such index file {}.", filePath);
+            Logger.info("No such file {}.", filePath);
         }
     }
 

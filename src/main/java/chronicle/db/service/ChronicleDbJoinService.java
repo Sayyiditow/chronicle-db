@@ -14,16 +14,13 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
-import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
-import chronicle.db.dao.MultiChronicleDao;
-import chronicle.db.dao.SingleChronicleDao;
+import chronicle.db.dao.ChronicleDao;
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Join;
 import chronicle.db.entity.JoinFilter;
@@ -35,86 +32,8 @@ public final class ChronicleDbJoinService {
 
     public static final ChronicleDbJoinService CHRONICLE_DB_JOIN_SERVICE = new ChronicleDbJoinService();
 
-    private void setIsEmpty(final ConcurrentMap<Object, Object> dbToMap,
-            final Map<String, Map<String, Object>> mapOfObjects,
-            final String daoClassName, final MultiChronicleDao dao) {
-        if (dbToMap.size() == 0) {
-            // add one object just to make sure the join works when no data is available
-            mapOfObjects.get(daoClassName).put("isEmpty", true);
-            dbToMap.put(dao.averageKey(), dao.averageValue());
-        }
-    }
-
-    private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
-            final MultiChronicleDao dao, final JoinFilter filter, final String file,
-            final Map<String, Map<String, Object>> mapOfObjects, final String daoClassName)
-            throws IOException, NoSuchFieldException, SecurityException {
-        ConcurrentMap<Object, Object> dbToMap = null;
-
-        if (filter != null) {
-            if (filter.key() != null) {
-                dbToMap = new ConcurrentHashMap<>() {
-                    {
-                        {
-                            put(filter.key(), dao.get(filter.key(), file));
-                        }
-                    }
-                };
-            } else if (filter.keys() != null) {
-                dbToMap = dao.get(filter.keys());
-            } else if (filter.search() != null) {
-                final var db = dao.db(file);
-                dbToMap = new ConcurrentHashMap<>(db);
-                db.close();
-
-                for (final var search : filter.search()) {
-                    if (Files.exists(Path.of(dao.getIndexPath(search.field())))) {
-                        if (filter.limit() == 0)
-                            dbToMap = dao.indexedSearch(dbToMap, search);
-                        else
-                            dbToMap = dao.indexedSearch(dbToMap, search, filter.limit());
-                    } else {
-                        if (filter.limit() == 0)
-                            dbToMap = dao.search(dbToMap, search);
-                        else
-                            dbToMap = dao.search(dbToMap, search, filter.limit());
-                    }
-                }
-            } else if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
-                final var db = dao.db(file);
-                dbToMap = new ConcurrentHashMap<>(db);
-                db.close();
-            } else {
-                final var db = dao.db(file);
-                dbToMap = new ConcurrentHashMap<>(db);
-                db.close();
-                if (filter.limit() != 0)
-                    dbToMap = dbToMap.entrySet().stream().limit(filter.limit())
-                            .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
-            }
-
-            if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
-                if (dbToMap == null) {
-                    final var db = dao.db(file);
-                    dbToMap = new ConcurrentHashMap<>(db);
-                    db.close();
-                }
-                dbToMap = dao.subsetOfValues(dbToMap, filter.subsetFields(), dao.name());
-            }
-            setIsEmpty(dbToMap, mapOfObjects, daoClassName, dao);
-            recordValueMap.put(file, dbToMap);
-        } else {
-            final var db = dao.db(file);
-            dbToMap = new ConcurrentHashMap<>(db);
-            db.close();
-            setIsEmpty(dbToMap, mapOfObjects, daoClassName, dao);
-            recordValueMap.put(file, dbToMap);
-        }
-
-    }
-
     private void setIsEmpty(final ConcurrentMap<Object, Object> db, final Map<String, Map<String, Object>> mapOfObjects,
-            final String daoClassName, final SingleChronicleDao dao) {
+            final String daoClassName, final ChronicleDao dao) {
         if (db.size() == 0) {
             // add one object just to make sure the join works when no data is available
             mapOfObjects.get(daoClassName).put("isEmpty", true);
@@ -122,11 +41,9 @@ public final class ChronicleDbJoinService {
         }
     }
 
-    private void setRecordsFromFilter(final Map<String, ConcurrentMap<?, ?>> recordValueMap,
-            final SingleChronicleDao dao, final JoinFilter filter, final Map<String, Map<String, Object>> mapOfObjects,
-            final String daoClassName) throws IOException {
-        ConcurrentMap<Object, Object> db = null;
-
+    private ConcurrentMap<Object, Object> setRecordsFromFilter(final ChronicleDao dao, final JoinFilter filter,
+            final Map<String, Map<String, Object>> mapOfObjects, final String daoClassName) throws IOException {
+        ConcurrentMap<Object, Object> db = new ConcurrentHashMap<>();
         if (filter != null) {
             if (filter.key() != null) {
                 db = new ConcurrentHashMap<>() {
@@ -166,23 +83,23 @@ public final class ChronicleDbJoinService {
                 if (db == null) {
                     db = dao.fetch();
                 }
-                db = dao.subsetOfValues(db, filter.subsetFields(), dao.name());
+                db = dao.subsetOfValues(db, filter.subsetFields());
             }
             setIsEmpty(db, mapOfObjects, daoClassName, dao);
-            recordValueMap.put("data", db);
         } else {
             db = dao.fetch();
             setIsEmpty(db, mapOfObjects, daoClassName, dao);
-            recordValueMap.put("data", db);
         }
+
+        return db;
     }
 
-    private void setSingleChronicleRecords(final String daoClassName, final String dataPath,
-            final Map<String, Map<String, ConcurrentMap<?, ?>>> records, final String foreignKeyName,
+    private void setChronicleRecords(final String daoClassName, final String dataPath,
+            final Map<String, ConcurrentMap<?, ?>> records, final String foreignKeyName,
             final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter, final boolean isForeign)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
-        final var dao = CHRONICLE_DB.getSingleChronicleDao(daoClassName, dataPath);
+        final var dao = CHRONICLE_DB.getChronicleDao(daoClassName, dataPath);
 
         if (mapOfObjects.get(daoClassName) == null) {
             mapOfObjects.put(daoClassName, new HashMap<>() {
@@ -190,9 +107,7 @@ public final class ChronicleDbJoinService {
                     put("name", dao.name());
                 }
             });
-            final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
-            setRecordsFromFilter(recordValueMap, dao, filter, mapOfObjects, daoClassName);
-            records.put(daoClassName, recordValueMap);
+            records.put(daoClassName, setRecordsFromFilter(dao, filter, mapOfObjects, daoClassName));
         }
 
         if (isForeign) {
@@ -206,77 +121,21 @@ public final class ChronicleDbJoinService {
         }
     }
 
-    private void setMultiChronicleRecords(final String daoClassName, final String dataPath,
-            final Map<String, Map<String, ConcurrentMap<?, ?>>> records, final String foreignKeyName,
-            final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter, final boolean isForeign)
-            throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
-            SecurityException, InstantiationException, InvocationTargetException, IOException {
-        final var dao = CHRONICLE_DB.getMultiChronicleDao(daoClassName, dataPath);
-
-        if (mapOfObjects.get(daoClassName) == null) {
-            mapOfObjects.put(daoClassName, new HashMap<>() {
-                {
-                    put("name", dao.name());
-                }
-            });
-
-            final List<String> files = dao.getFiles();
-            final var recordValueMap = new HashMap<String, ConcurrentMap<?, ?>>();
-
-            for (final var file : files) {
-                setRecordsFromFilter(recordValueMap, dao, filter, file, mapOfObjects, daoClassName);
-            }
-            records.put(daoClassName, recordValueMap);
-        }
-
-        if (isForeign) {
-            final var indexPath = dao.getIndexPath(foreignKeyName);
-            mapOfObjects.get(daoClassName).put("foreignKeyIndexPath", indexPath);
-
-            if (!Files.exists(Path.of(indexPath))) {
-                Logger.info("Index is missing for the foreign key: {}. Initilizing.", indexPath);
-                dao.initIndex(new String[] { foreignKeyName });
-            }
-        }
-    }
-
-    private void setRequiredObjects(final Map<String, Map<String, ConcurrentMap<?, ?>>> records,
+    private void setRequiredObjects(final Map<String, ConcurrentMap<?, ?>> records,
             final Map<String, Map<String, Object>> mapOfObjects, final Join join)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, InstantiationException, InvocationTargetException, IOException {
-        switch (join.joinObjMultiMode()) {
-            case MAIN:
-                setMultiChronicleRecords(join.objDaoName(), join.objPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
-                setSingleChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
-                break;
-            case FOREIGN_KEY_OBJ:
-                setSingleChronicleRecords(join.objDaoName(), join.objPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
-                setMultiChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
-                break;
-            case NONE:
-                setSingleChronicleRecords(join.objDaoName(), join.objPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
-                setSingleChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
-                break;
-            default:
-                setMultiChronicleRecords(join.objDaoName(), join.objPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
-                setMultiChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
-                        join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
-                break;
-        }
+        setChronicleRecords(join.objDaoName(), join.objPath(), records,
+                join.foreignKeyName(), mapOfObjects, join.objFilter(), false);
+        setChronicleRecords(join.foreignKeyObjDaoName(), join.foreignKeyObjPath(), records,
+                join.foreignKeyName(), mapOfObjects, join.foreignKeyObjFilter(), true);
     }
 
-    private void loopJoinToMap(final Entry<String, Map<Object, List<Object>>> e,
+    private <K> void loopJoinToMap(final Map<Object, List<K>> indexDb,
             final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
             final String objectName, final String foreignKeyObjName,
             final ConcurrentMap<Object, Map<String, Object>> joinedMap) throws IllegalAccessException {
-        for (final var keyEntry : e.getValue().entrySet()) {
+        for (final var keyEntry : indexDb.entrySet()) {
             if (keyEntry.getKey() != null) {
                 final var objPrev = joinedMap.get(keyEntry.getKey());
 
@@ -324,43 +183,26 @@ public final class ChronicleDbJoinService {
      * @throws NoSuchFieldException
      * @throws ClassNotFoundException
      */
-    public ConcurrentMap<Object, Map<String, Object>> joinToMap(final List<Join> joins)
+    public <K> ConcurrentMap<Object, Map<String, Object>> joinToMap(final List<Join> joins)
             throws NoSuchMethodException, SecurityException, IllegalAccessException,
             IllegalArgumentException, InvocationTargetException, ClassNotFoundException, NoSuchFieldException,
             InstantiationException, IOException {
         final var joinedMap = new ConcurrentHashMap<Object, Map<String, Object>>();
         final var toRemove = new HashSet<>();
-        final var mapOfRecords = new HashMap<String, Map<String, ConcurrentMap<?, ?>>>();
+        final var mapOfRecords = new HashMap<String, ConcurrentMap<?, ?>>();
         final var mapOfObjects = new HashMap<String, Map<String, Object>>();
 
         for (final var join : joins) {
             setRequiredObjects(mapOfRecords, mapOfObjects, join);
             final var indexPath = mapOfObjects.get(join.foreignKeyObjDaoName()).get("foreignKeyIndexPath")
                     .toString();
-            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(indexPath);
-
             final var objRecords = mapOfRecords.get(join.objDaoName());
             final var foreignObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
 
-            if (indexDb.keySet().size() > 3) {
-                indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
-                    for (final var entry : objRecords.entrySet()) {
-                        loopJoinToMap(e, objRecords.get(entry.getKey()),
-                                foreignObjRecords.get(e.getKey()),
-                                mapOfObjects.get(join.objDaoName()).get("name").toString(),
-                                mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
-                        toRemove.addAll(objRecords.get(entry.getKey()).keySet());
-                    }
-                }));
-            } else
-                for (final var e : indexDb.entrySet()) {
-                    for (final var entry : objRecords.entrySet()) {
-                        loopJoinToMap(e, objRecords.get(entry.getKey()), foreignObjRecords.get(e.getKey()),
-                                mapOfObjects.get(join.objDaoName()).get("name").toString(),
-                                mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
-                        toRemove.addAll(objRecords.get(entry.getKey()).keySet());
-                    }
-                }
+            loopJoinToMap(MAP_DB.getDb(indexPath), objRecords, foreignObjRecords,
+                    mapOfObjects.get(join.objDaoName()).get("name").toString(),
+                    mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
+            toRemove.addAll(objRecords.keySet());
             MAP_DB.closeDb(indexPath);
         }
 
@@ -397,14 +239,14 @@ public final class ChronicleDbJoinService {
         }
     }
 
-    private void loopJoinToCsv(final Entry<String, Map<Object, List<Object>>> e,
+    private <K> void loopJoinToCsv(final Map<Object, List<K>> indexDb,
             final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
             final int objSubsetLength, final int foreignKeyObjSubsetLength, final int headerSize,
             final boolean isInnerJoin, final boolean foreignIsMainObject, final boolean isObjectEmpty)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
-        for (final var keyEntry : e.getValue().entrySet()) {
+        for (final var keyEntry : indexDb.entrySet()) {
             if (keyEntry.getKey() != null) {
                 final var objIndex = indexMap.get(keyEntry.getKey());
                 final var objPrev = objIndex != null ? rowList.get(objIndex) : null;
@@ -458,8 +300,8 @@ public final class ChronicleDbJoinService {
         }
 
         if (!isInnerJoin && !foreignIsMainObject && !isObjectEmpty) {
-            if (e.getValue().size() != 0) {
-                object.keySet().removeAll(e.getValue().keySet());
+            if (indexDb.size() != 0) {
+                object.keySet().removeAll(indexDb.keySet());
             }
             for (final var o : object.entrySet()) {
                 final var foreignObj = foreignKeyObject.values().toArray()[0];
@@ -507,14 +349,14 @@ public final class ChronicleDbJoinService {
      * @throws NoSuchFieldException
      * @throws ClassNotFoundException
      */
-    public CsvObject joinToCsv(final List<Join> joins)
+    public <K> CsvObject joinToCsv(final List<Join> joins)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException, ClassNotFoundException, NoSuchFieldException, InstantiationException,
             IOException {
         final var headers = new ArrayList<String>();
         final var rowList = new ArrayList<Object[]>();
         final ConcurrentMap<Object, Integer> indexMap = new ConcurrentHashMap<>();
-        final var mapOfRecords = new HashMap<String, Map<String, ConcurrentMap<?, ?>>>();
+        final var mapOfRecords = new HashMap<String, ConcurrentMap<?, ?>>();
         final var mapOfObjects = new HashMap<String, Map<String, Object>>();
         final var objectHeaderList = new ArrayList<String>();
 
@@ -522,15 +364,10 @@ public final class ChronicleDbJoinService {
             setRequiredObjects(mapOfRecords, mapOfObjects, join);
             final var indexPath = mapOfObjects.get(join.foreignKeyObjDaoName()).get("foreignKeyIndexPath")
                     .toString();
-            final HTreeMap<String, Map<Object, List<Object>>> indexDb = MAP_DB.getDb(indexPath);
-
             final var objRecords = mapOfRecords.get(join.objDaoName());
             final var foreignKeyObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
-            final var objValue = objRecords.values().stream().findFirst().get().values().stream().findFirst()
-                    .orElseGet(() -> null);
-            final var foreignKeyObjValue = foreignKeyObjRecords.values().stream().findFirst().get().values().stream()
-                    .findFirst()
-                    .orElseGet(() -> null);
+            final var objValue = objRecords.values().stream().findFirst().orElse(null);
+            final var foreignKeyObjValue = foreignKeyObjRecords.values().stream().findFirst().orElse(null);
             if (objValue == null && foreignKeyObjValue == null) {
                 Logger.info("Both objects for join are empty.");
                 continue;
@@ -576,22 +413,9 @@ public final class ChronicleDbJoinService {
                 objectHeaderList.add(foreignKeyObjName);
             }
 
-            if (indexDb.keySet().size() > 3) {
-                indexDb.entrySet().parallelStream().forEach(HandleConsumer.handleConsumerBuilder(e -> {
-                    for (final var entry : objRecords.entrySet()) {
-                        loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
-                                rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size(),
-                                join.isInnerJoin(), join.foreignIsMainObject(), isObjectEmpty);
-                    }
-                }));
-            } else
-                for (final var e : indexDb.entrySet()) {
-                    for (final var entry : objRecords.entrySet()) {
-                        loopJoinToCsv(e, objRecords.get(entry.getKey()), foreignKeyObjRecords.get(e.getKey()),
-                                rowList, indexMap, objSubsetLength, foreignKeyObjSubsetLength, headers.size(),
-                                join.isInnerJoin(), join.foreignIsMainObject(), isObjectEmpty);
-                    }
-                }
+            loopJoinToCsv(MAP_DB.getDb(indexPath), objRecords, foreignKeyObjRecords, rowList, indexMap, objSubsetLength,
+                    foreignKeyObjSubsetLength, headers.size(), join.isInnerJoin(), join.foreignIsMainObject(),
+                    isObjectEmpty);
             MAP_DB.closeDb(indexPath);
         }
 

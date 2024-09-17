@@ -11,8 +11,7 @@ import java.util.concurrent.ConcurrentMap;
 import org.eclipse.collections.impl.map.mutable.ConcurrentHashMap;
 import org.tinylog.Logger;
 
-import chronicle.db.dao.MultiChronicleDao;
-import chronicle.db.dao.SingleChronicleDao;
+import chronicle.db.dao.ChronicleDao;
 import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
 
@@ -120,42 +119,24 @@ public final class ChronicleDb {
     }
 
     /**
-     * Gets the multichronicle dao object to run different methods such as CRUD
+     * Gets the Chronicle dao object to run different methods such as CRUD
      * reflectively
      * 
      * @param daoClassName       the full package class name for the dao
      * @param daoClassObjectName the static object name
      * 
-     * @return MultiChronicleDao
+     * @return ChronicleDao
      * @throws InvocationTargetException
      * @throws InstantiationException
      */
-    public MultiChronicleDao getMultiChronicleDao(final String daoClassName, final String dataPath)
+    public ChronicleDao getChronicleDao(final String daoClassName, final String dataPath)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException {
         final var c = getObjectConstructor(daoClassName);
-        return (MultiChronicleDao) c.newInstance(dataPath);
+        return (ChronicleDao) c.newInstance(dataPath);
     }
 
-    /**
-     * Gets the singlechronicle dao object to run different methods such as CRUD
-     * reflectively
-     * 
-     * @param daoClassName       the full package class name for the dao
-     * @param daoClassObjectName the static object name
-     * 
-     * @return SingleChronicleDao
-     * @throws InvocationTargetException
-     * @throws InstantiationException
-     */
-    public SingleChronicleDao getSingleChronicleDao(final String daoClassName, final String dataPath)
-            throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
-            SecurityException, InstantiationException, InvocationTargetException {
-        final var c = getObjectConstructor(daoClassName);
-        return (SingleChronicleDao) c.newInstance(dataPath);
-    }
-
-    public <K, V> ConcurrentMap<K, V> getMapForMultiInserts(final SingleChronicleDao<K, V> dao) {
+    public <K, V> ConcurrentMap<K, V> getMapForMultiInserts(final ChronicleDao<K, V> dao) {
         return new ConcurrentHashMap<K, V>();
     }
 }
