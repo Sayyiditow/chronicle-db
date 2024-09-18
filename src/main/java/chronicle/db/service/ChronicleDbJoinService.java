@@ -199,11 +199,16 @@ public final class ChronicleDbJoinService {
             final var objRecords = mapOfRecords.get(join.objDaoName());
             final var foreignObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
 
-            loopJoinToMap(MAP_DB.getDb(indexPath), objRecords, foreignObjRecords,
-                    mapOfObjects.get(join.objDaoName()).get("name").toString(),
-                    mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
-            toRemove.addAll(objRecords.keySet());
-            MAP_DB.closeDb(indexPath);
+            try {
+                loopJoinToMap(MAP_DB.getDb(indexPath), objRecords, foreignObjRecords,
+                        mapOfObjects.get(join.objDaoName()).get("name").toString(),
+                        mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
+                toRemove.addAll(objRecords.keySet());
+            } catch (final IllegalAccessException e) {
+                Logger.error("Error joining to map for {} and {}.", join.objDaoName(), join.foreignKeyObjDaoName());
+            } finally {
+                MAP_DB.closeDb(indexPath);
+            }
         }
 
         joinedMap.keySet().removeAll(toRemove);
@@ -244,8 +249,7 @@ public final class ChronicleDbJoinService {
             final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
             final int objSubsetLength, final int foreignKeyObjSubsetLength, final int headerSize,
             final boolean isInnerJoin, final boolean foreignIsMainObject, final boolean isObjectEmpty)
-            throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
-            InvocationTargetException {
+            throws IllegalAccessException, InvocationTargetException, NoSuchMethodException, SecurityException {
         for (final var keyEntry : indexDb.entrySet()) {
             final var keyEntryKey = keyEntry.getKey();
             if (keyEntryKey != null) {
@@ -414,10 +418,15 @@ public final class ChronicleDbJoinService {
                 objectHeaderList.add(foreignKeyObjName);
             }
 
-            loopJoinToCsv(MAP_DB.getDb(indexPath), objRecords, foreignKeyObjRecords, rowList, indexMap, objSubsetLength,
-                    foreignKeyObjSubsetLength, headers.size(), join.isInnerJoin(), join.foreignIsMainObject(),
-                    isObjectEmpty);
-            MAP_DB.closeDb(indexPath);
+            try {
+                loopJoinToCsv(MAP_DB.getDb(indexPath), objRecords, foreignKeyObjRecords, rowList, indexMap,
+                        objSubsetLength, foreignKeyObjSubsetLength, headers.size(), join.isInnerJoin(),
+                        join.foreignIsMainObject(), isObjectEmpty);
+            } catch (IllegalAccessException | InvocationTargetException | NoSuchMethodException | SecurityException e) {
+                Logger.error("Error joining to csv for {} and {}.", join.objDaoName(), join.foreignKeyObjDaoName());
+            } finally {
+                MAP_DB.closeDb(indexPath);
+            }
         }
 
         return new CsvObject(headers.toArray(new String[0]), rowList);

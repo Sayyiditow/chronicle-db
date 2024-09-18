@@ -806,39 +806,57 @@ public interface ChronicleDao<K, V> {
 
     default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
-        if (!Files.exists(Path.of(indexFilePath))) {
-            Logger.info("Index file does not exist, it will be created.");
-            initIndex(new String[] { search.field() });
-        }
         final var db = db();
-        final var result = indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
-        MAP_DB.closeDb(indexFilePath);
-        db.close();
-        return result;
+
+        try {
+            return indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
+        } catch (final IOException e) {
+            CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
+            return new ConcurrentHashMap<K, V>();
+        } finally {
+            db.close();
+            MAP_DB.closeDb(indexFilePath);
+        }
     }
 
     default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
         final var db = db();
-        final var result = indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
-        MAP_DB.closeDb(indexFilePath);
-        db.close();
-        return result;
+
+        try {
+            return indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
+        } catch (final IOException e) {
+            CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
+            return new ConcurrentHashMap<K, V>();
+        } finally {
+            db.close();
+            MAP_DB.closeDb(indexFilePath);
+        }
     }
 
-    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search) throws IOException {
+    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search) {
         final var indexFilePath = getIndexPath(search.field());
-        final var result = indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
-        MAP_DB.closeDb(indexFilePath);
-        return result;
+
+        try {
+            return indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
+        } catch (final IOException e) {
+            CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
+            return new ConcurrentHashMap<K, V>();
+        } finally {
+            MAP_DB.closeDb(indexFilePath);
+        }
     }
 
-    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search, final int limit)
-            throws IOException {
+    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search, final int limit) {
         final var indexFilePath = getIndexPath(search.field());
-        final var result = indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
-        MAP_DB.closeDb(indexFilePath);
-        return result;
+        try {
+            return indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
+        } catch (final IOException e) {
+            CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
+            return new ConcurrentHashMap<K, V>();
+        } finally {
+            MAP_DB.closeDb(indexFilePath);
+        }
     }
 
     /**

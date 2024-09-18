@@ -53,8 +53,8 @@ public final class ChronicleUtils {
         Logger.info("Object with key {} deleted from {} at {}.", key, name, path);
     }
 
-    public void dbFetchError(final String name, final String file) {
-        Logger.error("Error while fetching {} for file {}", name, file);
+    public void indexedSearchErrorLog(final String name, final String path) {
+        Logger.error("Error running indexed search for object {}  at {}. {}", name, path);
     }
 
     /**
