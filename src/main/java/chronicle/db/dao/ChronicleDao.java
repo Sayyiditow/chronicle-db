@@ -38,8 +38,8 @@ import net.openhft.chronicle.map.ChronicleMap;
  */
 public interface ChronicleDao<K, V> {
     ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
-    String dataDir = "/data/", indexDir = "/indexes/", filesDir = "/files/", backupDir = "/backup/", dataFile = "/data",
-            corruptedFile = "/corrupted", recoverFile = "/recovery";
+    String dataDir = "/data/", indexDir = "/indexes/", filesDir = "/files/", backupDir = "/backup/",
+            dataFile = "data", corruptedFile = "corrupted", recoverFile = "recovery";
     String[] dbDirs = { dataDir, indexDir, filesDir, backupDir };
 
     /**
