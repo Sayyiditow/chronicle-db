@@ -899,6 +899,6 @@ public interface ChronicleDao<K, V> {
     }
 
     default void deleteDataFiles() throws IOException {
-        ChronicleUtils.CHRONICLE_UTILS.deleteFileIfExists(dataPath() + dataDir + dataFile);
+        CHRONICLE_UTILS.deleteFileIfExists(dataPath() + dataDir + dataFile);
     }
 }
