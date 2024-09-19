@@ -110,12 +110,13 @@ public interface ChronicleDao<K, V> {
     default void backup() {
         try {
             final var dataPath = dataPath() + dataDir;
-            final var backupDirPath = Path.of(dataPath() + backupDir);
+            final var backupPath = dataPath() + backupDir;
+            final var backupDirPath = Path.of(backupPath);
             final var dataFiles = CHRONICLE_UTILS.getFileList(dataPath);
             Files.createDirectories(backupDirPath);
 
             for (final var file : dataFiles) {
-                Files.copy(Path.of(dataPath + file), Path.of(backupDirPath + file), REPLACE_EXISTING);
+                Files.copy(Path.of(dataPath + file), Path.of(backupPath + file), REPLACE_EXISTING);
             }
         } catch (final IOException e) {
             Logger.error("Error on db backup for {}. {}.", dataPath(), e.getMessage());
