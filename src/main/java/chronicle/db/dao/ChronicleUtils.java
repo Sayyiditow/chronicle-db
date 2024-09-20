@@ -90,42 +90,47 @@ public final class ChronicleUtils {
 
     public List<Object> setSearchTerm(final List<Object> searchTerms, final Class<?> fieldClass) {
         for (int i = 0; i < searchTerms.size(); i++) {
-            if (searchTerms.get(i).getClass().isEnum()) {
-                searchTerms.set(i, String.valueOf(searchTerms.get(i)));
-            } else if (fieldClass.isAssignableFrom(long.class)
-                    && (searchTerms.get(i) instanceof String || searchTerms.get(i) instanceof Integer
-                            || searchTerms.get(i).getClass().isAssignableFrom(int.class))) {
-                searchTerms.set(i, toEnum(fieldClass, Long.parseLong(searchTerms.get(i).toString())));
+            final var searchTerm = searchTerms.get(i);
+            if (searchTerm != null) {
+                if (searchTerm.getClass().isEnum()) {
+                    searchTerms.set(i, String.valueOf(searchTerm));
+                } else if (fieldClass.isAssignableFrom(long.class)
+                        && (searchTerm instanceof String || searchTerm instanceof Integer
+                                || searchTerm.getClass().isAssignableFrom(int.class))) {
+                    searchTerms.set(i, toEnum(fieldClass, Long.parseLong(searchTerm.toString())));
+                }
             }
-
         }
 
         return searchTerms;
     }
 
     public Object setSearchTerm(final Object searchTerm, final Class<?> fieldClass) {
-        if (searchTerm.getClass().isEnum()) {
-            return String.valueOf(searchTerm);
-        } else if (fieldClass.isAssignableFrom(long.class)
-                && (searchTerm instanceof String || searchTerm instanceof Integer
-                        || searchTerm.getClass().isAssignableFrom(int.class))) {
-            return Long.parseLong(searchTerm.toString());
+        if (searchTerm != null) {
+            if (searchTerm.getClass().isEnum()) {
+                return String.valueOf(searchTerm);
+            } else if (fieldClass.isAssignableFrom(long.class)
+                    && (searchTerm instanceof String || searchTerm instanceof Integer
+                            || searchTerm.getClass().isAssignableFrom(int.class))) {
+                return Long.parseLong(searchTerm.toString());
+            }
         }
 
         return searchTerm;
-
     }
 
     public List<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
         for (int i = 0; i < searchTerms.size(); i++) {
-            if (fieldClass.isEnum() && (searchTerms.get(i) instanceof String)) {
-                searchTerms.set(i, toEnum(fieldClass, searchTerms.get(i)));
-            } else if (fieldClass.isAssignableFrom(long.class)
-                    && (searchTerms.get(i) instanceof String || searchTerms.get(i) instanceof Integer
-                            || searchTerms.get(i).getClass().isAssignableFrom(int.class))) {
-                searchTerms.set(i, toEnum(fieldClass, Long.parseLong(searchTerms.get(i).toString())));
+            final var searchTerm = searchTerms.get(i);
+            if (searchTerm != null) {
+                if (fieldClass.isEnum() && (searchTerm instanceof String)) {
+                    searchTerms.set(i, toEnum(fieldClass, searchTerm));
+                } else if (fieldClass.isAssignableFrom(long.class)
+                        && (searchTerm instanceof String || searchTerm instanceof Integer
+                                || searchTerm.getClass().isAssignableFrom(int.class))) {
+                    searchTerms.set(i, toEnum(fieldClass, Long.parseLong(searchTerm.toString())));
+                }
             }
-
         }
 
         return searchTerms;
