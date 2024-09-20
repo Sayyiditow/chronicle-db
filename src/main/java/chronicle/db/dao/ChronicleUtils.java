@@ -99,6 +99,8 @@ public final class ChronicleUtils {
                                 || searchTerm.getClass().isAssignableFrom(int.class))) {
                     searchTerms.set(i, toEnum(fieldClass, Long.parseLong(searchTerm.toString())));
                 }
+            } else {
+                searchTerms.set(i, String.valueOf(searchTerm));
             }
         }
 
@@ -114,9 +116,10 @@ public final class ChronicleUtils {
                             || searchTerm.getClass().isAssignableFrom(int.class))) {
                 return Long.parseLong(searchTerm.toString());
             }
+            return searchTerm;
         }
 
-        return searchTerm;
+        return "null";
     }
 
     public List<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
