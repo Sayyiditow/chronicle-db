@@ -30,7 +30,6 @@ import org.tinylog.Logger;
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
-import chronicle.db.service.HandleConsumer;
 
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleUtils {
@@ -265,6 +264,17 @@ public final class ChronicleUtils {
         MAP_DB.closeDb(indexPath);
     }
 
+    private <K> void removeKeyFromIndex(final HTreeMap<Object, List<K>> indexDb, final Object indexKey, final K key) {
+        final List<K> prevKeys = indexDb.get(indexKey);
+        if (prevKeys != null && prevKeys.remove(key)) {
+            if (prevKeys.isEmpty()) {
+                indexDb.remove(indexKey);
+            } else {
+                indexDb.put(indexKey, prevKeys);
+            }
+        }
+    }
+
     private <K, V> void removeFromIndex(final String dbName, final String dataPath, final Map<K, V> values,
             final String file) {
         Field field = null;
@@ -273,23 +283,14 @@ public final class ChronicleUtils {
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
-                Logger.info("Removing from index {} on object {}.", file, dbName);
+                Logger.info("Removing from index {} at {}.", file, dataPath);
                 for (final var entry : values.entrySet()) {
-                    final var value = entry.getValue();
+                    final V value = entry.getValue();
                     field = value.getClass().getField(file);
                     var indexKey = field.get(value);
-                    if (field.getType().isEnum())
-                        indexKey = String.valueOf(indexKey);
-                    else if (indexKey == null)
-                        indexKey = "null";
-                    final List<K> keys = indexDb.get(indexKey);
-                    if (keys != null && keys.remove(entry.getKey())) {
-                        if (keys.isEmpty()) {
-                            indexDb.remove(indexKey); // Remove if no entries left
-                        } else {
-                            indexDb.put(indexKey, keys);
-                        }
-                    }
+                    if (field.getType().isEnum() || indexKey == null)
+                        indexKey = Objects.toString(indexKey, "null");
+                    removeKeyFromIndex(indexDb, indexKey, entry.getKey());
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath,
@@ -311,57 +312,69 @@ public final class ChronicleUtils {
      * @throws InterruptedException
      */
     public <K, V> void removeFromIndex(final String dbName, final String dataPath,
-            final List<String> indexFileNames, final Map<K, V> values) throws IOException, InterruptedException {
-        if (indexFileNames.size() > 2) {
-            indexFileNames.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
+            final List<String> indexFileNames, final Map<K, V> values) {
+        final var threads = new ArrayList<Thread>();
+        for (final String file : indexFileNames) {
+            threads.add(Thread.ofVirtual().name("Remove Index Thread for - " + dataPath + " - " + file).start(() -> {
                 removeFromIndex(dbName, dataPath, values, file);
             }));
-        } else {
-            for (final String file : indexFileNames) {
-                removeFromIndex(dbName, dataPath, values, file);
+        }
+
+        for (final var thread : threads) {
+            try {
+                thread.join();
+            } catch (final InterruptedException e) {
+                Logger.error("Remove Index Thread interrupted. {}", e);
             }
+        }
+    }
+
+    private <K> void addKeyToIndex(final HTreeMap<Object, List<K>> indexDb, final Object indexKey, final K key) {
+        final List<K> keys = indexDb.computeIfAbsent(indexKey, k -> new ArrayList<>());
+        if (!keys.contains(key) && keys.add(key)) {
+            indexDb.put(indexKey, keys);
         }
     }
 
     private <K, V> void updateIndex(final String dbName, final String dataPath,
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
-        Field field = null;
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
-                Logger.info("Updating index {} on object {}.", file, dbName);
+                for (final var key : values.keySet()) {
+                    final V newValue = values.get(key);
+                    final V prevValue = prevValues.get(key);
+                    final var field = newValue.getClass().getField(file);
+                    var newIndexKey = field.get(newValue);
 
-                // remove from the index first
-                for (final var entry : prevValues.entrySet()) {
-                    final V value = entry.getValue();
-                    field = value.getClass().getField(file);
-                    var indexKey = field.get(value);
-                    if (field.getType().isEnum())
-                        indexKey = String.valueOf(indexKey);
-                    else if (indexKey == null)
-                        indexKey = "null";
+                    if (prevValue == null) {
+                        Logger.info("Adding index {} at {}.", file, dataPath);
+                        if (field.getType().isEnum() || newIndexKey == null)
+                            newIndexKey = Objects.toString(newIndexKey, "null");
 
-                    final List<K> keys = indexDb.get(indexKey);
-                    if (Objects.nonNull(keys) && keys.remove(entry.getKey())) {
-                        indexDb.put(indexKey, keys);
+                        addKeyToIndex(indexDb, newIndexKey, key);
+                    } else {
+                        var prevIndexKey = field.get(prevValue);
+                        if (!Objects.equals(newIndexKey, prevIndexKey)) {
+                            Logger.info("Updating index {} at {}.", file, dataPath);
+                            if (field.getType().isEnum()) {
+                                prevIndexKey = String.valueOf(prevIndexKey);
+                                newIndexKey = String.valueOf(newIndexKey);
+                            }
+                            if (prevIndexKey == null) {
+                                prevIndexKey = "null";
+                            }
+                            if (newIndexKey == null) {
+                                newIndexKey = "null";
+                            }
+
+                            removeKeyFromIndex(indexDb, prevIndexKey, key);
+                            addKeyToIndex(indexDb, newIndexKey, key);
+                        }
                     }
-                }
 
-                for (final var entry : values.entrySet()) {
-                    final V value = entry.getValue();
-                    field = value.getClass().getField(file);
-                    var indexKey = field.get(value);
-                    if (field.getType().isEnum())
-                        indexKey = String.valueOf(indexKey);
-                    else if (indexKey == null)
-                        indexKey = "null";
-
-                    final List<K> keys = indexDb.computeIfAbsent(indexKey, k -> new ArrayList<>());
-                    if (!keys.contains(entry.getKey()) && keys.add(entry.getKey())) {
-                        indexDb.put(indexKey, keys);
-                    }
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
@@ -382,13 +395,18 @@ public final class ChronicleUtils {
      */
     public <K, V> void updateIndex(final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues) {
-        if (indexFileNames.size() > 2) {
-            indexFileNames.parallelStream().forEach(HandleConsumer.handleConsumerBuilder(file -> {
+        final var threads = new ArrayList<Thread>();
+        for (final String file : indexFileNames) {
+            threads.add(Thread.ofVirtual().name("Update Index Thread for - " + dataPath + " - " + file).start(() -> {
                 updateIndex(dbName, dataPath, values, file, previousValues);
             }));
-        } else {
-            for (final String file : indexFileNames) {
-                updateIndex(dbName, dataPath, values, file, previousValues);
+        }
+
+        for (final var thread : threads) {
+            try {
+                thread.join();
+            } catch (final InterruptedException e) {
+                Logger.error("Update Index Thread {} interrupted. {}", thread.getName(), e);
             }
         }
     }
