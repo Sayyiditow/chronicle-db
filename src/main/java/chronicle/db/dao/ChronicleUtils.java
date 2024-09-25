@@ -283,7 +283,7 @@ public final class ChronicleUtils {
                     else if (indexKey == null)
                         indexKey = "null";
                     final List<K> keys = indexDb.get(indexKey);
-                    if (keys.remove(entry.getKey())) {
+                    if (keys != null && keys.remove(entry.getKey())) {
                         if (keys.isEmpty()) {
                             indexDb.remove(indexKey); // Remove if no entries left
                         } else {
