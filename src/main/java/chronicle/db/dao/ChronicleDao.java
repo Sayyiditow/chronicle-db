@@ -405,12 +405,12 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Add multiple keys and values into the db
+     * Add multiple values into the db, then update all indexes related
      * 
      * @param map the map to add
      * @throws IOException
      */
-    default void put(final Map<K, V> map, final List<String> indexFileNames) throws IOException {
+    default void put(final Map<K, V> map) throws IOException {
         if (map.size() > entries()) {
             Logger.error("Insert size bigger than entry size.");
             return;
@@ -433,17 +433,30 @@ public interface ChronicleDao<K, V> {
         }
         db.close();
 
-        if (containsIndexes()) {
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, map, prevValues);
-        }
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
     }
 
     /**
-     * Refer to method above
+     * Add multiple values into the db with no indexing
      * 
+     * @param map the map to add
+     * @throws IOException
      */
-    default void put(final Map<K, V> map) throws IOException {
-        put(map, indexFileNames());
+    default void putAll(final Map<K, V> map) throws IOException {
+        if (map.size() > entries()) {
+            Logger.error("Insert size bigger than entry size.");
+            return;
+        }
+
+        Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
+        var db = db();
+        final Object lock = locks.computeIfAbsent(name(), k -> new Object());
+        synchronized (lock) {
+            if (db.size() + map.size() > entries())
+                db = createNewDb(db);
+        }
+        db.putAll(map);
+        db.close();
     }
 
     /**
