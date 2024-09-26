@@ -248,10 +248,8 @@ public final class ChronicleUtils {
             try {
                 f = entry.getValue().getClass().getField(field);
                 Object currentValue = f.get(entry.getValue());
-                if (f.getType().isEnum())
-                    currentValue = String.valueOf(currentValue);
-                else if (currentValue == null)
-                    currentValue = "null";
+                if (f.getType().isEnum() || currentValue == null)
+                    currentValue = Objects.toString(currentValue, "null");
                 tempIndexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(entry.getKey());
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath, e);
