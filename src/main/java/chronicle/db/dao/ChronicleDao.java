@@ -37,10 +37,10 @@ import net.openhft.chronicle.map.ChronicleMap;
  * @param <V> Type of the single element
  */
 public interface ChronicleDao<K, V> {
-    ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
-    String dataDir = "/data/", indexDir = "/indexes/", filesDir = "/files/", backupDir = "/backup/",
-            dataFile = "data", corruptedFile = "corrupted", recoverFile = "recovery";
-    String[] dbDirs = { dataDir, indexDir, filesDir, backupDir };
+    ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
+    String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
+            DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery";
+    String[] dbDirs = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
 
     /**
      * Name of db for logging purposes
@@ -109,8 +109,8 @@ public interface ChronicleDao<K, V> {
      */
     default void backup() {
         try {
-            final var dataPath = dataPath() + dataDir;
-            final var backupPath = dataPath() + backupDir;
+            final var dataPath = dataPath() + DATA_DIR;
+            final var backupPath = dataPath() + BACKUP_DIR;
             final var backupDirPath = Path.of(backupPath);
             final var dataFiles = CHRONICLE_UTILS.getFileList(dataPath);
             Files.createDirectories(backupDirPath);
@@ -129,11 +129,11 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     default boolean containsIndexes() throws IOException {
-        return CHRONICLE_UTILS.getFileList(dataPath() + indexDir).size() > 0;
+        return CHRONICLE_UTILS.getFileList(dataPath() + INDEX_DIR).size() > 0;
     }
 
     default List<String> indexFileNames() throws IOException {
-        return CHRONICLE_UTILS.getFileList(dataPath() + indexDir);
+        return CHRONICLE_UTILS.getFileList(dataPath() + INDEX_DIR);
     }
 
     /**
@@ -144,7 +144,7 @@ public interface ChronicleDao<K, V> {
     default String[] deleteIndexes() throws IOException {
         final var available = indexFileNames();
         available.forEach(f -> {
-            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + indexDir + f);
+            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + INDEX_DIR + f);
         });
 
         return available.toArray(new String[available.size()]);
@@ -158,7 +158,7 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     default String getIndexPath(final String field) {
-        return dataPath() + indexDir + field;
+        return dataPath() + INDEX_DIR + field;
     }
 
     /**
@@ -169,7 +169,7 @@ public interface ChronicleDao<K, V> {
      */
     default ChronicleMap<K, V> db() throws IOException {
         return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
-                dataPath() + dataDir + dataFile, bloatFactor());
+                dataPath() + DATA_DIR + DATA_FILE, bloatFactor());
     }
 
     /**
@@ -206,7 +206,7 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     default void initDefaultIndexes(final String[] fields) throws IOException {
-        if (!CHRONICLE_UTILS.getFileList(dataPath() + dataDir).isEmpty()) {
+        if (!CHRONICLE_UTILS.getFileList(dataPath() + DATA_DIR).isEmpty()) {
             final var indexFiles = new HashSet<>(indexFileNames());
             if (indexFiles.size() != fields.length) {
                 final var toIndex = Arrays.stream(fields).filter(field -> !indexFiles.contains(field))
@@ -224,13 +224,13 @@ public interface ChronicleDao<K, V> {
      */
     default void recoverData() throws IOException {
         final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
-                dataPath() + dataDir + dataFile, bloatFactor());
+                dataPath() + DATA_DIR + DATA_FILE, bloatFactor());
         final var dbRecovery = CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
-                dataPath() + dataDir + recoverFile, bloatFactor());
+                dataPath() + DATA_DIR + RECOVER_FILE, bloatFactor());
         dbRecovery.putAll(db);
-        Files.move(Path.of(dataPath() + dataDir + dataFile), Path.of(dataPath() + dataDir + corruptedFile),
+        Files.move(Path.of(dataPath() + DATA_DIR + DATA_FILE), Path.of(dataPath() + DATA_DIR + CORRUPTED_FILE),
                 REPLACE_EXISTING);
-        Files.move(Path.of(dataPath() + dataDir + recoverFile), Path.of(dataPath() + dataDir + dataFile),
+        Files.move(Path.of(dataPath() + DATA_DIR + RECOVER_FILE), Path.of(dataPath() + DATA_DIR + DATA_FILE),
                 REPLACE_EXISTING);
         refreshIndexes();
     }
@@ -348,9 +348,9 @@ public interface ChronicleDao<K, V> {
      */
     private ChronicleMap<K, V> createNewDb(final ChronicleMap<K, V> db) throws IOException {
         Logger.info("Increasing entry size on db {}.", name());
-        final var dataFilePath = dataPath() + dataDir + dataFile;
-        final var backupDataFilePath = dataPath() + backupDir + dataFile;
-        final var tempDataFilePath = dataPath() + dataDir + "data.tmp";
+        final var dataFilePath = dataPath() + DATA_DIR + DATA_FILE;
+        final var backupDataFilePath = dataPath() + BACKUP_DIR + DATA_FILE;
+        final var tempDataFilePath = dataPath() + DATA_DIR + "data.tmp";
         final var newSize = entries() * ((db.size() / entries()) + 1) + entries();
         final var newDb = CHRONICLE_DB.createOrGet(name(), newSize, averageKey(), averageValue(), tempDataFilePath,
                 bloatFactor());
@@ -374,7 +374,7 @@ public interface ChronicleDao<K, V> {
         // create a bigger file if records in db are equal to multiple of entries()
         var status = PutStatus.INSERTED;
         var db = db();
-        final Object lock = locks.computeIfAbsent(name(), k -> new Object());
+        final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
         synchronized (lock) {
             if (db.size() != 0 && db.size() % entries() == 0)
                 db = createNewDb(db);
@@ -419,7 +419,7 @@ public interface ChronicleDao<K, V> {
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
         var db = db();
         final var prevValues = new HashMap<K, V>(map.size());
-        final Object lock = locks.computeIfAbsent(name(), k -> new Object());
+        final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
         synchronized (lock) {
             if (db.size() + map.size() > entries())
                 db = createNewDb(db);
@@ -450,7 +450,7 @@ public interface ChronicleDao<K, V> {
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
         var db = db();
-        final Object lock = locks.computeIfAbsent(name(), k -> new Object());
+        final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
         synchronized (lock) {
             if (db.size() + map.size() > entries())
                 db = createNewDb(db);
@@ -913,6 +913,6 @@ public interface ChronicleDao<K, V> {
     }
 
     default void deleteDataFiles() throws IOException {
-        CHRONICLE_UTILS.deleteFileIfExists(dataPath() + dataDir + dataFile);
+        CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + DATA_FILE);
     }
 }

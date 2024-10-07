@@ -12,7 +12,7 @@ import org.tinylog.Logger;
 public final class MapDb {
     private static final ConcurrentMap<String, DB> INSTANCES = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Integer> REF_COUNTS = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
 
     private MapDb() {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -28,7 +28,7 @@ public final class MapDb {
      */
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
         Logger.info("Opening index file at: {}", filePath);
-        final Object lock = locks.computeIfAbsent(filePath, k -> new Object());
+        final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
         DB db;
         synchronized (lock) {
             db = INSTANCES.get(filePath);
@@ -53,7 +53,7 @@ public final class MapDb {
     }
 
     public void closeDb(final String filePath) {
-        final Object lock = locks.computeIfAbsent(filePath, k -> new Object());
+        final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
         synchronized (lock) {
             var refCount = REF_COUNTS.get(filePath);
             if (refCount != null) {

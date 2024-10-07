@@ -34,7 +34,7 @@ import chronicle.db.entity.Search.SearchType;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
-    private final ConcurrentMap<String, Object> locks = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
 
     public <K> void getLog(final String name, final K key, final String path) {
         Logger.info("Querying {} using key {} at {}.", name, key, path);
@@ -277,7 +277,7 @@ public final class ChronicleUtils {
             final String file) {
         Field field = null;
         final var indexPath = dataPath + "/indexes/" + file;
-        final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
+        final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
@@ -337,7 +337,7 @@ public final class ChronicleUtils {
     private <K, V> void updateIndex(final String dbName, final String dataPath,
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
         final var indexPath = dataPath + "/indexes/" + file;
-        final Object lock = locks.computeIfAbsent(indexPath, k -> new Object());
+        final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
