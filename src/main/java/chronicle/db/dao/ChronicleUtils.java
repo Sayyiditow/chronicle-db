@@ -419,7 +419,7 @@ public final class ChronicleUtils {
      * @throws IllegalArgumentException
      * @throws IllegalAccessException
      */
-    public <K, V> CsvObject formatChronicleDataToCsv(final ConcurrentMap<K, V> map)
+    public <K, V> CsvObject formatChronicleDataToCsv(final Map<K, V> map)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException {
         if (map.size() != 0) {
@@ -439,7 +439,7 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void subsetOfValues(final String[] fields, final Map.Entry<K, V> entry,
-            final ConcurrentMap<K, LinkedHashMap<String, Object>> map, final String objectName) {
+            final Map<K, LinkedHashMap<String, Object>> map, final String objectName) {
         Field field = null;
         final var valueMap = new LinkedHashMap<String, Object>();
         for (final var f : fields) {
@@ -469,7 +469,7 @@ public final class ChronicleUtils {
      * @throws IllegalArgumentException
      * @throws IllegalAccessException
      */
-    public <K> CsvObject formatSubsetChronicleDataToCsv(final ConcurrentMap<K, LinkedHashMap<String, Object>> map,
+    public <K> CsvObject formatSubsetChronicleDataToCsv(final Map<K, LinkedHashMap<String, Object>> map,
             final String[] headers)
             throws NoSuchMethodException, SecurityException, IllegalAccessException,
             IllegalArgumentException, InvocationTargetException {

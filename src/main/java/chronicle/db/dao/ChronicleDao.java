@@ -271,9 +271,9 @@ public interface ChronicleDao<K, V> {
      * @return ConcurrentMap<K, V> values
      * @throws IOException
      */
-    default ConcurrentMap<K, V> get(final Set<K> keys) throws IOException {
+    default Map<K, V> get(final Set<K> keys) throws IOException {
         Logger.info("Querying {} using multiple keys {} at {}.", name(), keys, dataPath());
-        final var map = new ConcurrentHashMap<K, V>(keys.size());
+        final var map = new HashMap<K, V>(keys.size());
         final var db = db();
         for (final K key : keys) {
             final V value = db.getUsing(key, using());
@@ -320,7 +320,7 @@ public interface ChronicleDao<K, V> {
     default boolean delete(final Set<K> keys) throws IOException, InterruptedException {
         Logger.info("Deleting multiple values from {} using keys {} at {}.", name(), keys, dataPath());
         final var db = db();
-        ConcurrentMap<K, V> updatedMap = new ConcurrentHashMap<>();
+        Map<K, V> updatedMap = new ConcurrentHashMap<>();
 
         if (containsIndexes()) {
             updatedMap = get(keys);
@@ -881,9 +881,9 @@ public interface ChronicleDao<K, V> {
      * @param initialMap the map containing the whole object fields
      * @param fields     the required fields
      */
-    default ConcurrentMap<K, LinkedHashMap<String, Object>> subsetOfValues(final ConcurrentMap<K, V> initialMap,
+    default Map<K, LinkedHashMap<String, Object>> subsetOfValues(final Map<K, V> initialMap,
             final String[] fields) {
-        final var map = new ConcurrentHashMap<K, LinkedHashMap<String, Object>>();
+        final var map = new HashMap<K, LinkedHashMap<String, Object>>();
 
         for (final var entry : initialMap.entrySet()) {
             CHRONICLE_UTILS.subsetOfValues(fields, entry, map, name());
