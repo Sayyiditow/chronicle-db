@@ -238,7 +238,7 @@ public final class ChronicleUtils {
      * @throws IOException
      * 
      */
-    public <K, V> void index(final ConcurrentMap<K, V> db, final String dbName, final String field,
+    public <K, V> void index(final Map<K, V> db, final String dbName, final String field,
             final String dataPath, final String indexPath) {
         Logger.info("Indexing {} db at {} using {}.", dbName, dataPath, field);
         final Map<Object, List<K>> tempIndexMap = new HashMap<>();

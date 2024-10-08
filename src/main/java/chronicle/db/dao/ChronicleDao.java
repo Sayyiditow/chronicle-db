@@ -320,7 +320,7 @@ public interface ChronicleDao<K, V> {
     default boolean delete(final Set<K> keys) throws IOException, InterruptedException {
         Logger.info("Deleting multiple values from {} using keys {} at {}.", name(), keys, dataPath());
         final var db = db();
-        Map<K, V> updatedMap = new ConcurrentHashMap<>();
+        Map<K, V> updatedMap = new HashMap<>();
 
         if (containsIndexes()) {
             updatedMap = get(keys);
@@ -578,7 +578,7 @@ public interface ChronicleDao<K, V> {
     private Map<K, V> indexedSearch(final Search search, final Map<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
         Logger.info("Index searching DB at {} for {}.", dataPath(), search);
-        final var match = new ConcurrentHashMap<K, V>();
+        final var match = new HashMap<K, V>();
         if (index != null) {
             final var keys = new ArrayList<K>();
             final var keySet = index.keySet();
@@ -826,7 +826,7 @@ public interface ChronicleDao<K, V> {
             return indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
         } catch (final IOException e) {
             CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
-            return new ConcurrentHashMap<K, V>();
+            return new HashMap<K, V>();
         } finally {
             db.close();
             MAP_DB.closeDb(indexFilePath);
@@ -855,7 +855,7 @@ public interface ChronicleDao<K, V> {
             return indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
         } catch (final IOException e) {
             CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
-            return new ConcurrentHashMap<K, V>();
+            return new HashMap<K, V>();
         } finally {
             MAP_DB.closeDb(indexFilePath);
         }
@@ -867,7 +867,7 @@ public interface ChronicleDao<K, V> {
             return indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
         } catch (final IOException e) {
             CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
-            return new ConcurrentHashMap<K, V>();
+            return new HashMap<K, V>();
         } finally {
             MAP_DB.closeDb(indexFilePath);
         }
