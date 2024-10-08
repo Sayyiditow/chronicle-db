@@ -5,10 +5,10 @@ import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 import org.junit.jupiter.api.Test;
 
@@ -25,7 +25,7 @@ public class LeadDaoTest {
             NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException,
             InterruptedException {
         final var dao = CHRONICLE_DB.getChronicleDao(DAO, DATA_PATH);
-        final ConcurrentMap<String, Object> objects = new ConcurrentHashMap<>();
+        final Map<String, Object> objects = new HashMap<>();
         int i = 100;
         dao.put(UUID.randomUUID().toString(),
                 new Lead("Hashim Sayyid", "hashim-sayyind-12912", "", "", "abas@asa.com", "012109012",
