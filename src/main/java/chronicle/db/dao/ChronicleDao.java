@@ -238,13 +238,13 @@ public interface ChronicleDao<K, V> {
     /**
      * Fetches all records in the db
      * 
-     * @return ConcurrentMap<K, V>
+     * @return Map<K, V>
      * @throws IOException
      */
-    default ConcurrentMap<K, V> fetch() throws IOException {
+    default Map<K, V> fetch() throws IOException {
         Logger.info("Fetching all data at {}.", dataPath());
         final ChronicleMap<K, V> db = db();
-        final ConcurrentMap<K, V> map = new ConcurrentHashMap<>(db);
+        final Map<K, V> map = new HashMap<>(db);
         db.close();
         return map;
     }
@@ -268,7 +268,7 @@ public interface ChronicleDao<K, V> {
      * Get all the values for a list of keys
      * 
      * @param keys list of keys
-     * @return ConcurrentMap<K, V> values
+     * @return Map<K, V> values
      * @throws IOException
      */
     default Map<K, V> get(final Set<K> keys) throws IOException {
@@ -467,9 +467,9 @@ public interface ChronicleDao<K, V> {
      * @return a map of the fitting values
      * @throws IOException
      */
-    default ConcurrentMap<K, V> search(final ConcurrentMap<K, V> db, final Search search) throws IOException {
+    default Map<K, V> search(final Map<K, V> db, final Search search) throws IOException {
         Logger.info("Searching DB at {} for {}.", dataPath(), search);
-        final ConcurrentMap<K, V> map = new ConcurrentHashMap<>();
+        final Map<K, V> map = new HashMap<>();
 
         for (final var entry : db.entrySet()) {
             try {
@@ -490,10 +490,10 @@ public interface ChronicleDao<K, V> {
      * @return a map of the fitting values
      * @throws IOException
      */
-    default ConcurrentMap<K, V> search(final ConcurrentMap<K, V> db, final Search search, final int limit)
+    default Map<K, V> search(final Map<K, V> db, final Search search, final int limit)
             throws IOException {
         Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
-        final ConcurrentMap<K, V> map = new ConcurrentHashMap<>();
+        final Map<K, V> map = new HashMap<>();
 
         for (final var entry : db.entrySet()) {
             try {
@@ -518,10 +518,10 @@ public interface ChronicleDao<K, V> {
      * @return a map of the fitting values
      * @throws IOException
      */
-    default ConcurrentMap<K, V> search(final Search search) throws IOException {
+    default Map<K, V> search(final Search search) throws IOException {
         Logger.info("Searching DB at {} for {}.", dataPath(), search);
         final var db = db();
-        final ConcurrentMap<K, V> map = search(db, search);
+        final Map<K, V> map = search(db, search);
         db.close();
         return map;
     }
@@ -533,16 +533,16 @@ public interface ChronicleDao<K, V> {
      * @return a map of the fitting values
      * @throws IOException
      */
-    default ConcurrentMap<K, V> search(final Search search, final int limit)
+    default Map<K, V> search(final Search search, final int limit)
             throws IOException {
         Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final var db = db();
-        final ConcurrentMap<K, V> map = search(db, search, limit);
+        final Map<K, V> map = search(db, search, limit);
         db.close();
         return map;
     }
 
-    private void addSearchedValues(final List<K> keys, final ConcurrentMap<K, V> db, final ConcurrentMap<K, V> match) {
+    private void addSearchedValues(final List<K> keys, final Map<K, V> db, final Map<K, V> match) {
         if (keys != null)
             for (final var key : keys) {
                 final V value = db.get(key);
@@ -551,7 +551,7 @@ public interface ChronicleDao<K, V> {
             }
     }
 
-    private void addSearchedValues(final List<K> keys, final ConcurrentMap<K, V> db, final ConcurrentMap<K, V> match,
+    private void addSearchedValues(final List<K> keys, final Map<K, V> db, final Map<K, V> match,
             final int limit) {
         if (keys != null)
             for (final var key : keys) {
@@ -575,7 +575,7 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     @SuppressWarnings("unchecked")
-    private ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
+    private Map<K, V> indexedSearch(final Search search, final Map<K, V> db,
             final Map<Object, List<K>> index) throws IOException {
         Logger.info("Index searching DB at {} for {}.", dataPath(), search);
         final var match = new ConcurrentHashMap<K, V>();
@@ -702,10 +702,10 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     @SuppressWarnings("unchecked")
-    private ConcurrentMap<K, V> indexedSearch(final Search search, final ConcurrentMap<K, V> db,
+    private Map<K, V> indexedSearch(final Search search, final Map<K, V> db,
             final Map<Object, List<K>> index, final int limit) throws IOException {
         Logger.info("Index searching DB at {} for {} with limit {}.", dataPath(), search, limit);
-        final var match = new ConcurrentHashMap<K, V>();
+        final var match = new HashMap<K, V>();
         if (index != null) {
             final var keys = new ArrayList<K>();
             final var keySet = index.keySet();
@@ -818,7 +818,7 @@ public interface ChronicleDao<K, V> {
         return match;
     }
 
-    default ConcurrentMap<K, V> indexedSearch(final Search search) throws IOException {
+    default Map<K, V> indexedSearch(final Search search) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
         final var db = db();
 
@@ -833,7 +833,7 @@ public interface ChronicleDao<K, V> {
         }
     }
 
-    default ConcurrentMap<K, V> indexedSearch(final Search search, final int limit) throws IOException {
+    default Map<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
         final var db = db();
 
@@ -841,14 +841,14 @@ public interface ChronicleDao<K, V> {
             return indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
         } catch (final IOException e) {
             CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
-            return new ConcurrentHashMap<K, V>();
+            return new HashMap<K, V>();
         } finally {
             db.close();
             MAP_DB.closeDb(indexFilePath);
         }
     }
 
-    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search) {
+    default Map<K, V> indexedSearch(final Map<K, V> db, final Search search) {
         final var indexFilePath = getIndexPath(search.field());
 
         try {
@@ -861,7 +861,7 @@ public interface ChronicleDao<K, V> {
         }
     }
 
-    default ConcurrentMap<K, V> indexedSearch(final ConcurrentMap<K, V> db, final Search search, final int limit) {
+    default Map<K, V> indexedSearch(final Map<K, V> db, final Search search, final int limit) {
         final var indexFilePath = getIndexPath(search.field());
         try {
             return indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);

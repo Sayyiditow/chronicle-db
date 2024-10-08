@@ -14,8 +14,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
 import org.tinylog.Logger;
@@ -32,7 +30,7 @@ public final class ChronicleDbJoinService {
 
     public static final ChronicleDbJoinService CHRONICLE_DB_JOIN_SERVICE = new ChronicleDbJoinService();
 
-    private void setIsEmpty(final ConcurrentMap<Object, Object> db, final Map<String, Map<String, Object>> mapOfObjects,
+    private void setIsEmpty(final Map<Object, Object> db, final Map<String, Map<String, Object>> mapOfObjects,
             final String daoClassName, final ChronicleDao dao) {
         if (db.size() == 0) {
             // add one object just to make sure the join works when no data is available
@@ -41,12 +39,12 @@ public final class ChronicleDbJoinService {
         }
     }
 
-    private ConcurrentMap<Object, Object> setRecordsFromFilter(final ChronicleDao dao, final JoinFilter filter,
+    private Map<Object, Object> setRecordsFromFilter(final ChronicleDao dao, final JoinFilter filter,
             final Map<String, Map<String, Object>> mapOfObjects, final String daoClassName) throws IOException {
-        ConcurrentMap<Object, Object> db = new ConcurrentHashMap<>();
+        Map<Object, Object> db = new HashMap<>();
         if (filter != null) {
             if (filter.key() != null) {
-                db = new ConcurrentHashMap<>() {
+                db = new HashMap<>() {
                     {
                         {
                             put(filter.key(), dao.get(filter.key()));
@@ -76,7 +74,7 @@ public final class ChronicleDbJoinService {
 
                 if (filter.limit() != 0)
                     db = db.entrySet().stream().limit(filter.limit())
-                            .collect(Collectors.toConcurrentMap(Map.Entry::getKey, Map.Entry::getValue));
+                            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
             }
 
             if (filter.subsetFields() != null && filter.subsetFields().length != 0) {
@@ -95,7 +93,7 @@ public final class ChronicleDbJoinService {
     }
 
     private void setChronicleRecords(final String daoClassName, final String dataPath,
-            final Map<String, ConcurrentMap<?, ?>> records, final String foreignKeyName,
+            final Map<String, Map<?, ?>> records, final String foreignKeyName,
             final Map<String, Map<String, Object>> mapOfObjects, final JoinFilter filter, final boolean isForeign)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
             SecurityException, InstantiationException, InvocationTargetException, IOException {
@@ -121,7 +119,7 @@ public final class ChronicleDbJoinService {
         }
     }
 
-    private void setRequiredObjects(final Map<String, ConcurrentMap<?, ?>> records,
+    private void setRequiredObjects(final Map<String, Map<?, ?>> records,
             final Map<String, Map<String, Object>> mapOfObjects, final Join join)
             throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
             NoSuchFieldException, SecurityException, InstantiationException, InvocationTargetException, IOException {
@@ -132,9 +130,9 @@ public final class ChronicleDbJoinService {
     }
 
     private <K> void loopJoinToMap(final Map<Object, List<K>> indexDb,
-            final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
+            final Map<?, ?> object, final Map<?, ?> foreignKeyObject,
             final String objectName, final String foreignKeyObjName,
-            final ConcurrentMap<Object, Map<String, Object>> joinedMap) throws IllegalAccessException {
+            final Map<Object, Map<String, Object>> joinedMap) throws IllegalAccessException {
         for (final var keyEntry : indexDb.entrySet()) {
             if (keyEntry.getKey() != null) {
                 final var objPrev = joinedMap.get(keyEntry.getKey());
@@ -183,13 +181,13 @@ public final class ChronicleDbJoinService {
      * @throws NoSuchFieldException
      * @throws ClassNotFoundException
      */
-    public <K> ConcurrentMap<Object, Map<String, Object>> joinToMap(final List<Join> joins)
+    public <K> Map<Object, Map<String, Object>> joinToMap(final List<Join> joins)
             throws NoSuchMethodException, SecurityException, IllegalAccessException,
             IllegalArgumentException, InvocationTargetException, ClassNotFoundException, NoSuchFieldException,
             InstantiationException, IOException {
-        final var joinedMap = new ConcurrentHashMap<Object, Map<String, Object>>();
+        final var joinedMap = new HashMap<Object, Map<String, Object>>();
         final var toRemove = new HashSet<>();
-        final var mapOfRecords = new HashMap<String, ConcurrentMap<?, ?>>();
+        final var mapOfRecords = new HashMap<String, Map<?, ?>>();
         final var mapOfObjects = new HashMap<String, Map<String, Object>>();
 
         for (final var join : joins) {
@@ -245,8 +243,8 @@ public final class ChronicleDbJoinService {
     }
 
     private <K> void loopJoinToCsv(final Map<Object, List<K>> indexDb,
-            final ConcurrentMap<?, ?> object, final ConcurrentMap<?, ?> foreignKeyObject,
-            final List<Object[]> rowList, final ConcurrentMap<Object, Integer> indexMap,
+            final Map<?, ?> object, final Map<?, ?> foreignKeyObject,
+            final List<Object[]> rowList, final Map<Object, Integer> indexMap,
             final int objSubsetLength, final int foreignKeyObjSubsetLength, final int headerSize,
             final boolean isInnerJoin, final boolean foreignIsMainObject, final boolean isObjectEmpty)
             throws IllegalAccessException, InvocationTargetException, NoSuchMethodException, SecurityException {
@@ -360,8 +358,8 @@ public final class ChronicleDbJoinService {
             IOException {
         final var headers = new ArrayList<String>();
         final var rowList = new ArrayList<Object[]>();
-        final ConcurrentMap<Object, Integer> indexMap = new ConcurrentHashMap<>();
-        final var mapOfRecords = new HashMap<String, ConcurrentMap<?, ?>>();
+        final Map<Object, Integer> indexMap = new HashMap<>();
+        final var mapOfRecords = new HashMap<String, Map<?, ?>>();
         final var mapOfObjects = new HashMap<String, Map<String, Object>>();
         final var objectHeaderList = new ArrayList<String>();
 

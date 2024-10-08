@@ -151,7 +151,7 @@ public final class ChronicleUtils {
 
     }
 
-    public <K, V> void search(final Search search, final K key, final V value, final ConcurrentMap<K, V> map)
+    public <K, V> void search(final Search search, final K key, final V value, final Map<K, V> map)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
         final Field field = value.getClass().getField(search.field());
         List<Object> searchTermList = new ArrayList<>();
@@ -532,11 +532,11 @@ public final class ChronicleUtils {
         return map;
     }
 
-    public <K, V> ConcurrentMap<K, Object> moveRecords(final ConcurrentMap<K, V> currentValues,
+    public <K, V> Map<K, Object> moveRecords(final Map<K, V> currentValues,
             final String toObjectClass, final Map<String, String> move, final Map<String, Object> def)
             throws ClassNotFoundException, NoSuchMethodException, SecurityException,
             InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
-        final ConcurrentMap<K, Object> map = new ConcurrentHashMap<>();
+        final Map<K, Object> map = new HashMap<>();
         if (currentValues.size() != 0) {
             final var cls = Class.forName(toObjectClass);
             final var constuctor = cls.getConstructor();
