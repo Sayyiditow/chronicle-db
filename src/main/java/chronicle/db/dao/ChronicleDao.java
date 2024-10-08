@@ -167,7 +167,7 @@ public interface ChronicleDao<K, V> {
      * @return ChronicleMap<K, V>
      * @throws IOException
      */
-    default ChronicleMap<K, V> db() throws IOException {
+    private ChronicleMap<K, V> db() throws IOException {
         return CHRONICLE_DB.createOrGet(name(), entries(), averageKey(), averageValue(),
                 dataPath() + DATA_DIR + DATA_FILE, bloatFactor());
     }
