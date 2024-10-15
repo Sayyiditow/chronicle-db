@@ -238,28 +238,51 @@ public final class ChronicleUtils {
      * @throws IOException
      * 
      */
-    public <K, V> void index(final Map<K, V> db, final String dbName, final String field,
-            final String dataPath, final String indexPath) {
-        Logger.info("Indexing {} db at {} using {}.", dbName, dataPath, field);
-        final Map<Object, List<K>> tempIndexMap = new HashMap<>();
+    public <K, V> void index(final Map<K, V> db, final String dbName, final String[] fields,
+            final String dataPath, final String indexDirPath) {
+        final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>();
+        final Map<String, Field> fieldMap = new HashMap<>();
+        final var nonExistentFields = new HashMap<>();
+        Logger.info("Indexing {} db at {} for the following fields: {}.", dbName, dataPath, Arrays.toString(fields));
 
         for (final var entry : db.entrySet()) {
-            Field f = null;
-            try {
-                f = entry.getValue().getClass().getField(field);
-                Object currentValue = f.get(entry.getValue());
-                if (f.getType().isEnum() || currentValue == null)
-                    currentValue = Objects.toString(currentValue, "null");
-                tempIndexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(entry.getKey());
-            } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-                Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath, e);
-                break;
+            for (final var field : fields) {
+                if (!nonExistentFields.containsKey(nonExistentFields)) {
+                    final Field f = fieldMap.computeIfAbsent(field, k -> {
+                        try {
+                            return entry.getValue().getClass().getField(field);
+                        } catch (NoSuchFieldException | SecurityException e) {
+                            Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath,
+                                    e.getMessage());
+                            return null;
+                        }
+                    });
+                    if (f == null) {
+                        deleteFileIfExists(indexDirPath + "/" + field);
+                        nonExistentFields.put(field, true);
+                        continue;
+                    }
+                    final var indexMap = fieldIndexMap.computeIfAbsent(field, k -> new HashMap<>());
+                    try {
+                        var currentValue = f.get(entry.getValue());
+                        if (f.getType().isEnum() || currentValue == null)
+                            currentValue = Objects.toString(currentValue, "null");
+                        indexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(entry.getKey());
+                    } catch (IllegalArgumentException | IllegalAccessException e) {
+                        Logger.error("Error getting field value for {} at {}. {}", field, dbName, e.getMessage());
+                    }
+                }
             }
         }
 
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-        indexDb.putAll(tempIndexMap);
-        MAP_DB.closeDb(indexPath);
+        for (final var entry : fieldIndexMap.entrySet()) {
+            final var indexPath = indexDirPath + "/" + entry.getKey();
+            deleteFileIfExists(indexPath);
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+            indexDb.putAll(entry.getValue());
+            MAP_DB.closeDb(indexPath);
+
+        }
     }
 
     private <K> void removeKeyFromIndex(final HTreeMap<Object, List<K>> indexDb, final Object indexKey, final K key) {
@@ -275,7 +298,6 @@ public final class ChronicleUtils {
 
     private <K, V> void removeFromIndex(final String dbName, final String dataPath, final Map<K, V> values,
             final String file) {
-        Field field = null;
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
@@ -284,7 +306,7 @@ public final class ChronicleUtils {
                 Logger.info("Removing from index {} at {}.", file, dataPath);
                 for (final var entry : values.entrySet()) {
                     final V value = entry.getValue();
-                    field = value.getClass().getField(file);
+                    final var field = value.getClass().getField(file);
                     var indexKey = field.get(value);
                     if (field.getType().isEnum() || indexKey == null)
                         indexKey = Objects.toString(indexKey, "null");

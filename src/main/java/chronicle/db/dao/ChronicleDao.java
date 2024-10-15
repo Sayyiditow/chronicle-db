@@ -180,13 +180,8 @@ public interface ChronicleDao<K, V> {
      * 
      */
     default void initIndex(final String[] fields) throws IOException {
-        final var db = db();
-        for (final var field : fields) {
-            final String path = getIndexPath(field);
-            CHRONICLE_UTILS.deleteFileIfExists(path);
-            CHRONICLE_UTILS.index(db, name(), field, dataPath(), path);
-        }
-        db.close();
+        final var db = fetch();
+        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), dataPath() + INDEX_DIR);
     }
 
     /**
