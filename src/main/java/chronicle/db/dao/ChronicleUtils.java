@@ -303,6 +303,7 @@ public final class ChronicleUtils {
             final String file) {
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
+
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
@@ -364,9 +365,11 @@ public final class ChronicleUtils {
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
+
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
+                Logger.info("Updating index {} at {}.", file, dataPath);
                 for (final var key : values.keySet()) {
                     final V newValue = values.get(key);
                     final V prevValue = prevValues.get(key);
@@ -374,7 +377,6 @@ public final class ChronicleUtils {
                     var newIndexKey = field.get(newValue);
 
                     if (prevValue == null) {
-                        Logger.info("Adding index {} at {}.", file, dataPath);
                         if (field.getType().isEnum() || newIndexKey == null)
                             newIndexKey = Objects.toString(newIndexKey, "null");
 
@@ -382,7 +384,6 @@ public final class ChronicleUtils {
                     } else {
                         var prevIndexKey = field.get(prevValue);
                         if (!Objects.equals(newIndexKey, prevIndexKey)) {
-                            Logger.info("Updating index {} at {}.", file, dataPath);
                             if (field.getType().isEnum()) {
                                 prevIndexKey = String.valueOf(prevIndexKey);
                                 newIndexKey = String.valueOf(newIndexKey);
