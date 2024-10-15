@@ -277,10 +277,13 @@ public final class ChronicleUtils {
 
         for (final var entry : fieldIndexMap.entrySet()) {
             final var indexPath = indexDirPath + "/" + entry.getKey();
-            deleteFileIfExists(indexPath);
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-            indexDb.putAll(entry.getValue());
-            MAP_DB.closeDb(indexPath);
+            final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
+            synchronized (lock) {
+                deleteFileIfExists(indexPath);
+                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                indexDb.putAll(entry.getValue());
+                MAP_DB.closeDb(indexPath);
+            }
 
         }
     }
@@ -315,6 +318,7 @@ public final class ChronicleUtils {
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath,
                         e);
+                deleteFileIfExists(indexPath);
             } finally {
                 MAP_DB.closeDb(indexPath);
             }
@@ -398,6 +402,7 @@ public final class ChronicleUtils {
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
+                deleteFileIfExists(indexPath);
             } finally {
                 MAP_DB.closeDb(indexPath);
             }
