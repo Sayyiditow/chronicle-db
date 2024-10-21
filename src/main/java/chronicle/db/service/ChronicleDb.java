@@ -8,6 +8,8 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import org.tinylog.Logger;
 
@@ -21,7 +23,15 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
  */
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
+    private static final ConcurrentMap<String, ChronicleMap> INSTANCES = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, Integer> REF_COUNTS = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
+
     private ChronicleDb() {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            Logger.info("JVM shutting down. Closing all ChronicleMap instances.");
+            closeAllDbs();
+        }));
     }
 
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
@@ -37,21 +47,69 @@ public final class ChronicleDb {
      *                   for complex structures)
      * @throws IOException
      */
-    public <K, V> ChronicleMap<K, V> createOrGet(final String name, final long entries,
+    public <K, V> ChronicleMap<K, V> getDb(final String name, final long entries,
             final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
             throws IOException {
-        final File file = new File(filePath);
-        final Class<K> keyClass = (Class<K>) averageKey.getClass();
-        final Class<V> valueClass = (Class<V>) averageValue.getClass();
+        Logger.info("Opening ChronicleMap at: {}", filePath);
+        final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
 
-        if (file.exists()) {
-            Logger.info("Fetching Chronicle DB {} at: {}", name, filePath);
-            return ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
+        synchronized (lock) {
+            var db = INSTANCES.get(filePath);
+            if (db == null) {
+                final File file = new File(filePath);
+                final Class<K> keyClass = (Class<K>) averageKey.getClass();
+                final Class<V> valueClass = (Class<V>) averageValue.getClass();
+
+                if (file.exists()) {
+                    db = ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor)
+                            .createPersistedTo(file);
+                } else {
+                    db = ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
+                            .averageValue(averageValue).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
+                }
+
+                INSTANCES.put(filePath, db);
+                REF_COUNTS.put(filePath, 1);
+                return db;
+            } else {
+                REF_COUNTS.put(filePath, REF_COUNTS.get(filePath) + 1);
+                return db;
+            }
         }
+    }
 
-        Logger.info("Creating Chronicle DB {} at: {}", name, filePath);
-        return ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
-                .averageValue(averageValue).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
+    /**
+     * Used to gracefully shutdown an open db file
+     * 
+     * @param filePath the path to the file to close
+     */
+    public void closeDb(final String filePath) {
+        final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
+        synchronized (lock) {
+            var refCount = REF_COUNTS.get(filePath);
+            if (refCount != null) {
+                refCount--;
+                REF_COUNTS.put(filePath, refCount);
+
+                if (refCount == 0) {
+                    Logger.info("Closing ChronicleMap at: {}", filePath);
+                    final var db = INSTANCES.get(filePath);
+                    if (db != null) {
+                        db.close();
+                        REF_COUNTS.remove(filePath);
+                        INSTANCES.remove(filePath);
+                    }
+                }
+            }
+        }
+    }
+
+    private synchronized void closeAllDbs() {
+        for (final String filePath : INSTANCES.keySet()) {
+            closeDb(filePath);
+        }
+        INSTANCES.clear();
+        REF_COUNTS.clear();
     }
 
     /**
@@ -66,7 +124,7 @@ public final class ChronicleDb {
     public <K, V> ChronicleMap<K, V> recoverDb(final String name, final long entries,
             final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
             throws IOException {
-        Logger.info("Restoring Chronicle DB {} at: {}", name, filePath);
+        Logger.info("Restoring ChronicleMap {} at: {}", name, filePath);
         final File file = new File(filePath);
         final Class<K> keyClass = (Class<K>) averageKey.getClass();
         final Class<V> valueClass = (Class<V>) averageValue.getClass();

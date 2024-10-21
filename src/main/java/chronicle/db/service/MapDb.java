@@ -27,11 +27,11 @@ public final class MapDb {
      * User is in charge of calling close() to prevent map corruption.
      */
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
-        Logger.info("Opening index file at: {}", filePath);
+        Logger.info("Opening MapDB at: {}", filePath);
         final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
-        DB db;
+
         synchronized (lock) {
-            db = INSTANCES.get(filePath);
+            var db = INSTANCES.get(filePath);
             if (db == null) {
                 db = DBMaker
                         .fileDB(filePath)
@@ -47,9 +47,9 @@ public final class MapDb {
             } else {
                 REF_COUNTS.put(filePath, REF_COUNTS.get(filePath) + 1);
             }
-        }
 
-        return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
+            return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
+        }
     }
 
     public void closeDb(final String filePath) {
@@ -61,7 +61,7 @@ public final class MapDb {
                 REF_COUNTS.put(filePath, refCount);
 
                 if (refCount == 0) {
-                    Logger.info("Closing index file at: {}", filePath);
+                    Logger.info("Closing MapDb at: {}", filePath);
                     final var db = INSTANCES.get(filePath);
                     if (db != null) {
                         db.close();
