@@ -294,9 +294,8 @@ public interface ChronicleDao<K, V> {
      * @param key the key to remove
      * @return true if updated else false
      * @throws IOException
-     * @throws InterruptedException
      */
-    default boolean delete(final K key) throws IOException, InterruptedException {
+    default boolean delete(final K key) throws IOException {
         final var db = getDb();
         CHRONICLE_UTILS.deleteLog(name(), key, dataPath());
         final V value = db.remove(key);
