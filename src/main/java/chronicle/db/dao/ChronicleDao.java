@@ -318,9 +318,8 @@ public interface ChronicleDao<K, V> {
      * @param keys the keys to remove
      * @return true if updated else false
      * @throws IOException
-     * @throws InterruptedException
      */
-    default boolean delete(final Set<K> keys) throws IOException, InterruptedException {
+    default boolean delete(final Set<K> keys) throws IOException {
         Logger.info("Deleting multiple values from {} using keys {} at {}.", name(), keys, dataPath());
         final var db = getDb();
         Map<K, V> updatedMap = new HashMap<>();
@@ -536,8 +535,7 @@ public interface ChronicleDao<K, V> {
      * @return a map of the fitting values
      * @throws IOException
      */
-    default Map<K, V> search(final Search search, final int limit)
-            throws IOException {
+    default Map<K, V> search(final Search search, final int limit) throws IOException {
         Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final var db = getDb();
         final Map<K, V> map = search(db, search, limit);
