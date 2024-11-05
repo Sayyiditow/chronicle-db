@@ -50,12 +50,12 @@ public final class ChronicleDb {
     public <K, V> ChronicleMap<K, V> getDb(final String name, final long entries,
             final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
             throws IOException {
-        Logger.info("Opening ChronicleMap at: {}", filePath);
         final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
 
         synchronized (lock) {
             var db = INSTANCES.get(filePath);
             if (db == null) {
+                Logger.info("Opening ChronicleMap at: {}", filePath);
                 final File file = new File(filePath);
                 final Class<K> keyClass = (Class<K>) averageKey.getClass();
                 final Class<V> valueClass = (Class<V>) averageValue.getClass();

@@ -27,12 +27,12 @@ public final class MapDb {
      * User is in charge of calling close() to prevent map corruption.
      */
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
-        Logger.info("Opening MapDB at: {}", filePath);
         final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
 
         synchronized (lock) {
             var db = INSTANCES.get(filePath);
             if (db == null) {
+                Logger.info("Opening MapDB at: {}", filePath);
                 db = DBMaker
                         .fileDB(filePath)
                         .fileMmapEnable() // Always enable mmap
