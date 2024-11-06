@@ -344,7 +344,7 @@ public interface ChronicleDao<K, V> {
      * @return
      * @throws IOException
      */
-    private ChronicleMap<K, V> createNewDb(final ChronicleMap<K, V> db) throws IOException {
+    private void createNewDb(final ChronicleMap<K, V> db) throws IOException {
         Logger.info("Increasing entry size on db {}.", name());
         final var dataFilePath = dataPath() + DATA_DIR + DATA_FILE;
         final var backupDataFilePath = dataPath() + BACKUP_DIR + DATA_FILE;
@@ -356,7 +356,7 @@ public interface ChronicleDao<K, V> {
         closeDb();
         Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
         Files.move(Path.of(tempDataFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
-        return newDb;
+        CHRONICLE_DB.closeDb(tempDataFilePath);
     }
 
     /**
@@ -376,8 +376,10 @@ public interface ChronicleDao<K, V> {
         if (!db.containsKey(key)) {
             final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
             synchronized (lock) {
-                if (db.size() != 0 && db.size() % entries() == 0)
-                    db = createNewDb(db);
+                if (db.size() != 0 && db.size() % entries() == 0) {
+                    createNewDb(db);
+                    db = getDb();
+                }
             }
         }
         final V prevValue = db.put(key, value);
@@ -439,8 +441,10 @@ public interface ChronicleDao<K, V> {
         if (insertSize > 0) {
             final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
             synchronized (lock) {
-                if (db.size() + insertSize > entries())
-                    db = createNewDb(db);
+                if (db.size() + insertSize > entries()) {
+                    createNewDb(db);
+                    db = getDb();
+                }
             }
         }
 
@@ -500,8 +504,10 @@ public interface ChronicleDao<K, V> {
         if (insertSize > 0) {
             final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
             synchronized (lock) {
-                if (db.size() + insertSize > entries())
-                    db = createNewDb(db);
+                if (db.size() + insertSize > entries()) {
+                    createNewDb(db);
+                    db = getDb();
+                }
             }
         }
         db.putAll(map);
