@@ -969,4 +969,11 @@ public interface ChronicleDao<K, V> {
     default void deleteDataFiles() throws IOException {
         CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + DATA_FILE);
     }
+
+    default boolean exists(final K key) throws IOException {
+        final var db = getDb();
+        final var exists = db.containsKey(key);
+        closeDb();
+        return exists;
+    }
 }
