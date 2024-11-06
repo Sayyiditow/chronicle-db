@@ -303,9 +303,7 @@ public interface ChronicleDao<K, V> {
 
         if (value != null) {
             CHRONICLE_UTILS.successDeleteLog(name(), key, dataPath());
-            if (containsIndexes()) {
-                CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, value));
-            }
+            CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, value));
             return true;
         }
 
@@ -332,9 +330,7 @@ public interface ChronicleDao<K, V> {
 
         if (updated) {
             Logger.info("Objects with keys {} deleted from {} at {}.", keys, name(), dataPath());
-            if (containsIndexes()) {
-                CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), updatedMap);
-            }
+            CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), updatedMap);
         }
         closeDb();
 
@@ -389,9 +385,8 @@ public interface ChronicleDao<K, V> {
             prevValueMap.put(key, prevValue);
             status = PutStatus.UPDATED;
         }
-        if (containsIndexes()) {
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), prevValueMap);
-        }
+
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), prevValueMap);
 
         Logger.info("{} into {} using key {} at {}.", status, name(), key, dataPath());
 
