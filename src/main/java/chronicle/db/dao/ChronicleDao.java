@@ -360,7 +360,7 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Add a value
+     * Add/Update a value
      * 
      * @param key   the key
      * @param value the value
@@ -404,6 +404,10 @@ public interface ChronicleDao<K, V> {
         return put(key, value, indexFileNames());
     }
 
+    /**
+     * Get the size of inserts in mixed cases where the map
+     * to update has both new and old records
+     */
     private int getInsertSize(final ChronicleMap<K, V> db, final Map<K, V> map) {
         var insertSize = 0;
         for (final var key : map.keySet()) {
@@ -416,7 +420,7 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Add multiple values into the db, then update all indexes related
+     * Add/Update multiple values into the db, then update all indexes related
      * 
      * @param map the map to add
      * @throws IOException
@@ -452,7 +456,33 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Add multiple values into the db with no indexing
+     * Update multiple values into the db, then update all indexes related
+     * This is useful as it does not increase db size
+     * 
+     * @param map the map to add
+     * @throws IOException
+     */
+    default void update(final Map<K, V> map) throws IOException {
+        if (map.size() > entries()) {
+            Logger.error("Update size bigger than entry size.");
+            return;
+        }
+
+        Logger.info("Updating multiple values into {} at {}.", name(), dataPath());
+        final var db = getDb();
+        final var prevValues = new HashMap<K, V>(map.size());
+
+        for (final var entry : map.entrySet()) {
+            final K key = entry.getKey();
+            prevValues.put(key, db.put(key, entry.getValue()));
+        }
+        closeDb();
+
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+    }
+
+    /**
+     * Add/Update multiple values into the db with no indexing
      * 
      * @param map the map to add
      * @throws IOException
