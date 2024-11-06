@@ -338,22 +338,8 @@ public final class ChronicleUtils {
      */
     public <K, V> void removeFromIndex(final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values) {
-        if (indexFileNames.size() > 0) {
-            final var threads = new ArrayList<Thread>();
-            for (final String file : indexFileNames) {
-                threads.add(
-                        Thread.ofVirtual().name("Remove Index Thread for - " + dataPath + " - " + file).start(() -> {
-                            removeFromIndex(dbName, dataPath, values, file);
-                        }));
-            }
-
-            for (final var thread : threads) {
-                try {
-                    thread.join();
-                } catch (final InterruptedException e) {
-                    Logger.error("Remove Index Thread interrupted. {}", e);
-                }
-            }
+        for (final var file : indexFileNames) {
+            removeFromIndex(dbName, dataPath, values, file);
         }
     }
 
@@ -424,22 +410,8 @@ public final class ChronicleUtils {
      */
     public <K, V> void updateIndex(final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues) {
-        if (indexFileNames.size() > 0) {
-            final var threads = new ArrayList<Thread>();
-            for (final String file : indexFileNames) {
-                threads.add(
-                        Thread.ofVirtual().name("Update Index Thread for - " + dataPath + " - " + file).start(() -> {
-                            updateIndex(dbName, dataPath, values, file, previousValues);
-                        }));
-            }
-
-            for (final var thread : threads) {
-                try {
-                    thread.join();
-                } catch (final InterruptedException e) {
-                    Logger.error("Update Index Thread {} interrupted. {}", thread.getName(), e);
-                }
-            }
+        for (final var file : indexFileNames) {
+            updateIndex(dbName, dataPath, values, file, previousValues);
         }
     }
 
