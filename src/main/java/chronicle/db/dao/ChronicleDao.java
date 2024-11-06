@@ -372,10 +372,13 @@ public interface ChronicleDao<K, V> {
         // create a bigger file if records in db are equal to multiple of entries()
         var status = PutStatus.INSERTED;
         var db = getDb();
-        final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
-        synchronized (lock) {
-            if (db.size() != 0 && db.size() % entries() == 0)
-                db = createNewDb(db);
+        // only create new db if we are inserting a new record
+        if (!db.containsKey(key)) {
+            final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
+            synchronized (lock) {
+                if (db.size() != 0 && db.size() % entries() == 0)
+                    db = createNewDb(db);
+            }
         }
         final V prevValue = db.put(key, value);
         closeDb();
@@ -401,6 +404,17 @@ public interface ChronicleDao<K, V> {
         return put(key, value, indexFileNames());
     }
 
+    private int getInsertSize(final ChronicleMap<K, V> db, final Map<K, V> map) {
+        var insertSize = 0;
+        for (final var key : map.keySet()) {
+            if (db.containsKey(key)) {
+                insertSize += 1;
+            }
+        }
+
+        return insertSize;
+    }
+
     /**
      * Add multiple values into the db, then update all indexes related
      * 
@@ -415,11 +429,15 @@ public interface ChronicleDao<K, V> {
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
         var db = getDb();
-        final var prevValues = new HashMap<K, V>(map.size());
-        final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
-        synchronized (lock) {
-            if (db.size() + map.size() > entries())
-                db = createNewDb(db);
+        final var insertSize = getInsertSize(db, map);
+        final var prevValues = new HashMap<K, V>(map.size() - insertSize);
+
+        if (insertSize > 0) {
+            final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
+            synchronized (lock) {
+                if (db.size() + insertSize > entries())
+                    db = createNewDb(db);
+            }
         }
 
         for (final var entry : map.entrySet()) {
@@ -447,10 +465,14 @@ public interface ChronicleDao<K, V> {
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
         var db = getDb();
-        final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
-        synchronized (lock) {
-            if (db.size() + map.size() > entries())
-                db = createNewDb(db);
+        final var insertSize = getInsertSize(db, map);
+
+        if (insertSize > 0) {
+            final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
+            synchronized (lock) {
+                if (db.size() + insertSize > entries())
+                    db = createNewDb(db);
+            }
         }
         db.putAll(map);
         closeDb();
