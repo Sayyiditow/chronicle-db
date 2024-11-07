@@ -407,6 +407,35 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
+     * Update a value without bothering about db creation
+     * 
+     * @param key   the key
+     * @param value the value
+     * @return true if updated else false
+     * @throws IOException
+     */
+    default PutStatus update(final K key, final V value, final List<String> indexFileNames)
+            throws IOException {
+        final var db = getDb();
+        final V prevValue = db.put(key, value);
+        closeDb();
+        final var prevValueMap = new HashMap<K, V>(1);
+        prevValueMap.put(key, prevValue);
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), prevValueMap);
+        Logger.info("UPDATED into {} using key {} at {}.", name(), key, dataPath());
+
+        return PutStatus.UPDATED;
+    }
+
+    /**
+     * Refer to method above
+     * 
+     */
+    default PutStatus update(final K key, final V value) throws IOException {
+        return update(key, value, indexFileNames());
+    }
+
+    /**
      * Get the size of inserts in mixed cases where the map
      * to update has both new and old records
      */
