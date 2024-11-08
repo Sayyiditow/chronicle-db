@@ -377,7 +377,6 @@ public final class ChronicleUtils {
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
-                Logger.info("Updating index {} at {}.", file, dataPath);
                 for (final var key : values.keySet()) {
                     final V newValue = values.get(key);
                     final V prevValue = prevValues.get(key);
@@ -388,6 +387,7 @@ public final class ChronicleUtils {
                         if (field.getType().isEnum() || newIndexKey == null)
                             newIndexKey = Objects.toString(newIndexKey, "null");
 
+                        Logger.info("Adding new index {} on {} at {}.", newIndexKey, file, dataPath);
                         addKeyToIndex(indexDb, newIndexKey, key);
                     } else {
                         var prevIndexKey = field.get(prevValue);
@@ -403,6 +403,8 @@ public final class ChronicleUtils {
                                 newIndexKey = "null";
                             }
 
+                            Logger.info("Updating index {} to {} on {} at {}.", prevIndexKey, newIndexKey, file,
+                                    dataPath);
                             removeKeyFromIndex(indexDb, prevIndexKey, key);
                             addKeyToIndex(indexDb, newIndexKey, key);
                         }
