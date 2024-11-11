@@ -15,10 +15,6 @@ public final class MapDb {
     private static final ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
 
     private MapDb() {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            Logger.info("JVM shutting down. Closing all MapDb instances.");
-            closeAllDbs();
-        }));
     }
 
     public static final MapDb MAP_DB = new MapDb();
@@ -73,7 +69,8 @@ public final class MapDb {
         }
     }
 
-    private synchronized void closeAllDbs() {
+    public synchronized void closeAllDbs() {
+        Logger.info("Closing all MapDb instances.");
         for (final String filePath : INSTANCES.keySet()) {
             closeDb(filePath);
         }

@@ -28,10 +28,6 @@ public final class ChronicleDb {
     private static final ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
 
     private ChronicleDb() {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            Logger.info("JVM shutting down. Closing all ChronicleMap instances.");
-            closeAllDbs();
-        }));
     }
 
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
@@ -104,7 +100,8 @@ public final class ChronicleDb {
         }
     }
 
-    private synchronized void closeAllDbs() {
+    public synchronized void closeAllDbs() {
+        Logger.info("Closing all ChronicleMap instances.");
         for (final String filePath : INSTANCES.keySet()) {
             closeDb(filePath);
         }
