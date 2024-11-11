@@ -375,7 +375,7 @@ public final class ChronicleUtils {
         final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
 
         synchronized (lock) {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+            var indexDbOpened = false;
             try {
                 for (final var key : values.keySet()) {
                     final V newValue = values.get(key);
@@ -388,7 +388,9 @@ public final class ChronicleUtils {
                             newIndexKey = Objects.toString(newIndexKey, "null");
 
                         Logger.info("Adding new index {} on {} at {}.", newIndexKey, file, dataPath);
+                        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
                         addKeyToIndex(indexDb, newIndexKey, key);
+                        indexDbOpened = true;
                     } else {
                         var prevIndexKey = field.get(prevValue);
                         if (!Objects.equals(newIndexKey, prevIndexKey)) {
@@ -405,8 +407,10 @@ public final class ChronicleUtils {
 
                             Logger.info("Updating index {} to {} on {} at {}.", prevIndexKey, newIndexKey, file,
                                     dataPath);
+                            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
                             removeKeyFromIndex(indexDb, prevIndexKey, key);
                             addKeyToIndex(indexDb, newIndexKey, key);
+                            indexDbOpened = true;
                         }
                     }
 
@@ -415,7 +419,9 @@ public final class ChronicleUtils {
                 Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
                 deleteFileIfExists(indexPath);
             } finally {
-                MAP_DB.closeDb(indexPath);
+                if (indexDbOpened) {
+                    MAP_DB.closeDb(indexPath);
+                }
             }
         }
     }
