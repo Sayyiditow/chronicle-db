@@ -60,7 +60,7 @@ public final class ChronicleUtils {
     }
 
     public static void runInPlatformThreadPool(final List<Runnable> runnableList, final String threadpoolId) {
-        final ExecutorService executorService = Executors.newFixedThreadPool(4);
+        final ExecutorService executorService = Executors.newFixedThreadPool(2);
         Logger.info("Starting Threadpool: {} with {} tasks.", threadpoolId, runnableList.size());
         runnableList.forEach(r -> executorService.execute(r));
         executorService.shutdown();
