@@ -413,7 +413,6 @@ public final class ChronicleUtils {
                             indexDbOpened = true;
                         }
                     }
-
                 }
             } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
                 Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
