@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
 import chronicle.db.dao.ChronicleDao;
@@ -196,16 +197,20 @@ public final class ChronicleDbJoinService {
                     .toString();
             final var objRecords = mapOfRecords.get(join.objDaoName());
             final var foreignObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
+            boolean mapDbOpen = false;
 
             try {
-                loopJoinToMap(MAP_DB.getDb(indexPath), objRecords, foreignObjRecords,
+                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                mapDbOpen = true;
+                loopJoinToMap(indexDb, objRecords, foreignObjRecords,
                         mapOfObjects.get(join.objDaoName()).get("name").toString(),
                         mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
                 toRemove.addAll(objRecords.keySet());
             } catch (final IllegalAccessException e) {
                 Logger.error("Error joining to map for {} and {}.", join.objDaoName(), join.foreignKeyObjDaoName());
             } finally {
-                MAP_DB.closeDb(indexPath);
+                if (mapDbOpen)
+                    MAP_DB.closeDb(indexPath);
             }
         }
 
@@ -352,7 +357,7 @@ public final class ChronicleDbJoinService {
      * @throws NoSuchFieldException
      * @throws ClassNotFoundException
      */
-    public CsvObject joinToCsv(final List<Join> joins)
+    public <K> CsvObject joinToCsv(final List<Join> joins)
             throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException, ClassNotFoundException, NoSuchFieldException, InstantiationException,
             IOException {
@@ -415,15 +420,19 @@ public final class ChronicleDbJoinService {
                 addHeaders(headerListB, foreignKeyObjName, headers, false, join.foreignKeyName(), false);
                 objectHeaderList.add(foreignKeyObjName);
             }
+            boolean mapDbOpen = false;
 
             try {
-                loopJoinToCsv(MAP_DB.getDb(indexPath), objRecords, foreignKeyObjRecords, rowList, indexMap,
+                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                mapDbOpen = true;
+                loopJoinToCsv(indexDb, objRecords, foreignKeyObjRecords, rowList, indexMap,
                         objSubsetLength, foreignKeyObjSubsetLength, headers.size(), join.isInnerJoin(),
                         join.foreignIsMainObject(), isObjectEmpty);
             } catch (IllegalAccessException | InvocationTargetException | NoSuchMethodException | SecurityException e) {
                 Logger.error("Error joining to csv for {} and {}.", join.objDaoName(), join.foreignKeyObjDaoName());
             } finally {
-                MAP_DB.closeDb(indexPath);
+                if (mapDbOpen)
+                    MAP_DB.closeDb(indexPath);
             }
         }
 

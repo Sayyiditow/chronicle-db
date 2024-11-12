@@ -22,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
+import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
 import com.jsoniter.spi.TypeLiteral;
@@ -327,12 +328,12 @@ public interface ChronicleDao<K, V> {
         }
 
         final var updated = db.keySet().removeAll(keys);
+        closeDb();
 
         if (updated) {
             Logger.info("Objects with keys {} deleted from {} at {}.", keys, name(), dataPath());
             CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), updatedMap);
         }
-        closeDb();
 
         return updated;
     }
@@ -549,9 +550,8 @@ public interface ChronicleDao<K, V> {
      * @param db     the map
      * @param search object search
      * @return a map of the fitting values
-     * @throws IOException
      */
-    default Map<K, V> search(final Map<K, V> db, final Search search) throws IOException {
+    default Map<K, V> search(final Map<K, V> db, final Search search) {
         Logger.info("Searching DB at {} for {}.", dataPath(), search);
         final Map<K, V> map = new HashMap<>();
 
@@ -572,10 +572,8 @@ public interface ChronicleDao<K, V> {
      * 
      * @param search object search
      * @return a map of the fitting values
-     * @throws IOException
      */
-    default Map<K, V> search(final Map<K, V> db, final Search search, final int limit)
-            throws IOException {
+    default Map<K, V> search(final Map<K, V> db, final Search search, final int limit) {
         Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final Map<K, V> map = new HashMap<>();
 
@@ -904,55 +902,72 @@ public interface ChronicleDao<K, V> {
     default Map<K, V> indexedSearch(final Search search) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
         final var db = getDb();
+        boolean mapDbOpen = false;
 
         try {
-            return indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
+            mapDbOpen = true;
+            return indexedSearch(search, db, indexDb);
         } catch (final IOException e) {
             CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
             return new HashMap<K, V>();
         } finally {
             closeDb();
-            MAP_DB.closeDb(indexFilePath);
+            if (mapDbOpen)
+                MAP_DB.closeDb(indexFilePath);
         }
     }
 
     default Map<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
         final var db = getDb();
+        boolean mapDbOpen = false;
 
         try {
-            return indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
+            mapDbOpen = true;
+            return indexedSearch(search, db, indexDb, limit);
         } catch (final IOException e) {
             CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
             return new HashMap<K, V>();
         } finally {
             closeDb();
-            MAP_DB.closeDb(indexFilePath);
+            if (mapDbOpen)
+                MAP_DB.closeDb(indexFilePath);
         }
     }
 
     default Map<K, V> indexedSearch(final Map<K, V> db, final Search search) {
         final var indexFilePath = getIndexPath(search.field());
+        boolean mapDbOpen = false;
 
         try {
-            return indexedSearch(search, db, MAP_DB.getDb(indexFilePath));
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
+            mapDbOpen = true;
+            return indexedSearch(search, db, indexDb);
         } catch (final IOException e) {
             CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
             return new HashMap<K, V>();
         } finally {
-            MAP_DB.closeDb(indexFilePath);
+            if (mapDbOpen)
+                MAP_DB.closeDb(indexFilePath);
         }
     }
 
     default Map<K, V> indexedSearch(final Map<K, V> db, final Search search, final int limit) {
         final var indexFilePath = getIndexPath(search.field());
+        boolean mapDbOpen = false;
+
         try {
-            return indexedSearch(search, db, MAP_DB.getDb(indexFilePath), limit);
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
+            mapDbOpen = true;
+            return indexedSearch(search, db, indexDb, limit);
         } catch (final IOException e) {
             CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
             return new HashMap<K, V>();
         } finally {
-            MAP_DB.closeDb(indexFilePath);
+            if (mapDbOpen)
+                MAP_DB.closeDb(indexFilePath);
         }
     }
 
