@@ -21,9 +21,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -57,19 +54,6 @@ public final class ChronicleUtils {
 
     public void indexedSearchErrorLog(final String name, final String path) {
         Logger.error("Error running indexed search for object {}  at {}. {}", name, path);
-    }
-
-    public static void runInPlatformThreadPool(final List<Runnable> runnableList, final String threadpoolId) {
-        final ExecutorService executorService = Executors.newFixedThreadPool(2);
-        Logger.info("Starting Threadpool: {} with {} tasks.", threadpoolId, runnableList.size());
-        runnableList.forEach(r -> executorService.execute(r));
-        executorService.shutdown();
-        try {
-            executorService.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
-            Logger.info("Threadpool: {} successfully shutdown.", threadpoolId);
-        } catch (final InterruptedException e) {
-            Logger.error("Threadpool: {} could not terminate. {}", threadpoolId, e);
-        }
     }
 
     /**
@@ -354,12 +338,9 @@ public final class ChronicleUtils {
      */
     public <K, V> void removeFromIndex(final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values) {
-        final var runnables = new ArrayList<Runnable>();
         for (final var file : indexFileNames) {
-            runnables.add(() -> removeFromIndex(dbName, dataPath, values, file));
+            removeFromIndex(dbName, dataPath, values, file);
         }
-
-        runInPlatformThreadPool(runnables, "Remove Index Threadpool - " + dataPath);
     }
 
     private <K> void addKeyToIndex(final HTreeMap<Object, List<K>> indexDb, final Object indexKey, final K key) {
@@ -436,12 +417,9 @@ public final class ChronicleUtils {
      */
     public <K, V> void updateIndex(final String dbName, final String dataPath,
             final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues) {
-        final var runnables = new ArrayList<Runnable>();
         for (final var file : indexFileNames) {
-            runnables.add(() -> updateIndex(dbName, dataPath, values, file, previousValues));
+            updateIndex(dbName, dataPath, values, file, previousValues);
         }
-
-        runInPlatformThreadPool(runnables, "Update Index Threadpool - " + dataPath);
     }
 
     /**
