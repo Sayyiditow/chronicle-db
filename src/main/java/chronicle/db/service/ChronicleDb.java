@@ -28,6 +28,7 @@ public final class ChronicleDb {
     private static final ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
 
     private ChronicleDb() {
+        Runtime.getRuntime().addShutdownHook(new Thread(this::closeAllDbs));
     }
 
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();

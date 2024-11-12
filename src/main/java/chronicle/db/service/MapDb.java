@@ -15,6 +15,7 @@ public final class MapDb {
     private static final ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
 
     private MapDb() {
+        Runtime.getRuntime().addShutdownHook(new Thread(this::closeAllDbs));
     }
 
     public static final MapDb MAP_DB = new MapDb();
