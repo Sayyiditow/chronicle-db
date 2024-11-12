@@ -52,10 +52,6 @@ public final class ChronicleUtils {
         Logger.info("Object with key {} deleted from {} at {}.", key, name, path);
     }
 
-    public void indexedSearchErrorLog(final String name, final String path) {
-        Logger.error("Error running indexed search for object {}  at {}. {}", name, path);
-    }
-
     /**
      * Retrieve a list of files in a dirPath and throw an exception is dirPath is
      * null

@@ -653,11 +653,10 @@ public interface ChronicleDao<K, V> {
      * @param search the Search object
      * @param db
      * @param index
-     * @throws IOException
      */
     @SuppressWarnings("unchecked")
     private Map<K, V> indexedSearch(final Search search, final Map<K, V> db,
-            final Map<Object, List<K>> index) throws IOException {
+            final Map<Object, List<K>> index) {
         Logger.info("Index searching DB at {} for {}.", dataPath(), search);
         final var match = new HashMap<K, V>();
         if (index != null) {
@@ -780,11 +779,10 @@ public interface ChronicleDao<K, V> {
      * @param db
      * @param index
      * @param limit
-     * @throws IOException
      */
     @SuppressWarnings("unchecked")
-    private Map<K, V> indexedSearch(final Search search, final Map<K, V> db,
-            final Map<Object, List<K>> index, final int limit) throws IOException {
+    private Map<K, V> indexedSearch(final Search search, final Map<K, V> db, final Map<Object, List<K>> index,
+            final int limit) {
         Logger.info("Index searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final var match = new HashMap<K, V>();
         if (index != null) {
@@ -908,9 +906,6 @@ public interface ChronicleDao<K, V> {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
             mapDbOpen = true;
             return indexedSearch(search, db, indexDb);
-        } catch (final IOException e) {
-            CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
-            return new HashMap<K, V>();
         } finally {
             closeDb();
             if (mapDbOpen)
@@ -927,9 +922,6 @@ public interface ChronicleDao<K, V> {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
             mapDbOpen = true;
             return indexedSearch(search, db, indexDb, limit);
-        } catch (final IOException e) {
-            CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
-            return new HashMap<K, V>();
         } finally {
             closeDb();
             if (mapDbOpen)
@@ -945,9 +937,6 @@ public interface ChronicleDao<K, V> {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
             mapDbOpen = true;
             return indexedSearch(search, db, indexDb);
-        } catch (final IOException e) {
-            CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
-            return new HashMap<K, V>();
         } finally {
             if (mapDbOpen)
                 MAP_DB.closeDb(indexFilePath);
@@ -962,9 +951,6 @@ public interface ChronicleDao<K, V> {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
             mapDbOpen = true;
             return indexedSearch(search, db, indexDb, limit);
-        } catch (final IOException e) {
-            CHRONICLE_UTILS.indexedSearchErrorLog(name(), dataPath());
-            return new HashMap<K, V>();
         } finally {
             if (mapDbOpen)
                 MAP_DB.closeDb(indexFilePath);
