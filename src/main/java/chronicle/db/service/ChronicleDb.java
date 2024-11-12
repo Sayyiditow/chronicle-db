@@ -101,13 +101,14 @@ public final class ChronicleDb {
         }
     }
 
-    public synchronized void closeAllDbs() {
+    private synchronized void closeAllDbs() {
         Logger.info("Closing all ChronicleMap instances.");
         for (final String filePath : INSTANCES.keySet()) {
-            closeDb(filePath);
+            final var db = INSTANCES.get(filePath);
+            if (db != null) {
+                db.close();
+            }
         }
-        INSTANCES.clear();
-        REF_COUNTS.clear();
     }
 
     /**

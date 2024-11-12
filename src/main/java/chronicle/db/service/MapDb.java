@@ -70,12 +70,14 @@ public final class MapDb {
         }
     }
 
-    public synchronized void closeAllDbs() {
+    private synchronized void closeAllDbs() {
         Logger.info("Closing all MapDb instances.");
         for (final String filePath : INSTANCES.keySet()) {
-            closeDb(filePath);
+            // Close db no matter how many ref counts exist
+            final var db = INSTANCES.get(filePath);
+            if (db != null) {
+                db.close();
+            }
         }
-        INSTANCES.clear();
-        REF_COUNTS.clear();
     }
 }
