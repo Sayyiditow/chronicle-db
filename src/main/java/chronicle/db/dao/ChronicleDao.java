@@ -174,15 +174,6 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Close db object
-     * 
-     * @throws IOException
-     */
-    private void closeDb() {
-        CHRONICLE_DB.closeDb(dataPath() + DATA_DIR + DATA_FILE);
-    }
-
-    /**
      * Only runs to initialize an index on the field first time
      * 
      * @param field the field of the V value object
@@ -250,7 +241,7 @@ public interface ChronicleDao<K, V> {
         Logger.info("Fetching all data at {}.", dataPath());
         final ChronicleMap<K, V> db = getDb();
         final Map<K, V> map = new HashMap<>(db);
-        closeDb();
+        db.close();
         return map;
     }
 
@@ -265,7 +256,7 @@ public interface ChronicleDao<K, V> {
         final var db = getDb();
         CHRONICLE_UTILS.getLog(name(), key, dataPath());
         final V value = db.getUsing(key, using());
-        closeDb();
+        db.close();
         return value;
     }
 
@@ -282,10 +273,10 @@ public interface ChronicleDao<K, V> {
         final var db = getDb();
         for (final K key : keys) {
             final V value = db.getUsing(key, using());
-            if (Objects.nonNull(value))
+            if (value != null)
                 map.put(key, value);
         }
-        closeDb();
+        db.close();
         return map;
     }
 
@@ -299,8 +290,12 @@ public interface ChronicleDao<K, V> {
     default boolean delete(final K key) throws IOException {
         final var db = getDb();
         CHRONICLE_UTILS.deleteLog(name(), key, dataPath());
-        final V value = db.remove(key);
-        closeDb();
+        V value = null;
+        try {
+            value = db.remove(key);
+        } finally {
+            db.close();
+        }
 
         if (value != null) {
             CHRONICLE_UTILS.successDeleteLog(name(), key, dataPath());
@@ -322,13 +317,17 @@ public interface ChronicleDao<K, V> {
         Logger.info("Deleting multiple values from {} using keys {} at {}.", name(), keys, dataPath());
         final var db = getDb();
         Map<K, V> updatedMap = new HashMap<>();
+        var updated = false;
 
         if (containsIndexes()) {
             updatedMap = get(keys);
         }
 
-        final var updated = db.keySet().removeAll(keys);
-        closeDb();
+        try {
+            updated = db.keySet().removeAll(keys);
+        } finally {
+            db.close();
+        }
 
         if (updated) {
             Logger.info("Objects with keys {} deleted from {} at {}.", keys, name(), dataPath());
@@ -354,10 +353,10 @@ public interface ChronicleDao<K, V> {
         final var newDb = CHRONICLE_DB.getDb(name(), newSize, averageKey(), averageValue(), tempDataFilePath,
                 bloatFactor());
         newDb.putAll(db);
-        closeDb();
+        db.close();
         Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
         Files.move(Path.of(tempDataFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
-        CHRONICLE_DB.closeDb(tempDataFilePath);
+        newDb.close();
     }
 
     /**
@@ -383,8 +382,14 @@ public interface ChronicleDao<K, V> {
                 }
             }
         }
-        final V prevValue = db.put(key, value);
-        closeDb();
+
+        V prevValue = null;
+        try {
+            prevValue = db.put(key, value);
+        } finally {
+            db.close();
+        }
+
         final var updated = prevValue != null;
         final var prevValueMap = new HashMap<K, V>(1);
         if (updated) {
@@ -418,8 +423,13 @@ public interface ChronicleDao<K, V> {
     default PutStatus update(final K key, final V value, final List<String> indexFileNames)
             throws IOException {
         final var db = getDb();
-        final V prevValue = db.put(key, value);
-        closeDb();
+        V prevValue = null;
+        try {
+            prevValue = db.put(key, value);
+        } finally {
+            db.close();
+        }
+
         final var prevValueMap = new HashMap<K, V>(1);
         prevValueMap.put(key, prevValue);
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), prevValueMap);
@@ -478,13 +488,16 @@ public interface ChronicleDao<K, V> {
             }
         }
 
-        for (final var entry : map.entrySet()) {
-            final K key = entry.getKey();
-            final V updated = db.put(key, entry.getValue());
-            if (updated != null)
-                prevValues.put(key, updated);
+        try {
+            for (final var entry : map.entrySet()) {
+                final K key = entry.getKey();
+                final V updated = db.put(key, entry.getValue());
+                if (updated != null)
+                    prevValues.put(key, updated);
+            }
+        } finally {
+            db.close();
         }
-        closeDb();
 
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
     }
@@ -506,11 +519,14 @@ public interface ChronicleDao<K, V> {
         final var db = getDb();
         final var prevValues = new HashMap<K, V>(map.size());
 
-        for (final var entry : map.entrySet()) {
-            final K key = entry.getKey();
-            prevValues.put(key, db.put(key, entry.getValue()));
+        try {
+            for (final var entry : map.entrySet()) {
+                final K key = entry.getKey();
+                prevValues.put(key, db.put(key, entry.getValue()));
+            }
+        } finally {
+            db.close();
         }
-        closeDb();
 
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
     }
@@ -540,8 +556,12 @@ public interface ChronicleDao<K, V> {
                 }
             }
         }
-        db.putAll(map);
-        closeDb();
+
+        try {
+            db.putAll(map);
+        } finally {
+            db.close();
+        }
     }
 
     /**
@@ -604,7 +624,7 @@ public interface ChronicleDao<K, V> {
         Logger.info("Searching DB at {} for {}.", dataPath(), search);
         final var db = getDb();
         final Map<K, V> map = search(db, search);
-        closeDb();
+        db.close();
         return map;
     }
 
@@ -619,7 +639,7 @@ public interface ChronicleDao<K, V> {
         Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final var db = getDb();
         final Map<K, V> map = search(db, search, limit);
-        closeDb();
+        db.close();
         return map;
     }
 
@@ -900,60 +920,48 @@ public interface ChronicleDao<K, V> {
     default Map<K, V> indexedSearch(final Search search) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
         final var db = getDb();
-        boolean mapDbOpen = false;
 
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
         try {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
-            mapDbOpen = true;
             return indexedSearch(search, db, indexDb);
         } finally {
-            closeDb();
-            if (mapDbOpen)
-                MAP_DB.closeDb(indexFilePath);
+            db.close();
+            indexDb.close();
         }
     }
 
     default Map<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
         final var db = getDb();
-        boolean mapDbOpen = false;
 
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
         try {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
-            mapDbOpen = true;
             return indexedSearch(search, db, indexDb, limit);
         } finally {
-            closeDb();
-            if (mapDbOpen)
-                MAP_DB.closeDb(indexFilePath);
+            db.close();
+            indexDb.close();
         }
     }
 
     default Map<K, V> indexedSearch(final Map<K, V> db, final Search search) {
         final var indexFilePath = getIndexPath(search.field());
-        boolean mapDbOpen = false;
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
 
         try {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
-            mapDbOpen = true;
             return indexedSearch(search, db, indexDb);
         } finally {
-            if (mapDbOpen)
-                MAP_DB.closeDb(indexFilePath);
+            indexDb.close();
         }
     }
 
     default Map<K, V> indexedSearch(final Map<K, V> db, final Search search, final int limit) {
         final var indexFilePath = getIndexPath(search.field());
-        boolean mapDbOpen = false;
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
 
         try {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
-            mapDbOpen = true;
             return indexedSearch(search, db, indexDb, limit);
         } finally {
-            if (mapDbOpen)
-                MAP_DB.closeDb(indexFilePath);
+            indexDb.close();
         }
     }
 
@@ -985,7 +993,7 @@ public interface ChronicleDao<K, V> {
         Logger.info("Getting DB size at {}.", dataPath());
         final var db = getDb();
         final var size = db.size();
-        closeDb();
+        db.close();
         return size;
     }
 
@@ -993,7 +1001,7 @@ public interface ChronicleDao<K, V> {
         Logger.info("Truncating database at {}.", dataPath());
         final var db = getDb();
         db.clear();
-        closeDb();
+        db.close();
     }
 
     default void deleteDataFiles() throws IOException {
@@ -1003,7 +1011,7 @@ public interface ChronicleDao<K, V> {
     default boolean exists(final K key) throws IOException {
         final var db = getDb();
         final var exists = db.containsKey(key);
-        closeDb();
+        db.close();
         return exists;
     }
 }

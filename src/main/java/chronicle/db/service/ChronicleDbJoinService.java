@@ -197,11 +197,9 @@ public final class ChronicleDbJoinService {
                     .toString();
             final var objRecords = mapOfRecords.get(join.objDaoName());
             final var foreignObjRecords = mapOfRecords.get(join.foreignKeyObjDaoName());
-            boolean mapDbOpen = false;
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
 
             try {
-                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                mapDbOpen = true;
                 loopJoinToMap(indexDb, objRecords, foreignObjRecords,
                         mapOfObjects.get(join.objDaoName()).get("name").toString(),
                         mapOfObjects.get(join.foreignKeyObjDaoName()).get("name").toString(), joinedMap);
@@ -209,8 +207,7 @@ public final class ChronicleDbJoinService {
             } catch (final IllegalAccessException e) {
                 Logger.error("Error joining to map for {} and {}.", join.objDaoName(), join.foreignKeyObjDaoName());
             } finally {
-                if (mapDbOpen)
-                    MAP_DB.closeDb(indexPath);
+                indexDb.close();
             }
         }
 
@@ -420,19 +417,16 @@ public final class ChronicleDbJoinService {
                 addHeaders(headerListB, foreignKeyObjName, headers, false, join.foreignKeyName(), false);
                 objectHeaderList.add(foreignKeyObjName);
             }
-            boolean mapDbOpen = false;
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
 
             try {
-                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                mapDbOpen = true;
                 loopJoinToCsv(indexDb, objRecords, foreignKeyObjRecords, rowList, indexMap,
                         objSubsetLength, foreignKeyObjSubsetLength, headers.size(), join.isInnerJoin(),
                         join.foreignIsMainObject(), isObjectEmpty);
             } catch (IllegalAccessException | InvocationTargetException | NoSuchMethodException | SecurityException e) {
                 Logger.error("Error joining to csv for {} and {}.", join.objDaoName(), join.foreignKeyObjDaoName());
             } finally {
-                if (mapDbOpen)
-                    MAP_DB.closeDb(indexPath);
+                indexDb.close();
             }
         }
 

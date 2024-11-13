@@ -8,8 +8,6 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 import org.tinylog.Logger;
 
@@ -23,14 +21,6 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
  */
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
-    private static final ConcurrentMap<String, ChronicleMap> INSTANCES = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, Integer> REF_COUNTS = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
-
-    private ChronicleDb() {
-        Runtime.getRuntime().addShutdownHook(new Thread(this::closeAllDbs));
-    }
-
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
 
     /**
@@ -47,68 +37,18 @@ public final class ChronicleDb {
     public <K, V> ChronicleMap<K, V> getDb(final String name, final long entries,
             final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
             throws IOException {
-        final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
+        Logger.info("Opening ChronicleMap at: {}", filePath);
+        final File file = new File(filePath);
+        final Class<K> keyClass = (Class<K>) averageKey.getClass();
+        final Class<V> valueClass = (Class<V>) averageValue.getClass();
 
-        synchronized (lock) {
-            var db = INSTANCES.get(filePath);
-            if (db == null) {
-                Logger.info("Opening ChronicleMap at: {}", filePath);
-                final File file = new File(filePath);
-                final Class<K> keyClass = (Class<K>) averageKey.getClass();
-                final Class<V> valueClass = (Class<V>) averageValue.getClass();
-
-                if (file.exists()) {
-                    db = ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor)
-                            .createPersistedTo(file);
-                } else {
-                    db = ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
-                            .averageValue(averageValue).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
-                }
-
-                INSTANCES.put(filePath, db);
-                REF_COUNTS.put(filePath, 1);
-                return db;
-            } else {
-                REF_COUNTS.put(filePath, REF_COUNTS.get(filePath) + 1);
-                return db;
-            }
+        if (file.exists()) {
+            return ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor)
+                    .createPersistedTo(file);
         }
-    }
 
-    /**
-     * Used to gracefully shutdown an open db file
-     * 
-     * @param filePath the path to the file to close
-     */
-    public void closeDb(final String filePath) {
-        final Object lock = LOCKS.computeIfAbsent(filePath, k -> new Object());
-        synchronized (lock) {
-            var refCount = REF_COUNTS.get(filePath);
-            if (refCount != null) {
-                refCount--;
-                REF_COUNTS.put(filePath, refCount);
-
-                if (refCount == 0) {
-                    Logger.info("Closing ChronicleMap at: {}", filePath);
-                    final var db = INSTANCES.get(filePath);
-                    if (db != null) {
-                        db.close();
-                        REF_COUNTS.remove(filePath);
-                        INSTANCES.remove(filePath);
-                    }
-                }
-            }
-        }
-    }
-
-    private synchronized void closeAllDbs() {
-        Logger.info("Closing all ChronicleMap instances.");
-        for (final String filePath : INSTANCES.keySet()) {
-            final var db = INSTANCES.get(filePath);
-            if (db != null) {
-                db.close();
-            }
-        }
+        return ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
+                .averageValue(averageValue).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
     }
 
     /**

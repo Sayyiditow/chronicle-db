@@ -10,6 +10,7 @@ import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -26,6 +27,10 @@ import java.util.stream.Stream;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
+
+import com.jsoniter.JsonIterator;
+import com.jsoniter.output.JsonStream;
+import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Search;
@@ -50,6 +55,23 @@ public final class ChronicleUtils {
 
     public <K> void successDeleteLog(final String name, final K key, final String path) {
         Logger.info("Object with key {} deleted from {} at {}.", key, name, path);
+    }
+
+    public <T> String toJsonFromObj(final T prop) {
+        return JsonStream.serialize(prop);
+    }
+
+    public <T> void toJsonFileFromObj(final String path, final T prop) throws IOException {
+        Files.writeString(Path.of(path), toJsonFromObj(prop), StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.CREATE);
+    }
+
+    public <T> T fromJsonToObj(final String json, final TypeLiteral<T> typeLiteral) {
+        return JsonIterator.deserialize(json, typeLiteral);
+    }
+
+    public <T> T fromJsonFileToObj(final String path, final TypeLiteral<T> typeLiteral) throws IOException {
+        return JsonIterator.deserialize(Files.readAllBytes(Path.of(path)), typeLiteral);
     }
 
     /**
@@ -274,14 +296,12 @@ public final class ChronicleUtils {
         for (final var entry : fieldIndexMap.entrySet()) {
             final var indexPath = indexDirPath + "/" + entry.getKey();
             final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
+
             synchronized (lock) {
-                boolean mapDbOpen = false;
                 deleteFileIfExists(indexPath);
                 final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                mapDbOpen = true;
                 indexDb.putAll(entry.getValue());
-                if (mapDbOpen)
-                    MAP_DB.closeDb(indexPath);
+                indexDb.close();
             }
 
         }
@@ -302,12 +322,10 @@ public final class ChronicleUtils {
             final String file) {
         final var indexPath = dataPath + "/indexes/" + file;
         final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
-        boolean mapDbOpen = false;
 
         synchronized (lock) {
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
-                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                mapDbOpen = true;
                 Logger.info("Removing from index {} at {}.", file, dataPath);
                 for (final var entry : values.entrySet()) {
                     final V value = entry.getValue();
@@ -322,8 +340,7 @@ public final class ChronicleUtils {
                         e);
                 deleteFileIfExists(indexPath);
             } finally {
-                if (mapDbOpen)
-                    MAP_DB.closeDb(indexPath);
+                indexDb.close();
             }
         }
     }
@@ -358,7 +375,7 @@ public final class ChronicleUtils {
         final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
 
         synchronized (lock) {
-            boolean mapDbOpen = false;
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
                 for (final var key : values.keySet()) {
                     final V newValue = values.get(key);
@@ -371,8 +388,6 @@ public final class ChronicleUtils {
                             newIndexKey = Objects.toString(newIndexKey, "null");
 
                         Logger.info("Adding new index {} on {} at {}.", newIndexKey, file, dataPath);
-                        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                        mapDbOpen = true;
                         addKeyToIndex(indexDb, newIndexKey, key);
                     } else {
                         var prevIndexKey = field.get(prevValue);
@@ -390,8 +405,6 @@ public final class ChronicleUtils {
 
                             Logger.info("Updating index {} to {} on {} at {}.", prevIndexKey, newIndexKey, file,
                                     dataPath);
-                            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                            mapDbOpen = true;
                             removeKeyFromIndex(indexDb, prevIndexKey, key);
                             addKeyToIndex(indexDb, newIndexKey, key);
                         }
@@ -401,8 +414,7 @@ public final class ChronicleUtils {
                 Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
                 deleteFileIfExists(indexPath);
             } finally {
-                if (mapDbOpen)
-                    MAP_DB.closeDb(indexPath);
+                indexDb.close();
             }
         }
     }
