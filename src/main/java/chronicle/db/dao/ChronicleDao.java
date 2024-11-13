@@ -454,7 +454,7 @@ public interface ChronicleDao<K, V> {
     private int getInsertSize(final ChronicleMap<K, V> db, final Map<K, V> map) {
         var insertSize = 0;
         for (final var key : map.keySet()) {
-            if (db.containsKey(key)) {
+            if (!db.containsKey(key)) {
                 insertSize += 1;
             }
         }
