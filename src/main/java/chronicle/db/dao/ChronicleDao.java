@@ -345,7 +345,7 @@ public interface ChronicleDao<K, V> {
      * @return
      * @throws IOException
      */
-    private void createNewDb(final ChronicleMap<K, V> db) throws IOException {
+    private ChronicleMap<K, V> createNewDb(final ChronicleMap<K, V> db) throws IOException {
         Logger.info("Increasing entry size on db {}.", name());
         final var dataFilePath = dataPath() + DATA_DIR + DATA_FILE;
         final var backupDataFilePath = dataPath() + BACKUP_DIR + DATA_FILE;
@@ -357,7 +357,7 @@ public interface ChronicleDao<K, V> {
         db.close();
         Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
         Files.move(Path.of(tempDataFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
-        newDb.close();
+        return newDb;
     }
 
     /**
@@ -378,8 +378,7 @@ public interface ChronicleDao<K, V> {
             final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
             synchronized (lock) {
                 if (db.size() != 0 && db.size() % entries() == 0) {
-                    createNewDb(db);
-                    db = getDb();
+                    db = createNewDb(db);
                 }
             }
         }
@@ -482,9 +481,10 @@ public interface ChronicleDao<K, V> {
         if (insertSize > 0) {
             final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
             synchronized (lock) {
-                if (db.size() + insertSize > entries()) {
-                    createNewDb(db);
-                    db = getDb();
+                final var currentDividedSize = db.size() / entries();
+                if (currentDividedSize != 0
+                        && (db.size() - (currentDividedSize * entries()) + insertSize >= entries())) {
+                    db = createNewDb(db);
                 }
             }
         }
@@ -551,9 +551,10 @@ public interface ChronicleDao<K, V> {
         if (insertSize > 0) {
             final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
             synchronized (lock) {
-                if (db.size() + insertSize > entries()) {
-                    createNewDb(db);
-                    db = getDb();
+                final var currentDividedSize = db.size() / entries();
+                if (currentDividedSize != 0
+                        && (db.size() - (currentDividedSize * entries()) + insertSize >= entries())) {
+                    db = createNewDb(db);
                 }
             }
         }
