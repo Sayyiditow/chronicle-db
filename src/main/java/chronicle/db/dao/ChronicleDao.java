@@ -192,7 +192,8 @@ public interface ChronicleDao<K, V> {
      */
     default void refreshIndexes() throws IOException {
         Logger.info("Re-initializing indexes at {}.", dataPath());
-        initIndex(deleteIndexes());
+        final var indexFiles = indexFileNames();
+        initIndex(indexFiles.toArray(new String[indexFiles.size()]));
     }
 
     /**
