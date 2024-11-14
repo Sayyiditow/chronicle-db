@@ -388,6 +388,7 @@ public interface ChronicleDao<K, V> {
 
         synchronized (lock) {
             final long currentEntrySize = getCurrentEntrySize(db);
+            Logger.info("Checking entry size on db {}.", dataPath());
             if (db.size() >= currentEntrySize) {
                 final var newSize = currentEntrySize + entries();
                 Logger.info("Increasing entry size on db {} from {} to {}.", dataPath(), currentEntrySize, newSize);
