@@ -52,7 +52,7 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Max entries per file for multiple mode, intiial size for single mode.
+     * Everage entries per file, resize when required
      */
     long entries();
 
@@ -161,6 +161,15 @@ public interface ChronicleDao<K, V> {
      */
     default String getIndexPath(final String field) {
         return dataPath() + INDEX_DIR + field;
+    }
+
+    /**
+     * Create db by dynamic entry size from file and not from the java
+     */
+    default void createDbWithEntrySize() throws IOException {
+        final var newDb = CHRONICLE_DB.getDb(name(), getCurrentEntrySize(), averageKey(), averageValue(),
+                dataPath() + DATA_DIR + DATA_FILE, bloatFactor());
+        newDb.close();
     }
 
     /**
@@ -337,6 +346,10 @@ public interface ChronicleDao<K, V> {
         }
 
         return updated;
+    }
+
+    private long getCurrentEntrySize() throws NumberFormatException, IOException {
+        return Long.valueOf(Files.readString(Path.of(dataPath() + DATA_DIR + ENTRY_SIZE_FILE)));
     }
 
     private long getCurrentEntrySize(final ChronicleMap<K, V> db) {
@@ -555,6 +568,23 @@ public interface ChronicleDao<K, V> {
         }
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
+        final var db = getDb();
+
+        try {
+            db.putAll(map);
+        } finally {
+            db.close();
+        }
+    }
+
+    /**
+     * Migrate all records
+     * 
+     * @param map the map to add
+     * @throws IOException
+     */
+    default void migrate(final Map<K, V> map) throws IOException {
+        Logger.info("Migrating values into {} at {}.", name(), dataPath());
         final var db = getDb();
 
         try {
