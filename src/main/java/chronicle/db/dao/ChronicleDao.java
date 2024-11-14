@@ -5,6 +5,7 @@ import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,7 +41,7 @@ import net.openhft.chronicle.map.ChronicleMap;
 public interface ChronicleDao<K, V> {
     ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
-            DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery";
+            DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize";
     String[] dbDirs = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
 
     /**
@@ -338,26 +339,71 @@ public interface ChronicleDao<K, V> {
         return updated;
     }
 
+    private long getCurrentEntrySize(final ChronicleMap<K, V> db) {
+        final var entrySizeFile = new File(dataPath() + DATA_DIR + ENTRY_SIZE_FILE);
+        final var path = entrySizeFile.toPath();
+        final long divided = (db.size() / entries());
+        final long currentEntrySize = entries() * (divided == 0 ? 1 : divided);
+
+        if (!entrySizeFile.exists()) {
+            try {
+                Files.createFile(path);
+                Files.writeString(path, String.valueOf(currentEntrySize));
+            } catch (final IOException e) {
+                Logger.error("Could not create entry size file for {}.", dataPath());
+                return currentEntrySize;
+            }
+        }
+
+        try {
+            return Long.valueOf(Files.readString(path));
+        } catch (NumberFormatException | IOException e) {
+            Logger.error("Could not read entry size file for {}.", dataPath());
+            try {
+                Files.writeString(path, String.valueOf(currentEntrySize));
+            } catch (final IOException e1) {
+            }
+            return currentEntrySize;
+        }
+    }
+
+    private void writeCurrentEntrySize(final long size) {
+        final var path = Path.of(dataPath() + DATA_DIR + ENTRY_SIZE_FILE);
+        try {
+            Files.writeString(path, String.valueOf(size));
+        } catch (final IOException e) {
+            Logger.error("Could not write current entry size for {}.", dataPath());
+        }
+    }
+
     /**
-     * Create a bigger file if size == entries
+     * Create a bigger file if size >= currentEntrySize
      * 
-     * @param db
      * @return
      * @throws IOException
      */
-    private ChronicleMap<K, V> createNewDb(final ChronicleMap<K, V> db) throws IOException {
-        Logger.info("Increasing entry size on db {}.", name());
-        final var dataFilePath = dataPath() + DATA_DIR + DATA_FILE;
-        final var backupDataFilePath = dataPath() + BACKUP_DIR + DATA_FILE;
-        final var tempDataFilePath = dataPath() + DATA_DIR + "data.tmp";
-        final var newSize = entries() * ((db.size() / entries()) + 1) + entries();
-        final var newDb = CHRONICLE_DB.getDb(name(), newSize, averageKey(), averageValue(), tempDataFilePath,
-                bloatFactor());
-        newDb.putAll(db);
-        db.close();
-        Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
-        Files.move(Path.of(tempDataFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
-        return newDb;
+    default void resizeDb() throws IOException {
+        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+        final var db = getDb();
+
+        synchronized (lock) {
+            final long currentEntrySize = getCurrentEntrySize(db);
+            if (db.size() >= currentEntrySize) {
+                final var newSize = currentEntrySize + entries();
+                Logger.info("Increasing entry size on db {} from {} to {}.", dataPath(), currentEntrySize, newSize);
+                final var dataFilePath = dataPath() + DATA_DIR + DATA_FILE;
+                final var backupDataFilePath = dataPath() + BACKUP_DIR + DATA_FILE;
+                final var tempDataFilePath = dataPath() + DATA_DIR + "data.tmp";
+                writeCurrentEntrySize(newSize);
+                final var newDb = CHRONICLE_DB.getDb(name(), newSize, averageKey(), averageValue(), tempDataFilePath,
+                        bloatFactor());
+                newDb.putAll(db);
+                db.close();
+                Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
+                Files.move(Path.of(tempDataFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
+                newDb.close();
+            }
+        }
     }
 
     /**
@@ -372,17 +418,7 @@ public interface ChronicleDao<K, V> {
             throws IOException {
         // create a bigger file if records in db are equal to multiple of entries()
         var status = PutStatus.INSERTED;
-        var db = getDb();
-        // only create new db if we are inserting a new record
-        if (!db.containsKey(key)) {
-            final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
-            synchronized (lock) {
-                if (db.size() != 0 && db.size() % entries() == 0) {
-                    db = createNewDb(db);
-                }
-            }
-        }
-
+        final var db = getDb();
         V prevValue = null;
         try {
             prevValue = db.put(key, value);
@@ -447,21 +483,6 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Get the size of inserts in mixed cases where the map
-     * to update has both new and old records
-     */
-    private int getInsertSize(final ChronicleMap<K, V> db, final Map<K, V> map) {
-        var insertSize = 0;
-        for (final var key : map.keySet()) {
-            if (!db.containsKey(key)) {
-                insertSize += 1;
-            }
-        }
-
-        return insertSize;
-    }
-
-    /**
      * Add/Update multiple values into the db, then update all indexes related
      * 
      * @param map the map to add
@@ -474,20 +495,8 @@ public interface ChronicleDao<K, V> {
         }
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
-        var db = getDb();
-        final var insertSize = getInsertSize(db, map);
-        final var prevValues = new HashMap<K, V>(map.size() - insertSize);
-
-        if (insertSize > 0) {
-            final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
-            synchronized (lock) {
-                final var currentDividedSize = db.size() / entries();
-                if (currentDividedSize != 0
-                        && (db.size() - (currentDividedSize * entries()) + insertSize >= entries())) {
-                    db = createNewDb(db);
-                }
-            }
-        }
+        final var db = getDb();
+        final var prevValues = new HashMap<K, V>(map.size());
 
         try {
             for (final var entry : map.entrySet()) {
@@ -545,19 +554,7 @@ public interface ChronicleDao<K, V> {
         }
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
-        var db = getDb();
-        final var insertSize = getInsertSize(db, map);
-
-        if (insertSize > 0) {
-            final Object lock = LOCKS.computeIfAbsent(name(), k -> new Object());
-            synchronized (lock) {
-                final var currentDividedSize = db.size() / entries();
-                if (currentDividedSize != 0
-                        && (db.size() - (currentDividedSize * entries()) + insertSize >= entries())) {
-                    db = createNewDb(db);
-                }
-            }
-        }
+        final var db = getDb();
 
         try {
             db.putAll(map);
