@@ -502,10 +502,10 @@ public interface ChronicleDao<K, V> {
      * @param map the map to add
      * @throws IOException
      */
-    default void put(final Map<K, V> map) throws IOException {
+    default PutStatus put(final Map<K, V> map) throws IOException {
         if (map.size() > entries()) {
             Logger.error("Insert size bigger than entry size.");
-            return;
+            return PutStatus.FAILED;
         }
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
@@ -524,6 +524,8 @@ public interface ChronicleDao<K, V> {
         }
 
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+
+        return PutStatus.INSERTED;
     }
 
     /**
@@ -533,10 +535,10 @@ public interface ChronicleDao<K, V> {
      * @param map the map to add
      * @throws IOException
      */
-    default void update(final Map<K, V> map) throws IOException {
+    default PutStatus update(final Map<K, V> map) throws IOException {
         if (map.size() > entries()) {
             Logger.error("Update size bigger than entry size.");
-            return;
+            return PutStatus.FAILED;
         }
 
         Logger.info("Updating multiple values into {} at {}.", name(), dataPath());
@@ -553,6 +555,8 @@ public interface ChronicleDao<K, V> {
         }
 
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+
+        return PutStatus.UPDATED;
     }
 
     /**
@@ -561,10 +565,10 @@ public interface ChronicleDao<K, V> {
      * @param map the map to add
      * @throws IOException
      */
-    default void putAll(final Map<K, V> map) throws IOException {
+    default PutStatus putAll(final Map<K, V> map) throws IOException {
         if (map.size() > entries()) {
             Logger.error("Insert size bigger than entry size.");
-            return;
+            return PutStatus.FAILED;
         }
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
@@ -575,6 +579,8 @@ public interface ChronicleDao<K, V> {
         } finally {
             db.close();
         }
+
+        return PutStatus.INSERTED;
     }
 
     /**
