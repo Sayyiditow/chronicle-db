@@ -1,8 +1,10 @@
 package chronicle.db.entity;
 
+import java.io.Serializable;
+
 import com.jsoniter.annotation.JsonCreator;
 
-public record Search(String field, SearchType searchType, Object searchTerm) {
+public record Search(String field, SearchType searchType, Object searchTerm) implements Serializable {
     public enum SearchType {
         EQUAL,
         NOT_EQUAL,
