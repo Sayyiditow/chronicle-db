@@ -420,6 +420,8 @@ public interface ChronicleDao<K, V> {
                 Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
                 Files.move(Path.of(tempDataFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
                 newDb.close();
+            } else {
+                db.close();
             }
         }
     }
