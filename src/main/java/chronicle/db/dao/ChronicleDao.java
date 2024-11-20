@@ -215,12 +215,16 @@ public interface ChronicleDao<K, V> {
     default void initDefaultIndexes(final String[] fields) throws IOException {
         if (!CHRONICLE_UTILS.getFileList(dataPath() + DATA_DIR).isEmpty()) {
             final var indexFiles = new HashSet<>(indexFileNames());
-            if (indexFiles.size() != fields.length) {
-                final var toIndex = Arrays.stream(fields).filter(field -> !indexFiles.contains(field))
-                        .collect(Collectors.toList());
 
-                if (!toIndex.isEmpty()) {
-                    initIndex(toIndex.toArray(new String[toIndex.size()]));
+            if (indexFiles.size() != fields.length) {
+                final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+                synchronized (lock) {
+                    final var toIndex = Arrays.stream(fields).filter(field -> !indexFiles.contains(field))
+                            .collect(Collectors.toList());
+
+                    if (!toIndex.isEmpty()) {
+                        initIndex(toIndex.toArray(new String[toIndex.size()]));
+                    }
                 }
             }
         }
