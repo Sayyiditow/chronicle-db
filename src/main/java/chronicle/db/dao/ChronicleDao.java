@@ -91,19 +91,23 @@ public interface ChronicleDao<K, V> {
         return 1;
     }
 
+    private void createDataDirs(final String dataPath) {
+        if (!Files.exists(Path.of(dataPath))) {
+            for (final String dir : dbDirs) {
+                try {
+                    Files.createDirectories(Path.of(dataPath + dir));
+                } catch (final IOException e) {
+                    Logger.error("Error on db directory creation for {}. {}.", dataPath, e.getMessage());
+                }
+            }
+        }
+    }
+
     /**
      * Create the folders required on init
      */
     default void createDataDirs() {
-        if (!Files.exists(Path.of(dataPath()))) {
-            for (final String dir : dbDirs) {
-                try {
-                    Files.createDirectories(Path.of(dataPath() + dir));
-                } catch (final IOException e) {
-                    Logger.error("Error on db directory creation for {}. {}.", dataPath(), e.getMessage());
-                }
-            }
-        }
+        createDataDirs(dataPath());
     }
 
     /**
@@ -190,9 +194,19 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      * 
      */
+    private void initIndex(final Map<K, V> db, final String[] fields, final String indexDirPath) throws IOException {
+        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), indexDirPath);
+    }
+
+    /**
+     * Only runs to initialize an index on the field first time
+     * 
+     * @param field the field of the V value object
+     * @throws IOException
+     * 
+     */
     default void initIndex(final String[] fields) throws IOException {
-        final var db = fetch();
-        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), dataPath() + INDEX_DIR);
+        initIndex(fetch(), fields, dataPath() + INDEX_DIR);
     }
 
     /**
@@ -293,6 +307,37 @@ public interface ChronicleDao<K, V> {
         }
         db.close();
         return map;
+    }
+
+    /**
+     * Archives data from the active object to speed up access
+     * The files/ will not be moved, only the data and indexes
+     * 
+     * @param folderName the arhive folder name - prefer monthly yyyyMM
+     * @param keys       the set of keys to move out from the main object
+     */
+    default void archive(final String folderName, final Set<K> keys) throws IOException {
+        final Map<K, V> values = get(keys);
+        final var archiveDataPath = dataPath().replace(name(), "") + folderName + "/" + name();
+        createDataDirs(archiveDataPath);
+        final var archiveDb = CHRONICLE_DB.getDb(name(), values.size(), averageKey(), averageValue(),
+                archiveDataPath + DATA_DIR + DATA_FILE, bloatFactor());
+        try {
+            archiveDb.putAll(values);
+            final var indexFiles = indexFileNames();
+            final var fields = indexFiles.toArray(new String[indexFiles.size()]);
+            initIndex(archiveDb, fields, archiveDataPath + INDEX_DIR);
+
+            for (final K key : keys) {
+                CHRONICLE_UTILS.moveDirContentsStartsWith(Path.of(dataPath() + FILES_DIR),
+                        Path.of(archiveDataPath + FILES_DIR), key.toString());
+            }
+
+            delete(archiveDb.keySet());
+            initIndex(fields);
+        } finally {
+            archiveDb.close();
+        }
     }
 
     /**
@@ -717,8 +762,7 @@ public interface ChronicleDao<K, V> {
      * @param index
      */
     @SuppressWarnings("unchecked")
-    private Map<K, V> indexedSearch(final Search search, final Map<K, V> db,
-            final Map<Object, List<K>> index) {
+    private Map<K, V> indexedSearch(final Search search, final Map<K, V> db, final Map<Object, List<K>> index) {
         Logger.info("Index searching DB at {} for {}.", dataPath(), search);
         final var match = new HashMap<K, V>();
         if (index != null) {

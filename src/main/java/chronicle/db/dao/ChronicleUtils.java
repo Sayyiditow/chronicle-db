@@ -1,6 +1,7 @@
 package chronicle.db.dao;
 
 import static chronicle.db.service.MapDb.MAP_DB;
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
@@ -261,15 +262,15 @@ public final class ChronicleUtils {
         final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>();
         final Map<String, Field> fieldMap = new HashMap<>();
         final var nonExistentFields = new HashMap<>();
-        Logger.info("Indexing {} db at {} for the following fields: {}.", dbName, dataPath, Arrays.toString(fields));
+        Logger.info("Indexing {} db at {} for : {}.", dbName, dataPath, Arrays.toString(fields));
 
         for (final var entry : db.entrySet()) {
             for (final var field : fields) {
-                if (!nonExistentFields.containsKey(nonExistentFields)) {
+                if (!nonExistentFields.containsKey(field)) {
                     final Field f = fieldMap.computeIfAbsent(field, k -> {
                         try {
                             return entry.getValue().getClass().getField(field);
-                        } catch (NoSuchFieldException | SecurityException e) {
+                        } catch (final NoSuchFieldException e) {
                             Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath,
                                     e.getMessage());
                             return null;
@@ -532,6 +533,21 @@ public final class ChronicleUtils {
         } catch (final IOException e) {
             Logger.info("No such file {}.", filePath);
         }
+    }
+
+    public void move(final Path source, final Path dest) {
+        try {
+            Files.move(source, dest, REPLACE_EXISTING);
+        } catch (final IOException e) {
+            Logger.error("Error moving from {}  to {}. {}", source, dest, e);
+        }
+    }
+
+    public void moveDirContentsStartsWith(final Path src, final Path dest, final String filePrefix)
+            throws IOException {
+        Files.walk(src).filter(path -> !path.equals(src))
+                .filter(path -> path.getFileName().toString().startsWith(filePrefix))
+                .forEach(source -> move(source, dest.resolve(src.relativize(source))));
     }
 
     public <T> T[] copyArray(final T[] prefix, final T[] toCopy) {
