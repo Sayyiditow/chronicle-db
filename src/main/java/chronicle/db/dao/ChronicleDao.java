@@ -491,9 +491,8 @@ public interface ChronicleDao<K, V> {
             db.close();
         }
 
-        final var updated = prevValue != null;
         final var prevValueMap = new HashMap<K, V>(1);
-        if (updated) {
+        if (prevValue != null) {
             prevValueMap.put(key, prevValue);
             status = PutStatus.UPDATED;
         }
