@@ -579,6 +579,26 @@ public interface ChronicleDao<K, V> {
         return PutStatus.INSERTED;
     }
 
+    default PutStatus put(final Map<K, V> map, final Map<K, V> prevValues) throws IOException {
+        if (map.size() > entries()) {
+            Logger.error("Insert size bigger than entry size.");
+            return PutStatus.FAILED;
+        }
+
+        Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
+        final var db = getDb();
+
+        try {
+            db.putAll(map);
+        } finally {
+            db.close();
+        }
+
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+
+        return PutStatus.INSERTED;
+    }
+
     /**
      * Update multiple values into the db, then update all indexes related
      * This is useful as it does not increase db size
