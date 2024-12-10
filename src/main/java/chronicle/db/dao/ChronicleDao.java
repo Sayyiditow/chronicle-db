@@ -565,10 +565,11 @@ public interface ChronicleDao<K, V> {
         try {
             for (final var entry : map.entrySet()) {
                 final K key = entry.getKey();
-                final V updated = db.put(key, entry.getValue());
-                if (updated != null)
-                    prevValues.put(key, updated);
+                if (db.containsKey(key)) {
+                    prevValues.put(key, db.get(key));
+                }
             }
+            db.putAll(map);
         } finally {
             db.close();
         }
@@ -598,8 +599,9 @@ public interface ChronicleDao<K, V> {
         try {
             for (final var entry : map.entrySet()) {
                 final K key = entry.getKey();
-                prevValues.put(key, db.put(key, entry.getValue()));
+                prevValues.put(key, db.get(key));
             }
+            db.putAll(map);
         } finally {
             db.close();
         }
