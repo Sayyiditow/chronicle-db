@@ -803,9 +803,10 @@ public interface ChronicleDao<K, V> {
                         addSearchedValues(index.get(searchTerm), db, match);
                         break;
                     case NOT_EQUAL:
-                        index.keySet().remove(searchTerm);
                         for (final var list : index.entrySet()) {
-                            addSearchedValues(list.getValue(), db, match);
+                            if (!list.getKey().equals(searchTerm)) {
+                                addSearchedValues(list.getValue(), db, match);
+                            }
                         }
                         break;
                     case LESS:
@@ -929,9 +930,10 @@ public interface ChronicleDao<K, V> {
                         addSearchedValues(index.get(searchTerm), db, match, limit);
                         break;
                     case NOT_EQUAL:
-                        index.keySet().remove(searchTerm);
                         for (final var list : index.entrySet()) {
-                            addSearchedValues(list.getValue(), db, match, limit);
+                            if (!list.getKey().equals(searchTerm)) {
+                                addSearchedValues(list.getValue(), db, match, limit);
+                            }
                         }
                         break;
                     case LESS:
