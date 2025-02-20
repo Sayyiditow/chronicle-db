@@ -5,7 +5,6 @@ import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -401,13 +400,29 @@ public interface ChronicleDao<K, V> {
         return Long.valueOf(Files.readString(Path.of(dataPath() + DATA_DIR + ENTRY_SIZE_FILE)));
     }
 
+    default void setCurrentEntrySize() throws IOException {
+        final var path = Path.of(dataPath() + DATA_DIR + ENTRY_SIZE_FILE);
+
+        if (!Files.exists(path)) {
+            final var db = getDb();
+            final long divided = (db.size() / entries());
+            db.close();
+            final long currentEntrySize = entries() * (divided == 0 ? 1 : divided);
+            try {
+                Files.createFile(path);
+                Files.writeString(path, String.valueOf(currentEntrySize));
+            } catch (final IOException e) {
+                Logger.error("Could not create entry size file for {}.", dataPath());
+            }
+        }
+    }
+
     private long getCurrentEntrySize(final ChronicleMap<K, V> db) {
-        final var entrySizeFile = new File(dataPath() + DATA_DIR + ENTRY_SIZE_FILE);
-        final var path = entrySizeFile.toPath();
+        final var path = Path.of(dataPath() + DATA_DIR + ENTRY_SIZE_FILE);
         final long divided = (db.size() / entries());
         final long currentEntrySize = entries() * (divided == 0 ? 1 : divided);
 
-        if (!entrySizeFile.exists()) {
+        if (!Files.exists(path)) {
             try {
                 Files.createFile(path);
                 Files.writeString(path, String.valueOf(currentEntrySize));
