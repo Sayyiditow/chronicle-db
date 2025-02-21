@@ -447,8 +447,7 @@ public final class ChronicleUtils {
      * @throws IllegalAccessException
      */
     public <K, V> CsvObject formatChronicleDataToCsv(final Map<K, V> map)
-            throws NoSuchMethodException, SecurityException, IllegalAccessException, IllegalArgumentException,
-            InvocationTargetException {
+            throws NoSuchMethodException, SecurityException, IllegalAccessException, InvocationTargetException {
         if (map.size() != 0) {
             final V value = map.values().iterator().next();
             final Method headersMethod = value.getClass().getDeclaredMethod("header");
@@ -490,16 +489,9 @@ public final class ChronicleUtils {
      * Only for chronicle db object types to convert to csv for table display on
      * frontend
      * 
-     * @throws SecurityException
-     * @throws NoSuchMethodException
-     * @throws InvocationTargetException
-     * @throws IllegalArgumentException
-     * @throws IllegalAccessException
      */
     public <K> CsvObject formatSubsetChronicleDataToCsv(final Map<K, LinkedHashMap<String, Object>> map,
-            final String[] headers)
-            throws NoSuchMethodException, SecurityException, IllegalAccessException,
-            IllegalArgumentException, InvocationTargetException {
+            final String[] headers) {
         final List<Object[]> rowList = new ArrayList<>();
         final String[] updatedHeaders = copyArray(new String[] { "ID" }, headers);
 
@@ -574,10 +566,22 @@ public final class ChronicleUtils {
         return map;
     }
 
+    /**
+     * Migrate records from one object version to another
+     * Usefule when adding/removing fields
+     * 
+     * @throws InvocationTargetException
+     * @throws IllegalArgumentException
+     * @throws IllegalAccessException
+     * @throws InstantiationException
+     * @throws SecurityException
+     * @throws NoSuchMethodException
+     * @throws ClassNotFoundException
+     */
     public <K, V> Map<K, Object> moveRecords(final Map<K, V> currentValues,
             final String toObjectClass, final Map<String, String> move, final Map<String, Object> def)
-            throws ClassNotFoundException, NoSuchMethodException, SecurityException,
-            InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
+            throws SecurityException, InstantiationException, IllegalAccessException, IllegalArgumentException,
+            InvocationTargetException, NoSuchMethodException, ClassNotFoundException {
         final Map<K, Object> map = new HashMap<>();
         if (currentValues.size() != 0) {
             final var cls = Class.forName(toObjectClass);

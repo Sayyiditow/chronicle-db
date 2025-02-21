@@ -96,6 +96,12 @@ public final class ChronicleDb {
 
     /**
      * Constructs the class using reflection
+     * 
+     * @throws ClassNotFoundException
+     * @throws InvocationTargetException
+     * @throws IllegalArgumentException
+     * @throws IllegalAccessException
+     * @throws InstantiationException
      */
     public Object constructObject(final String objectClassName, final Object[] values) throws ClassNotFoundException,
             InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
@@ -123,12 +129,14 @@ public final class ChronicleDb {
      * @param daoClassObjectName the static object name
      * 
      * @return ChronicleDao
+     * @throws ClassNotFoundException
+     * @throws IllegalArgumentException
+     * @throws IllegalAccessException
      * @throws InvocationTargetException
      * @throws InstantiationException
      */
-    public ChronicleDao getChronicleDao(final String daoClassName, final String dataPath)
-            throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException, NoSuchFieldException,
-            SecurityException, InstantiationException, InvocationTargetException {
+    public ChronicleDao getChronicleDao(final String daoClassName, final String dataPath) throws ClassNotFoundException,
+            InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
         final var c = getObjectConstructor(daoClassName);
         return (ChronicleDao) c.newInstance(dataPath);
     }

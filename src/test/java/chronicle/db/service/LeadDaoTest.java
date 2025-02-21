@@ -22,8 +22,7 @@ public class LeadDaoTest {
 
     @Test
     public void testInsert() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
-            NoSuchFieldException, SecurityException, IOException, InstantiationException, InvocationTargetException,
-            InterruptedException {
+            NoSuchFieldException, SecurityException, InstantiationException, InvocationTargetException, IOException {
         final var dao = CHRONICLE_DB.getChronicleDao(DAO, DATA_PATH);
         final Map<String, Object> objects = new HashMap<>();
         int i = 100;
