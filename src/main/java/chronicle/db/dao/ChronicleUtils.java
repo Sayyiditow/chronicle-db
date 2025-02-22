@@ -166,78 +166,78 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void search(final Search search, final K key, final V value, final Map<K, V> map)
-            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
+            throws NoSuchFieldException, IllegalAccessException {
         final Field field = value.getClass().getField(search.field());
-        List<Object> searchTermList = new ArrayList<>();
+        if (field == null)
+            return;
 
-        if (Objects.nonNull(field)) {
-            final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), field.getType());
-            if (search.searchType() == SearchType.IN || search.searchType() == SearchType.NOT_IN) {
-                searchTermList = setSearchTermNonIndexed((List<Object>) search.searchTerm(), field.getType());
+        final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), field.getType());
+        List<Object> searchTermList = null;
+        final SearchType searchType = search.searchType();
+        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
+            searchTermList = setSearchTermNonIndexed((List<Object>) search.searchTerm(), field.getType());
+        }
+
+        final Object currentValue = field.get(value);
+        if (currentValue == null)
+            return;
+
+        switch (searchType) {
+            case EQUAL -> {
+                if (currentValue.equals(searchTerm))
+                    map.put(key, value);
             }
-            final Object currentValue = field.get(value);
-
-            if (Objects.nonNull(currentValue)) {
-                switch (search.searchType()) {
-                    case EQUAL:
-                        if (currentValue.equals(searchTerm))
-                            map.put(key, value);
-                        break;
-                    case NOT_EQUAL:
-                        if (!currentValue.equals(searchTerm))
-                            map.put(key, value);
-                        break;
-                    case LESS:
-                        if (compare(currentValue, searchTerm) < 0)
-                            map.put(key, value);
-                        break;
-                    case GREATER:
-                        if (compare(currentValue, searchTerm) > 0)
-                            map.put(key, value);
-                        break;
-                    case LESS_OR_EQUAL:
-                        if (compare(currentValue, searchTerm) <= 0)
-                            map.put(key, value);
-                        break;
-                    case GREATER_OR_EQUAL:
-                        if (compare(currentValue, searchTerm) >= 0)
-                            map.put(key, value);
-                        break;
-                    case LIKE:
-                        if (containsIgnoreCase(currentValue, searchTerm))
-                            map.put(key, value);
-                        break;
-                    case NOT_LIKE:
-                        if (!containsIgnoreCase(currentValue, searchTerm))
-                            map.put(key, value);
-                        break;
-                    case CONTAINS:
-                        if (Collections.singleton(currentValue).contains(searchTerm))
-                            map.put(key, value);
-                        break;
-                    case NOT_CONTAINS:
-                        if (!Collections.singleton(currentValue).contains(searchTerm))
-                            map.put(key, value);
-                        break;
-                    case STARTS_WITH:
-                        if (String.valueOf(currentValue).toLowerCase()
-                                .startsWith(String.valueOf(searchTerm).toLowerCase()))
-                            map.put(key, value);
-                        break;
-                    case ENDS_WITH:
-                        if (String.valueOf(currentValue).toLowerCase()
-                                .endsWith(String.valueOf(searchTerm).toLowerCase()))
-                            map.put(key, value);
-                        break;
-                    case IN:
-                        if (searchTermList.contains(currentValue))
-                            map.put(key, value);
-                        break;
-                    case NOT_IN:
-                        if (!searchTermList.contains(currentValue))
-                            map.put(key, value);
-                        break;
-                }
+            case NOT_EQUAL -> {
+                if (!currentValue.equals(searchTerm))
+                    map.put(key, value);
+            }
+            case LESS -> {
+                if (compare(currentValue, searchTerm) < 0)
+                    map.put(key, value);
+            }
+            case GREATER -> {
+                if (compare(currentValue, searchTerm) > 0)
+                    map.put(key, value);
+            }
+            case LESS_OR_EQUAL -> {
+                if (compare(currentValue, searchTerm) <= 0)
+                    map.put(key, value);
+            }
+            case GREATER_OR_EQUAL -> {
+                if (compare(currentValue, searchTerm) >= 0)
+                    map.put(key, value);
+            }
+            case LIKE -> {
+                if (containsIgnoreCase(currentValue, searchTerm))
+                    map.put(key, value);
+            }
+            case NOT_LIKE -> {
+                if (!containsIgnoreCase(currentValue, searchTerm))
+                    map.put(key, value);
+            }
+            case CONTAINS -> {
+                if (Collections.singleton(currentValue).contains(searchTerm))
+                    map.put(key, value);
+            }
+            case NOT_CONTAINS -> {
+                if (!Collections.singleton(currentValue).contains(searchTerm))
+                    map.put(key, value);
+            }
+            case STARTS_WITH -> {
+                if (String.valueOf(currentValue).toLowerCase().startsWith(String.valueOf(searchTerm).toLowerCase()))
+                    map.put(key, value);
+            }
+            case ENDS_WITH -> {
+                if (String.valueOf(currentValue).toLowerCase().endsWith(String.valueOf(searchTerm).toLowerCase()))
+                    map.put(key, value);
+            }
+            case IN -> {
+                if (searchTermList.contains(currentValue))
+                    map.put(key, value);
+            }
+            case NOT_IN -> {
+                if (!searchTermList.contains(currentValue))
+                    map.put(key, value);
             }
         }
     }

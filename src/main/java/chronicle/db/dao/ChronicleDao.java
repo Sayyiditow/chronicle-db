@@ -701,7 +701,7 @@ public interface ChronicleDao<K, V> {
         for (final var entry : db.entrySet()) {
             try {
                 CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
-            } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException | SecurityException e) {
+            } catch (IllegalAccessException | NoSuchFieldException e) {
                 Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
                 break;
             }
@@ -800,117 +800,119 @@ public interface ChronicleDao<K, V> {
     @SuppressWarnings("unchecked")
     private Map<K, V> indexedSearch(final Search search, final Map<K, V> db, final Map<Object, List<K>> index) {
         Logger.info("Index searching DB at {} for {}.", dataPath(), search);
-        final var match = new HashMap<K, V>();
-        if (index != null) {
-            final var keys = new ArrayList<K>();
-            final var keySet = index.keySet();
-            List<Object> searchTermList = new ArrayList<>();
+        if (index == null || index.isEmpty())
+            return new HashMap<>();
 
-            if (keySet.size() > 0) {
-                final var fieldClass = keySet.stream().filter(Objects::nonNull).findFirst().get().getClass();
-                final Object searchTerm = CHRONICLE_UTILS.setSearchTerm(search.searchTerm(), fieldClass);
-                if (search.searchType() == SearchType.IN || search.searchType() == SearchType.NOT_IN) {
-                    searchTermList = CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass);
+        final Map<K, V> match = new HashMap<>();
+        final List<K> keys = new ArrayList<>();
+        final SearchType searchType = search.searchType();
+        final Class<?> fieldClass = index.keySet().stream().filter(Objects::nonNull).findFirst()
+                .map(Object::getClass).orElse(null);
+        if (fieldClass == null)
+            return match;
+
+        final Object searchTerm = CHRONICLE_UTILS.setSearchTerm(search.searchTerm(), fieldClass);
+        final List<Object> searchTermList = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass)
+                : null;
+
+        switch (searchType) {
+            case EQUAL -> addSearchedValues(index.get(searchTerm), db, match);
+            case NOT_EQUAL -> {
+                for (final var entry : index.entrySet()) {
+                    if (!entry.getKey().equals(searchTerm)) {
+                        addSearchedValues(entry.getValue(), db, match);
+                    }
                 }
-
-                switch (search.searchType()) {
-                    case EQUAL:
-                        addSearchedValues(index.get(searchTerm), db, match);
-                        break;
-                    case NOT_EQUAL:
-                        for (final var list : index.entrySet()) {
-                            if (!list.getKey().equals(searchTerm)) {
-                                addSearchedValues(list.getValue(), db, match);
-                            }
-                        }
-                        break;
-                    case LESS:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) < 0)
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case GREATER:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) > 0)
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case LESS_OR_EQUAL:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) <= 0)
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case GREATER_OR_EQUAL:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) >= 0)
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case LIKE:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case NOT_LIKE:
-                        for (final var entry : index.entrySet()) {
-                            if (!CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case CONTAINS:
-                        for (final var entry : index.entrySet()) {
-                            if (Collections.singleton(entry.getKey()).contains(searchTerm))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case NOT_CONTAINS:
-                        for (final var entry : index.entrySet()) {
-                            if (!Collections.singleton(entry.getKey()).contains(searchTerm))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case STARTS_WITH:
-                        for (final var entry : index.entrySet()) {
-                            if (String.valueOf(entry.getKey()).startsWith(String.valueOf(searchTerm)))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case ENDS_WITH:
-                        for (final var entry : index.entrySet()) {
-                            if (String.valueOf(entry.getKey()).endsWith(String.valueOf(searchTerm)))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case IN:
-                        for (final var entry : index.entrySet()) {
-                            if (searchTermList.contains(entry.getKey()))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case NOT_IN:
-                        for (final var entry : index.entrySet()) {
-                            if (!searchTermList.contains(entry.getKey()))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
+            }
+            case LESS -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) < 0) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case GREATER -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) > 0) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case LESS_OR_EQUAL -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) <= 0) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case GREATER_OR_EQUAL -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) >= 0) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case LIKE -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm)) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case NOT_LIKE -> {
+                for (final var entry : index.entrySet()) {
+                    if (!CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm)) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case CONTAINS -> {
+                for (final var entry : index.entrySet()) {
+                    if (Collections.singleton(entry.getKey()).contains(searchTerm)) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case NOT_CONTAINS -> {
+                for (final var entry : index.entrySet()) {
+                    if (!Collections.singleton(entry.getKey()).contains(searchTerm)) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case STARTS_WITH -> {
+                for (final var entry : index.entrySet()) {
+                    if (String.valueOf(entry.getKey()).startsWith(String.valueOf(searchTerm))) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case ENDS_WITH -> {
+                for (final var entry : index.entrySet()) {
+                    if (String.valueOf(entry.getKey()).endsWith(String.valueOf(searchTerm))) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case IN -> {
+                for (final var entry : index.entrySet()) {
+                    if (searchTermList.contains(entry.getKey())) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case NOT_IN -> {
+                for (final var entry : index.entrySet()) {
+                    if (!searchTermList.contains(entry.getKey())) {
+                        keys.addAll(entry.getValue());
+                    }
                 }
             }
         }
+
+        if (!keys.isEmpty())
+            addSearchedValues(keys, db, match);
         return match;
     }
 
@@ -927,117 +929,119 @@ public interface ChronicleDao<K, V> {
     private Map<K, V> indexedSearch(final Search search, final Map<K, V> db, final Map<Object, List<K>> index,
             final int limit) {
         Logger.info("Index searching DB at {} for {} with limit {}.", dataPath(), search, limit);
-        final var match = new HashMap<K, V>();
-        if (index != null) {
-            final var keys = new ArrayList<K>();
-            final var keySet = index.keySet();
-            List<Object> searchTermList = new ArrayList<>();
+        if (index == null || index.isEmpty())
+            return new HashMap<>();
 
-            if (keySet.size() > 0) {
-                final var fieldClass = keySet.iterator().next().getClass();
-                final Object searchTerm = CHRONICLE_UTILS.setSearchTerm(search.searchTerm(), fieldClass);
-                if (search.searchType() == SearchType.IN || search.searchType() == SearchType.NOT_IN) {
-                    searchTermList = CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass);
+        final Map<K, V> match = new HashMap<>();
+        final List<K> keys = new ArrayList<>();
+        final SearchType searchType = search.searchType();
+        final Class<?> fieldClass = index.keySet().stream().filter(Objects::nonNull).findFirst()
+                .map(Object::getClass).orElse(null);
+        if (fieldClass == null)
+            return match;
+
+        final Object searchTerm = CHRONICLE_UTILS.setSearchTerm(search.searchTerm(), fieldClass);
+        final List<Object> searchTermList = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass)
+                : null;
+
+        switch (searchType) {
+            case EQUAL -> addSearchedValues(index.get(searchTerm), db, match, limit);
+            case NOT_EQUAL -> {
+                for (final var entry : index.entrySet()) {
+                    if (!entry.getKey().equals(searchTerm)) {
+                        addSearchedValues(entry.getValue(), db, match, limit);
+                    }
                 }
-
-                switch (search.searchType()) {
-                    case EQUAL:
-                        addSearchedValues(index.get(searchTerm), db, match, limit);
-                        break;
-                    case NOT_EQUAL:
-                        for (final var list : index.entrySet()) {
-                            if (!list.getKey().equals(searchTerm)) {
-                                addSearchedValues(list.getValue(), db, match, limit);
-                            }
-                        }
-                        break;
-                    case LESS:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) < 0)
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case GREATER:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) > 0)
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case LESS_OR_EQUAL:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) <= 0)
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case GREATER_OR_EQUAL:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) >= 0)
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case LIKE:
-                        for (final var entry : index.entrySet()) {
-                            if (CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case NOT_LIKE:
-                        for (final var entry : index.entrySet()) {
-                            if (!CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case CONTAINS:
-                        for (final var entry : index.entrySet()) {
-                            if (Collections.singleton(entry.getKey()).contains(searchTerm))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case NOT_CONTAINS:
-                        for (final var entry : index.entrySet()) {
-                            if (!Collections.singleton(entry.getKey()).contains(searchTerm))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case STARTS_WITH:
-                        for (final var entry : index.entrySet()) {
-                            if (String.valueOf(entry.getKey()).startsWith(String.valueOf(searchTerm)))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case ENDS_WITH:
-                        for (final var entry : index.entrySet()) {
-                            if (String.valueOf(entry.getKey()).endsWith(String.valueOf(searchTerm)))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match, limit);
-                        break;
-                    case IN:
-                        for (final var entry : index.entrySet()) {
-                            if (searchTermList.contains(entry.getKey()))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
-                    case NOT_IN:
-                        for (final var entry : index.entrySet()) {
-                            if (!searchTermList.contains(entry.getKey()))
-                                keys.addAll(entry.getValue());
-                        }
-                        addSearchedValues(keys, db, match);
-                        break;
+            }
+            case LESS -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) < 0) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case GREATER -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) > 0) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case LESS_OR_EQUAL -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) <= 0) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case GREATER_OR_EQUAL -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) >= 0) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case LIKE -> {
+                for (final var entry : index.entrySet()) {
+                    if (CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm)) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case NOT_LIKE -> {
+                for (final var entry : index.entrySet()) {
+                    if (!CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm)) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case CONTAINS -> {
+                for (final var entry : index.entrySet()) {
+                    if (Collections.singleton(entry.getKey()).contains(searchTerm)) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case NOT_CONTAINS -> {
+                for (final var entry : index.entrySet()) {
+                    if (!Collections.singleton(entry.getKey()).contains(searchTerm)) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case STARTS_WITH -> {
+                for (final var entry : index.entrySet()) {
+                    if (String.valueOf(entry.getKey()).startsWith(String.valueOf(searchTerm))) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case ENDS_WITH -> {
+                for (final var entry : index.entrySet()) {
+                    if (String.valueOf(entry.getKey()).endsWith(String.valueOf(searchTerm))) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case IN -> {
+                for (final var entry : index.entrySet()) {
+                    if (searchTermList.contains(entry.getKey())) {
+                        keys.addAll(entry.getValue());
+                    }
+                }
+            }
+            case NOT_IN -> {
+                for (final var entry : index.entrySet()) {
+                    if (!searchTermList.contains(entry.getKey())) {
+                        keys.addAll(entry.getValue());
+                    }
                 }
             }
         }
+
+        if (!keys.isEmpty())
+            addSearchedValues(keys, db, match, limit);
         return match;
     }
 
