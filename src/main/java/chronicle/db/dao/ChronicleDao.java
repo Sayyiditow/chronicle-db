@@ -1049,7 +1049,7 @@ public interface ChronicleDao<K, V> {
         final var indexFilePath = getIndexPath(search.field());
         final var db = getDb();
 
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.readDb(indexFilePath);
         try {
             return indexedSearch(search, db, indexDb);
         } finally {
@@ -1062,7 +1062,7 @@ public interface ChronicleDao<K, V> {
         final var indexFilePath = getIndexPath(search.field());
         final var db = getDb();
 
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.readDb(indexFilePath);
         try {
             return indexedSearch(search, db, indexDb, limit);
         } finally {
@@ -1073,7 +1073,7 @@ public interface ChronicleDao<K, V> {
 
     default Map<K, V> indexedSearch(final Map<K, V> db, final Search search) {
         final var indexFilePath = getIndexPath(search.field());
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.readDb(indexFilePath);
 
         try {
             return indexedSearch(search, db, indexDb);
@@ -1084,7 +1084,7 @@ public interface ChronicleDao<K, V> {
 
     default Map<K, V> indexedSearch(final Map<K, V> db, final Search search, final int limit) {
         final var indexFilePath = getIndexPath(search.field());
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath);
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.readDb(indexFilePath);
 
         try {
             return indexedSearch(search, db, indexDb, limit);
