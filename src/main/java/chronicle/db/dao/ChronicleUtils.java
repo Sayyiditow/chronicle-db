@@ -5,6 +5,7 @@ import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -16,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -254,43 +256,51 @@ public final class ChronicleUtils {
      */
     public <K, V> void index(final Map<K, V> db, final String dbName, final String[] fields,
             final String dataPath, final String indexDirPath) {
-        final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>();
-        final Map<String, Field> fieldMap = new HashMap<>();
-        final var nonExistentFields = new HashMap<>();
+        final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.length);
+        final Map<String, Field> fieldMap = new HashMap<>(fields.length);
+        final Set<String> nonExistentFields = new HashSet<>(fields.length); // Faster contains() than Map
         Logger.info("Indexing {} db at {} for : {}.", dbName, dataPath, Arrays.toString(fields));
 
-        for (final var entry : db.entrySet()) {
-            for (final var field : fields) {
-                if (!nonExistentFields.containsKey(field)) {
-                    final Field f = fieldMap.computeIfAbsent(field, k -> {
-                        try {
-                            return entry.getValue().getClass().getField(field);
-                        } catch (final NoSuchFieldException e) {
-                            Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath,
-                                    e.getMessage());
-                            return null;
-                        }
-                    });
-                    if (f == null) {
-                        deleteFileIfExists(indexDirPath + "/" + field);
-                        nonExistentFields.put(field, true);
-                        continue;
-                    }
-                    final var indexMap = fieldIndexMap.computeIfAbsent(field, k -> new HashMap<>());
-                    try {
-                        var currentValue = f.get(entry.getValue());
-                        if (f.getType().isEnum() || currentValue == null)
-                            currentValue = Objects.toString(currentValue, "null");
-                        indexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(entry.getKey());
-                    } catch (IllegalArgumentException | IllegalAccessException e) {
-                        Logger.error("Error getting field value for {} at {}. {}", field, dbName, e.getMessage());
-                    }
+        // Precompute Field objects for all fields once, assuming V types are uniform
+        final V sampleValue = db.isEmpty() ? null : db.values().iterator().next();
+        if (sampleValue != null) {
+            for (final String field : fields) {
+                try {
+                    fieldMap.put(field, sampleValue.getClass().getField(field));
+                } catch (final NoSuchFieldException e) {
+                    Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath,
+                            e.getMessage());
+                    nonExistentFields.add(field);
+                    deleteFileIfExists(indexDirPath + "/" + field);
                 }
             }
         }
 
-        for (final var entry : fieldIndexMap.entrySet()) {
-            final var indexPath = indexDirPath + "/" + entry.getKey();
+        // Index building
+        for (final var entry : db.entrySet()) {
+            final K key = entry.getKey();
+            final V value = entry.getValue();
+            for (final String field : fields) {
+                if (nonExistentFields.contains(field))
+                    continue;
+
+                final Field f = fieldMap.get(field); // Already precomputed
+                final Map<Object, List<K>> indexMap = fieldIndexMap.computeIfAbsent(field, k -> new HashMap<>());
+                try {
+                    Object currentValue = f.get(value);
+                    if (f.getType().isEnum() || currentValue == null) {
+                        currentValue = Objects.toString(currentValue, "null");
+                    }
+                    indexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(key);
+                } catch (final IllegalAccessException e) { // IllegalArgumentException unlikely after precompute
+                    Logger.error("Error getting field value for {} at {}. {}", field, dbName, e.getMessage());
+                }
+            }
+        }
+
+        // Write to disk in parallel
+        fieldIndexMap.entrySet().parallelStream().forEach(entry -> {
+            final String indexPath = indexDirPath + "/" + entry.getKey();
             final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
 
             synchronized (lock) {
@@ -299,8 +309,7 @@ public final class ChronicleUtils {
                 indexDb.putAll(entry.getValue());
                 indexDb.close();
             }
-
-        }
+        });
     }
 
     private <K> void removeKeyFromIndex(final HTreeMap<Object, List<K>> indexDb, final Object indexKey, final K key) {
@@ -316,22 +325,30 @@ public final class ChronicleUtils {
 
     private <K, V> void removeFromIndex(final String dbName, final String dataPath, final Map<K, V> values,
             final String file) {
-        final var indexPath = dataPath + "/indexes/" + file;
+        final String indexPath = dataPath + "/indexes/" + file; // Avoid concatenation in loop
         final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
 
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
                 Logger.info("Removing from index {} at {}.", file, dataPath);
+                if (values.isEmpty())
+                    return; // Early exit for empty input
+
+                // Precompute field once, assuming uniform V type
+                final V sampleValue = values.values().iterator().next();
+                final Field field = sampleValue.getClass().getField(file);
+                final boolean isEnum = field.getType().isEnum();
+
                 for (final var entry : values.entrySet()) {
                     final V value = entry.getValue();
-                    final var field = value.getClass().getField(file);
-                    var indexKey = field.get(value);
-                    if (field.getType().isEnum() || indexKey == null)
+                    Object indexKey = field.get(value);
+                    if (isEnum || indexKey == null) {
                         indexKey = Objects.toString(indexKey, "null");
+                    }
                     removeKeyFromIndex(indexDb, indexKey, entry.getKey());
                 }
-            } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+            } catch (NoSuchFieldException | IllegalAccessException e) {
                 Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath,
                         e);
                 deleteFileIfExists(indexPath);
@@ -367,37 +384,42 @@ public final class ChronicleUtils {
 
     private <K, V> void updateIndex(final String dbName, final String dataPath,
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
-        final var indexPath = dataPath + "/indexes/" + file;
+        final String indexPath = dataPath + "/indexes/" + file; // Precompute outside sync
         final Object lock = LOCKS.computeIfAbsent(indexPath, k -> new Object());
 
         synchronized (lock) {
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
             try {
-                for (final var key : values.keySet()) {
+                if (values.isEmpty())
+                    return; // Early exit
+
+                // Precompute field, assume uniform V type
+                final V sampleValue = values.values().iterator().next();
+                final Field field = sampleValue.getClass().getField(file);
+                final boolean isEnum = field.getType().isEnum();
+
+                for (final K key : values.keySet()) {
                     final V newValue = values.get(key);
                     final V prevValue = prevValues.get(key);
-                    final var field = newValue.getClass().getField(file);
-                    var newIndexKey = field.get(newValue);
+                    Object newIndexKey = field.get(newValue);
 
                     if (prevValue == null) {
-                        if (field.getType().isEnum() || newIndexKey == null)
+                        if (isEnum || newIndexKey == null) {
                             newIndexKey = Objects.toString(newIndexKey, "null");
-
+                        }
                         Logger.info("Adding new index {} on {} at {}.", newIndexKey, file, dataPath);
                         addKeyToIndex(indexDb, newIndexKey, key);
                     } else {
-                        var prevIndexKey = field.get(prevValue);
+                        Object prevIndexKey = field.get(prevValue);
                         if (!Objects.equals(newIndexKey, prevIndexKey)) {
-                            if (field.getType().isEnum()) {
+                            if (isEnum) {
                                 prevIndexKey = String.valueOf(prevIndexKey);
                                 newIndexKey = String.valueOf(newIndexKey);
                             }
-                            if (prevIndexKey == null) {
+                            if (prevIndexKey == null)
                                 prevIndexKey = "null";
-                            }
-                            if (newIndexKey == null) {
+                            if (newIndexKey == null)
                                 newIndexKey = "null";
-                            }
 
                             Logger.info("Updating index {} to {} on {} at {}.", prevIndexKey, newIndexKey, file,
                                     dataPath);
@@ -406,7 +428,7 @@ public final class ChronicleUtils {
                         }
                     }
                 }
-            } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+            } catch (NoSuchFieldException | IllegalAccessException e) {
                 Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
                 deleteFileIfExists(indexPath);
             } finally {
@@ -442,42 +464,42 @@ public final class ChronicleUtils {
      * @throws IllegalAccessException
      */
     public <K, V> CsvObject formatChronicleDataToCsv(final Map<K, V> map)
-            throws NoSuchMethodException, SecurityException, IllegalAccessException, InvocationTargetException {
-        if (map.size() != 0) {
-            final V value = map.values().iterator().next();
-            final Method headersMethod = value.getClass().getDeclaredMethod("header");
-            final Method rowMethod = value.getClass().getDeclaredMethod("row", Object.class);
-            final String[] headerList = (String[]) headersMethod.invoke(value);
-            final List<Object[]> rowList = new ArrayList<>();
+            throws NoSuchMethodException, IllegalAccessException, InvocationTargetException {
+        if (map.isEmpty())
+            return new CsvObject(new String[0], List.of());
 
-            for (final var entry : map.entrySet()) {
-                rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
-            }
+        final V sampleValue = map.values().iterator().next();
+        final Method headersMethod = sampleValue.getClass().getDeclaredMethod("header");
+        final Method rowMethod = sampleValue.getClass().getDeclaredMethod("row", Object.class);
+        final String[] headerList = (String[]) headersMethod.invoke(sampleValue);
+        final List<Object[]> rowList = new ArrayList<>(map.size());
 
-            return new CsvObject(headerList, rowList);
+        for (final var entry : map.entrySet()) {
+            rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
         }
-        return new CsvObject(new String[] {}, List.of());
+
+        return new CsvObject(headerList, rowList);
     }
 
     public <K, V> void subsetOfValues(final String[] fields, final Map.Entry<K, V> entry,
             final Map<K, LinkedHashMap<String, Object>> map, final String objectName) {
-        Field field = null;
-        final var valueMap = new LinkedHashMap<String, Object>();
-        for (final var f : fields) {
-            if (f.equals("id")) {
-                valueMap.put(objectName + ".id", entry.getKey());
+        final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
+        final K key = entry.getKey();
+        final V value = entry.getValue();
+
+        for (final String f : fields) {
+            if ("id".equals(f)) {
+                valueMap.put(objectName + ".id", key);
             } else {
                 try {
-                    field = entry.getValue().getClass().getField(f);
-                    if (Objects.nonNull(field)) {
-                        valueMap.put(f, field.get(entry.getValue()));
-                    }
-                } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
+                    final Field field = value.getClass().getField(f);
+                    valueMap.put(f, field.get(value));
+                } catch (NoSuchFieldException | IllegalAccessException e) {
                     Logger.error("No such field: {} when making a subset of {}. {}", f, objectName, e);
                 }
             }
         }
-        map.put(entry.getKey(), valueMap);
+        map.put(key, valueMap);
     }
 
     /**
@@ -487,16 +509,18 @@ public final class ChronicleUtils {
      */
     public <K> CsvObject formatSubsetChronicleDataToCsv(final Map<K, LinkedHashMap<String, Object>> map,
             final String[] headers) {
-        final List<Object[]> rowList = new ArrayList<>();
+        final List<Object[]> rowList = new ArrayList<>(map.size()); // Pre-size list
         final String[] updatedHeaders = copyArray(new String[] { "ID" }, headers);
 
         for (final var entry : map.entrySet()) {
+            final K key = entry.getKey();
+            final LinkedHashMap<String, Object> valueMap = entry.getValue();
+            final Object[] obj = new Object[valueMap.size() + 1]; // Size based on value map
+            obj[0] = key;
+
             int i = 1;
-            final var obj = new Object[entry.getValue().size() + 1];
-            obj[0] = entry.getKey();
-            for (final var ent : entry.getValue().entrySet()) {
-                obj[i] = ent.getValue();
-                i++;
+            for (final Object value : valueMap.values()) { // Iterate values directly
+                obj[i++] = value;
             }
             rowList.add(obj);
         }
@@ -550,12 +574,13 @@ public final class ChronicleUtils {
 
     public Map<String, Object> objectToMap(final Object object, final String objectName, final Object key)
             throws IllegalAccessException {
-        final Map<String, Object> map = new HashMap<>();
         final Field[] fields = object.getClass().getDeclaredFields();
-        map.put(objectName + ".key", key);
+        final Map<String, Object> map = new HashMap<>(fields.length + 1); // Pre-size with key
+        final String prefix = objectName + "."; // Precompute prefix
 
+        map.put(prefix + "key", key);
         for (final Field field : fields) {
-            map.put(objectName + "." + field.getName(), field.get(object));
+            map.put(prefix + field.getName(), field.get(object));
         }
 
         return map;
@@ -577,54 +602,50 @@ public final class ChronicleUtils {
             final String toObjectClass, final Map<String, String> move, final Map<String, Object> def)
             throws SecurityException, InstantiationException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException, NoSuchMethodException, ClassNotFoundException {
-        final Map<K, Object> map = new HashMap<>();
-        if (currentValues.size() != 0) {
-            final var cls = Class.forName(toObjectClass);
-            final var constuctor = cls.getConstructor();
-            final Field[] fields = currentValues.values().stream().findFirst().get().getClass().getDeclaredFields();
-            final var newFields = new ArrayList<>(
-                    Arrays.asList(constuctor.newInstance().getClass().getDeclaredFields()));
-            newFields.removeAll(new ArrayList<>(Arrays.asList(fields)));
+        if (currentValues.isEmpty())
+            return new HashMap<>(); // Early exit
 
-            for (final var entry : currentValues.entrySet()) {
-                final var newObj = constuctor.newInstance();
-                final var currentVal = entry.getValue();
-                for (final var field : fields) {
-                    final var fieldName = field.getName();
-                    final var destMoveFieldName = move.get(fieldName);
-                    final var destFieldName = destMoveFieldName != null ? destMoveFieldName : fieldName;
-                    final var defValue = def.get(fieldName);
+        final Map<K, Object> map = new HashMap<>(currentValues.size()); // Pre-size map
+        final Class<?> cls = Class.forName(toObjectClass);
+        final Constructor<?> constructor = cls.getConstructor(); 
+        final V sampleValue = currentValues.values().iterator().next();
+        final Field[] fields = sampleValue.getClass().getDeclaredFields();
+        final Object newInstance = constructor.newInstance(); // Pre-instantiate once
+        final Field[] newFields = newInstance.getClass().getDeclaredFields();
+        final Set<Field> newFieldsSet = new HashSet<>(Arrays.asList(newFields)); // Faster lookup
+        newFieldsSet.removeAll(Arrays.asList(fields));
 
-                    try {
-                        final var f2 = newObj.getClass().getField(destFieldName);
-                        final var fieldVal = field.get(currentVal);
-                        if (defValue != null) {
-                            final Object value = f2.getType().isEnum()
-                                    ? toEnum(f2.getType(), defValue)
-                                    : defValue;
-                            f2.set(newObj, value);
-                            continue;
-                        }
-                        final Object value = f2.getType().isEnum() && fieldVal != null
-                                ? toEnum(f2.getType(), fieldVal)
-                                : fieldVal;
-                        f2.set(newObj, value);
-                    } catch (final NoSuchFieldException e) {
-                        Logger.info("Field from source object does not exist in destination object: {}.", fieldName);
-                    }
+        for (final var entry : currentValues.entrySet()) {
+            final K key = entry.getKey();
+            final V currentVal = entry.getValue();
+            final Object newObj = constructor.newInstance();
+
+            for (final Field field : fields) {
+                final String fieldName = field.getName();
+                final String destFieldName = move.getOrDefault(fieldName, fieldName); // Faster than null check
+                final Object defValue = def.get(fieldName);
+
+                try {
+                    final Field f2 = newObj.getClass().getField(destFieldName);
+                    final Object fieldVal = field.get(currentVal);
+                    final Object value = defValue != null
+                            ? (f2.getType().isEnum() ? toEnum(f2.getType(), defValue) : defValue)
+                            : (f2.getType().isEnum() && fieldVal != null ? toEnum(f2.getType(), fieldVal) : fieldVal);
+                    f2.set(newObj, value);
+                } catch (final NoSuchFieldException e) {
+                    Logger.info("Field from source object does not exist in destination object: {}.", fieldName);
                 }
-
-                for (final var en : def.entrySet()) {
-                    for (final var field : newFields) {
-                        final var fieldName = field.getName();
-                        if (fieldName.equals(en.getKey())) {
-                            field.set(newObj, en.getValue());
-                        }
-                    }
-                }
-                map.put(entry.getKey(), newObj);
             }
+
+            for (final Field field : newFieldsSet) { // Use Set for iteration
+                final Object defValue = def.get(field.getName());
+                if (defValue != null) {
+                    field.set(newObj, defValue);
+                }
+            }
+            map.put(key, newObj);
         }
+
         return map;
     }
 }
