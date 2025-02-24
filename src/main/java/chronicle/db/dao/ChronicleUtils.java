@@ -322,7 +322,6 @@ public final class ChronicleUtils {
 
         final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
         try {
-            Logger.info("Removing from index {} at {}.", file, dataPath);
             if (values.isEmpty())
                 return; // Early exit for empty input
 
@@ -395,7 +394,6 @@ public final class ChronicleUtils {
                     if (isEnum || newIndexKey == null) {
                         newIndexKey = Objects.toString(newIndexKey, "null");
                     }
-                    Logger.info("Adding new index {} on {} at {}.", newIndexKey, file, dataPath);
                     addKeyToIndex(indexDb, newIndexKey, key);
                 } else {
                     Object prevIndexKey = field.get(prevValue);
@@ -409,8 +407,6 @@ public final class ChronicleUtils {
                         if (newIndexKey == null)
                             newIndexKey = "null";
 
-                        Logger.info("Updating index {} to {} on {} at {}.", prevIndexKey, newIndexKey, file,
-                                dataPath);
                         removeKeyFromIndex(indexDb, prevIndexKey, key);
                         addKeyToIndex(indexDb, newIndexKey, key);
                     }
