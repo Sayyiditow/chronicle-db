@@ -67,18 +67,15 @@ public final class MapDb {
                 final var map = mapCache.remove(filePath);
                 if (map != null) {
                     map.close(); // Close map silently—no try-catch for speed
-                }
-                final var lock = fileLocks.get(filePath);
-                if (lock != null) {
-                    if (lock.isWriteLocked() && lock.getWriteHoldCount() > 0) {
-                        lock.writeLock().unlock();
-                    } else if (lock.getReadHoldCount() > 0) {
-                        lock.readLock().unlock();
-                    } else {
-                        throw new IllegalMonitorStateException(
-                                "No lock held for MapDB at " + filePath + " by " + Thread.currentThread());
+                    final var lock = fileLocks.get(filePath);
+                    if (lock != null) {
+                        if (lock.getWriteHoldCount() > 0) {
+                            lock.writeLock().unlock();
+                        } else if (lock.getReadHoldCount() > 0) {
+                            lock.readLock().unlock();
+                        }
+                        fileLocks.remove(filePath); // Clean up lock after unlocking
                     }
-                    fileLocks.remove(filePath);
                 }
                 return null; // Remove entry
             }
