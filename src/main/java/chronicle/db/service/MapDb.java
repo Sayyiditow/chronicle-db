@@ -1,41 +1,88 @@
 package chronicle.db.service;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
-import org.tinylog.Logger;
 
-@SuppressWarnings("unchecked")
 public final class MapDb {
+    private MapDb() {
+    }
+
     public static final MapDb MAP_DB = new MapDb();
+    private final ConcurrentHashMap<String, ReentrantReadWriteLock> fileLocks = new ConcurrentHashMap<>(); // Lock per
+                                                                                                           // file
+    private final ConcurrentHashMap<String, Integer> openMaps = new ConcurrentHashMap<>(); // Reference count per file
+    private final ConcurrentHashMap<String, HTreeMap<?, ?>> mapCache = new ConcurrentHashMap<>(); // Cached maps
 
     /**
-     * Only for reading.
-     * User is in charge of calling close() to prevent map corruption.
+     * Opens a MapDB for reads and writes (or reads only if readOnly is true).
+     * Returns an HTreeMap—call close(filePath) to release resources and unlock.
+     * Uses mmap if supported for maximum performance.
      */
-    public <K, V> HTreeMap<K, V> readDb(final String filePath) {
-        Logger.info("Opening MapDB at: {}", filePath);
-        final var db = DBMaker
-                .fileDB(filePath)
-                .closeOnJvmShutdown()
-                .fileChannelEnable()
-                .readOnly()
-                .make();
-        return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
+    @SuppressWarnings("unchecked")
+    public <K, V> HTreeMap<K, V> getDb(final String filePath, final boolean readOnly) {
+        final ReentrantReadWriteLock lock = fileLocks.computeIfAbsent(filePath, k -> new ReentrantReadWriteLock());
+        final Lock usedLock = readOnly ? lock.readLock() : lock.writeLock();
+
+        usedLock.lock();
+        try {
+            final var map = (HTreeMap<K, V>) mapCache.computeIfAbsent(filePath, k -> {
+                final var dbMaker = DBMaker.fileDB(filePath)
+                        .closeOnJvmShutdown()
+                        .fileMmapEnableIfSupported()
+                        .fileMmapPreclearDisable()
+                        .cleanerHackEnable()
+                        .fileLockDisable()
+                        .make();
+                return (HTreeMap<K, V>) dbMaker.hashMap("map").createOrOpen();
+            });
+
+            // Increment reference count for the map
+            openMaps.compute(filePath, (k, existing) -> existing == null ? 1 : existing + 1);
+            return map; // Return cached or newly created map
+        } catch (final Exception e) {
+            usedLock.unlock();
+            throw e; // Re-throw to let caller handle
+        }
     }
 
     /**
-     * Use for reads and writes
-     * User is in charge of calling close() to prevent map corruption.
+     * Convenience method for default read-write access.
      */
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
-        Logger.info("Opening MapDB at: {}", filePath);
-        final var db = DBMaker
-                .fileDB(filePath)
-                .fileMmapEnableIfSupported() // Only enable mmap on supported platforms
-                .fileMmapPreclearDisable() // Make mmap file faster
-                .cleanerHackEnable()
-                .closeOnJvmShutdown()
-                .make();
-        return (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
+        return getDb(filePath, false); // Default to read-write
+    }
+
+    /**
+     * Closes the MapDB and releases the lock for the given filePath.
+     * Throws IllegalMonitorStateException if the current thread doesn’t own the
+     * lock.
+     */
+    public void close(final String filePath) {
+        openMaps.computeIfPresent(filePath, (k, refCount) -> {
+            if (refCount <= 1) {
+                final var map = mapCache.remove(filePath);
+                if (map != null) {
+                    map.close(); // Close map silently—no try-catch for speed
+                }
+                final var lock = fileLocks.get(filePath);
+                if (lock != null) {
+                    if (lock.isWriteLocked() && lock.getWriteHoldCount() > 0) {
+                        lock.writeLock().unlock();
+                    } else if (lock.getReadHoldCount() > 0) {
+                        lock.readLock().unlock();
+                    } else {
+                        throw new IllegalMonitorStateException(
+                                "No lock held for MapDB at " + filePath + " by " + Thread.currentThread());
+                    }
+                    fileLocks.remove(filePath);
+                }
+                return null; // Remove entry
+            }
+            return refCount - 1; // Decrement refCount
+        });
     }
 }

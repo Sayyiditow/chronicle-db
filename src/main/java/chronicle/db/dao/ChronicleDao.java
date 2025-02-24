@@ -1049,12 +1049,12 @@ public interface ChronicleDao<K, V> {
         final var indexFilePath = getIndexPath(search.field());
         final var db = getDb();
 
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.readDb(indexFilePath);
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath, true);
         try {
             return indexedSearch(search, db, indexDb);
         } finally {
             db.close();
-            indexDb.close();
+            MAP_DB.close(indexFilePath);
         }
     }
 
@@ -1062,34 +1062,34 @@ public interface ChronicleDao<K, V> {
         final var indexFilePath = getIndexPath(search.field());
         final var db = getDb();
 
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.readDb(indexFilePath);
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath, true);
         try {
             return indexedSearch(search, db, indexDb, limit);
         } finally {
             db.close();
-            indexDb.close();
+            MAP_DB.close(indexFilePath);
         }
     }
 
     default Map<K, V> indexedSearch(final Map<K, V> db, final Search search) {
         final var indexFilePath = getIndexPath(search.field());
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.readDb(indexFilePath);
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath, true);
 
         try {
             return indexedSearch(search, db, indexDb);
         } finally {
-            indexDb.close();
+            MAP_DB.close(indexFilePath);
         }
     }
 
     default Map<K, V> indexedSearch(final Map<K, V> db, final Search search, final int limit) {
         final var indexFilePath = getIndexPath(search.field());
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.readDb(indexFilePath);
+        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath, true);
 
         try {
             return indexedSearch(search, db, indexDb, limit);
         } finally {
-            indexDb.close();
+            MAP_DB.close(indexFilePath);
         }
     }
 
