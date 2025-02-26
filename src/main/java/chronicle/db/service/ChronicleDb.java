@@ -153,7 +153,8 @@ public final class ChronicleDb {
     }
 
     public String readString(final BytesIn<?> in) {
-        return in.readUtf8().isEmpty() ? null : in.readUtf8();
+        final String s = in.readUtf8();
+        return s != null && s.isEmpty() ? null : s;
     }
 
     public byte writeEnum(final Enum<?> en) {

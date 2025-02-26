@@ -616,7 +616,6 @@ public final class ChronicleUtils {
                             : (f2.getType().isEnum() && fieldVal != null ? toEnum(f2.getType(), fieldVal) : fieldVal);
                     f2.set(newObj, value);
                 } catch (final NoSuchFieldException e) {
-                    Logger.info("Field from source object does not exist in destination object: {}.", fieldName);
                 }
             }
 
