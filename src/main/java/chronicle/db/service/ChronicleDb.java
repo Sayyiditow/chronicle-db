@@ -12,6 +12,7 @@ import java.util.Map;
 import org.tinylog.Logger;
 
 import chronicle.db.dao.ChronicleDao;
+import net.openhft.chronicle.bytes.BytesIn;
 import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
 
@@ -22,6 +23,7 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
+    public static final int actualSegments = Runtime.getRuntime().availableProcessors() * 2;
 
     /**
      * Create or fetch a db
@@ -44,11 +46,12 @@ public final class ChronicleDb {
 
         if (file.exists()) {
             return ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor)
-                    .createPersistedTo(file);
+                    .actualSegments(actualSegments).createPersistedTo(file);
         }
 
         return ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
-                .averageValue(averageValue).maxBloatFactor(maxBloatFactor).createPersistedTo(file);
+                .actualSegments(actualSegments).averageValue(averageValue).maxBloatFactor(maxBloatFactor)
+                .createPersistedTo(file);
     }
 
     /**
@@ -143,5 +146,22 @@ public final class ChronicleDb {
 
     public <K, V> Map<K, V> getMapForMultiInserts(final ChronicleDao<K, V> dao) {
         return new HashMap<K, V>();
+    }
+
+    public String writeString(final String string) {
+        return string == null ? "" : string;
+    }
+
+    public String readString(final BytesIn<?> in) {
+        return in.readUtf8().isEmpty() ? null : in.readUtf8();
+    }
+
+    public byte writeEnum(final Enum<?> en) {
+        return (byte) (en != null ? en.ordinal() : -1);
+    }
+
+    public <E extends Enum<E>> E readEnum(final BytesIn<?> in, final Class<E> en) {
+        final byte ordinal = in.readByte();
+        return ordinal >= 0 ? en.getEnumConstants()[ordinal] : null;
     }
 }
