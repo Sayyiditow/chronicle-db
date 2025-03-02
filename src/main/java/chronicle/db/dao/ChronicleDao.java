@@ -41,7 +41,7 @@ public interface ChronicleDao<K, V> {
     ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
             DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize";
-    String[] dbDirs = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
+    String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
 
     /**
      * Name of db for logging purposes
@@ -92,7 +92,7 @@ public interface ChronicleDao<K, V> {
 
     private void createDataDirs(final String dataPath) {
         if (!Files.exists(Path.of(dataPath))) {
-            for (final String dir : dbDirs) {
+            for (final String dir : DB_DIRS) {
                 try {
                     Files.createDirectories(Path.of(dataPath + dir));
                 } catch (final IOException e) {
