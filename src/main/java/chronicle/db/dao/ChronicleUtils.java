@@ -622,7 +622,8 @@ public final class ChronicleUtils {
             for (final Field field : newFieldsSet) { // Use Set for iteration
                 final Object defValue = def.get(field.getName());
                 if (defValue != null) {
-                    field.set(newObj, defValue);
+                    final var value = field.getType().isEnum() ? toEnum(field.getType(), defValue) : defValue;
+                    field.set(newObj, value);
                 }
             }
             map.put(key, newObj);
