@@ -1047,9 +1047,9 @@ public interface ChronicleDao<K, V> {
 
     default Map<K, V> indexedSearch(final Search search) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
-        final var db = getDb();
 
         final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath, true);
+        final var db = getDb();
         try {
             return indexedSearch(search, db, indexDb);
         } finally {
@@ -1060,9 +1060,9 @@ public interface ChronicleDao<K, V> {
 
     default Map<K, V> indexedSearch(final Search search, final int limit) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
-        final var db = getDb();
 
         final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexFilePath, true);
+        final var db = getDb();
         try {
             return indexedSearch(search, db, indexDb, limit);
         } finally {
