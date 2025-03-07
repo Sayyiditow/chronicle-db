@@ -59,21 +59,19 @@ public final class MapDb {
      * Closes the MapDB instance for the given filePath when no longer in use.
      */
     public void close(final String filePath) {
-        final Integer count = openMaps.compute(filePath, (k, v) -> {
-            if (v == null || v <= 1)
-                return null; // Remove if 1 or not present
-            return v - 1; // Decrement
+        openMaps.compute(filePath, (k, v) -> {
+            if (v == null || v <= 1) {
+                final HTreeMap<?, ?> map = mapCache.remove(filePath);
+                final DB db = dbCache.remove(filePath);
+                if (db != null && !db.isClosed()) {
+                    db.close();
+                }
+                if (map != null) {
+                    map.close();
+                }
+                return null;
+            }
+            return v - 1;
         });
-
-        if (count == null) { // No more references
-            final HTreeMap<?, ?> map = mapCache.remove(filePath);
-            final DB db = dbCache.remove(filePath);
-            if (db != null && !db.isClosed()) {
-                db.close(); // Clean shutdown (no commit needed without transactions)
-            }
-            if (map != null) {
-                map.close();
-            }
-        }
     }
 }
