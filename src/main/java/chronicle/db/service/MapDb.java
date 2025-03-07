@@ -14,7 +14,7 @@ public final class MapDb {
     public static final MapDb MAP_DB = new MapDb();
     private final ConcurrentHashMap<String, Integer> openMaps = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, HTreeMap<?, ?>> mapCache = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, DB> dbCache = new ConcurrentHashMap<>(); // Track DB instances
+    private final ConcurrentHashMap<String, DB> dbCache = new ConcurrentHashMap<>();
 
     /**
      * Opens a MapDB for reads and writes (or reads only if readOnly is true).
@@ -23,10 +23,14 @@ public final class MapDb {
      */
     @SuppressWarnings("unchecked")
     public <K, V> HTreeMap<K, V> getDb(final String filePath, final boolean readOnly) {
-        return (HTreeMap<K, V>) mapCache.computeIfAbsent(filePath, k -> {
+        // Increment open count for this filePath every time getDb is called
+        openMaps.compute(filePath, (k, v) -> v == null ? 1 : v + 1);
+
+        // Get or create the map
+        final HTreeMap<?, ?> map = mapCache.computeIfAbsent(filePath, k -> {
             try {
                 final var dbMaker = DBMaker.fileDB(filePath)
-                        .closeOnJvmShutdown() // Ensure shutdown hook
+                        .closeOnJvmShutdown()
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable();
@@ -34,20 +38,19 @@ public final class MapDb {
                     dbMaker.readOnly();
                 }
                 final DB db = dbMaker.make();
-                dbCache.put(filePath, db); // Cache the DB instance
-                final var map = (HTreeMap<K, V>) db.hashMap("map").createOrOpen();
-                openMaps.put(filePath, 1); // Initialize count to 1
-                return map;
+                dbCache.put(filePath, db); // Store DB instance
+                return db.hashMap("map").createOrOpen();
             } catch (final Exception e) {
                 Logger.error("Failed to open MapDB for {}: {}", filePath, e.getMessage());
+                // Roll back openMaps increment on failure
+                openMaps.compute(filePath, (k2, v2) -> v2 <= 1 ? null : v2 - 1);
                 throw new RuntimeException("MapDB initialization failed", e);
             }
         });
+
+        return (HTreeMap<K, V>) map;
     }
 
-    /**
-     * Convenience method for default read-write access.
-     */
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
         return getDb(filePath, false);
     }
@@ -56,13 +59,17 @@ public final class MapDb {
      * Closes the MapDB instance for the given filePath when no longer in use.
      */
     public void close(final String filePath) {
-        final Integer count = openMaps.compute(filePath, (k, v) -> v == null || v <= 1 ? null : v - 1);
+        final Integer count = openMaps.compute(filePath, (k, v) -> {
+            if (v == null || v <= 1)
+                return null; // Remove if 1 or not present
+            return v - 1; // Decrement
+        });
+
         if (count == null) { // No more references
             final HTreeMap<?, ?> map = mapCache.remove(filePath);
             final DB db = dbCache.remove(filePath);
             if (db != null && !db.isClosed()) {
-                db.commit(); // Ensure changes are saved
-                db.close(); // Clean shutdown
+                db.close(); // Clean shutdown (no commit needed without transactions)
             }
             if (map != null) {
                 map.close();
