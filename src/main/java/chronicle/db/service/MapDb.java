@@ -5,7 +5,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.mapdb.DB;
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
-import org.tinylog.Logger;
 
 public final class MapDb {
     private MapDb() {
@@ -22,7 +21,7 @@ public final class MapDb {
      * Uses mmap if supported for maximum performance.
      */
     @SuppressWarnings("unchecked")
-    public <K, V> HTreeMap<K, V> getDb(final String filePath, final boolean readOnly) {
+    public <K, V> HTreeMap<K, V> getDb(final String filePath) {
         // Increment open count for this filePath every time getDb is called
         openMaps.compute(filePath, (k, v) -> v == null ? 1 : v + 1);
 
@@ -34,25 +33,17 @@ public final class MapDb {
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable();
-                if (readOnly) {
-                    dbMaker.readOnly();
-                }
-                final DB db = dbMaker.make();
+                final var db = dbMaker.make();
                 dbCache.put(filePath, db); // Store DB instance
                 return db.hashMap("map").createOrOpen();
             } catch (final Exception e) {
-                Logger.error("Failed to open MapDB for {}: {}", filePath, e.getMessage());
                 // Roll back openMaps increment on failure
                 openMaps.compute(filePath, (k2, v2) -> v2 <= 1 ? null : v2 - 1);
-                throw new RuntimeException("MapDB initialization failed", e);
+                throw new RuntimeException("MapDB initialization failed for " + filePath, e);
             }
         });
 
         return (HTreeMap<K, V>) map;
-    }
-
-    public <K, V> HTreeMap<K, V> getDb(final String filePath) {
-        return getDb(filePath, false);
     }
 
     /**
@@ -61,8 +52,8 @@ public final class MapDb {
     public void close(final String filePath) {
         openMaps.compute(filePath, (k, v) -> {
             if (v == null || v <= 1) {
-                final HTreeMap<?, ?> map = mapCache.remove(filePath);
-                final DB db = dbCache.remove(filePath);
+                final var map = mapCache.remove(filePath);
+                final var db = dbCache.remove(filePath);
                 if (db != null && !db.isClosed()) {
                     db.close();
                 }
