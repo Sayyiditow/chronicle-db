@@ -1,21 +1,18 @@
 package chronicle.db.service;
 
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
+import org.tinylog.Logger;
 
 public final class MapDb {
     private MapDb() {
     }
 
     public static final MapDb MAP_DB = new MapDb();
-    private final ConcurrentHashMap<String, ReentrantReadWriteLock> fileLocks = new ConcurrentHashMap<>(); // Lock per
-                                                                                                           // file
-    private final ConcurrentHashMap<String, Integer> openMaps = new ConcurrentHashMap<>(); // Reference count per file
-    private final ConcurrentHashMap<String, HTreeMap<?, ?>> mapCache = new ConcurrentHashMap<>(); // Cached maps
+    private final ConcurrentHashMap<String, Integer> openMaps = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, HTreeMap<?, ?>> mapCache = new ConcurrentHashMap<>();
 
     /**
      * Opens a MapDB for reads and writes (or reads only if readOnly is true).
@@ -24,36 +21,29 @@ public final class MapDb {
      */
     @SuppressWarnings("unchecked")
     public <K, V> HTreeMap<K, V> getDb(final String filePath, final boolean readOnly) {
-        final ReentrantReadWriteLock lock = fileLocks.computeIfAbsent(filePath, k -> new ReentrantReadWriteLock());
-        final Lock usedLock = readOnly ? lock.readLock() : lock.writeLock();
-
-        usedLock.lock();
-        try {
-            final var map = (HTreeMap<K, V>) mapCache.computeIfAbsent(filePath, k -> {
+        return (HTreeMap<K, V>) mapCache.computeIfAbsent(filePath, k -> {
+            try {
                 final var dbMaker = DBMaker.fileDB(filePath)
-                        .closeOnJvmShutdown()
+                        .closeOnJvmShutdown() // MapDB handles shutdown
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
-                        .cleanerHackEnable()
-                        .fileLockDisable()
-                        .make();
-                return (HTreeMap<K, V>) dbMaker.hashMap("map").createOrOpen();
-            });
-
-            // Increment reference count for the map
-            openMaps.compute(filePath, (k, existing) -> existing == null ? 1 : existing + 1);
-            return map; // Return cached or newly created map
-        } catch (final Exception e) {
-            usedLock.unlock();
-            throw e; // Re-throw to let caller handle
-        }
+                        .cleanerHackEnable();
+                if (readOnly) {
+                    dbMaker.readOnly();
+                }
+                return (HTreeMap<K, V>) dbMaker.make().hashMap("map").createOrOpen();
+            } catch (final Exception e) {
+                Logger.error("Failed to open MapDB for {}: {}", filePath, e.getMessage());
+                throw new RuntimeException("MapDB initialization failed", e);
+            }
+        });
     }
 
     /**
      * Convenience method for default read-write access.
      */
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
-        return getDb(filePath, false); // Default to read-write
+        return getDb(filePath, false);
     }
 
     /**
@@ -66,20 +56,15 @@ public final class MapDb {
             if (refCount <= 1) {
                 final var map = mapCache.remove(filePath);
                 if (map != null) {
-                    map.close(); // Close map silently—no try-catch for speed
-                    final var lock = fileLocks.get(filePath);
-                    if (lock != null) {
-                        if (lock.getWriteHoldCount() > 0) {
-                            lock.writeLock().unlock();
-                        } else if (lock.getReadHoldCount() > 0) {
-                            lock.readLock().unlock();
-                        }
-                        fileLocks.remove(filePath); // Clean up lock after unlocking
+                    try {
+                        map.close();
+                    } catch (final Exception e) {
+                        Logger.error("Error closing MapDB for {}: {}", filePath, e.getMessage());
                     }
                 }
-                return null; // Remove entry
+                return null;
             }
-            return refCount - 1; // Decrement refCount
+            return refCount - 1;
         });
     }
 }
