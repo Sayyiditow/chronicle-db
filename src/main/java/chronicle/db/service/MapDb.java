@@ -76,11 +76,4 @@ public final class MapDb {
             }
         }
     }
-
-    /**
-     * Returns the number of open references to the map at filePath.
-     */
-    public int getOpenCount(final String filePath) {
-        return openMaps.getOrDefault(filePath, 0);
-    }
 }
