@@ -29,9 +29,7 @@ public final class MapDb {
                         .closeOnJvmShutdown() // Ensure shutdown hook
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
-                        .cleanerHackEnable()
-                        .checksumHeaderBypass() // Recover from corruption
-                        .transactionEnable(); // Prevent future corruption
+                        .cleanerHackEnable();
                 if (readOnly) {
                     dbMaker.readOnly();
                 }
