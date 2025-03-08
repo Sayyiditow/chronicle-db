@@ -5,6 +5,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.mapdb.DB;
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
+import org.tinylog.Logger;
 
 public final class MapDb {
     private MapDb() {
@@ -26,10 +27,11 @@ public final class MapDb {
         openMaps.compute(filePath, (k, v) -> v == null ? 1 : v + 1);
 
         // Get or create the map
-        final HTreeMap<?, ?> map = mapCache.computeIfAbsent(filePath, k -> {
+        return (HTreeMap<K, V>) mapCache.computeIfAbsent(filePath, k -> {
             try {
                 final var dbMaker = DBMaker.fileDB(filePath)
                         .closeOnJvmShutdown()
+                        .fileLockDisable()
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable();
@@ -39,11 +41,10 @@ public final class MapDb {
             } catch (final Exception e) {
                 // Roll back openMaps increment on failure
                 openMaps.compute(filePath, (k2, v2) -> v2 <= 1 ? null : v2 - 1);
+                Logger.error(e);
                 throw new RuntimeException("MapDB initialization failed for " + filePath, e);
             }
         });
-
-        return (HTreeMap<K, V>) map;
     }
 
     /**

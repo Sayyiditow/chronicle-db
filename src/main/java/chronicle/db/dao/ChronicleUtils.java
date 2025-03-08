@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -39,6 +41,7 @@ import chronicle.db.entity.Search.SearchType;
 
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleUtils {
+    private static final ConcurrentMap<String, Object> WRITE_LOCKS = new ConcurrentHashMap<>();
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
 
     public <K> void getLog(final String name, final K key, final String path) {
@@ -300,8 +303,14 @@ public final class ChronicleUtils {
             final String indexPath = indexDirPath + "/" + entry.getKey();
             deleteFileIfExists(indexPath);
             final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-            indexDb.putAll(entry.getValue());
-            MAP_DB.close(indexPath);
+            try {
+                final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
+                synchronized (lock) {
+                    indexDb.putAll(entry.getValue());
+                }
+            } finally {
+                MAP_DB.close(indexPath);
+            }
         });
     }
 
@@ -336,7 +345,10 @@ public final class ChronicleUtils {
                 if (isEnum || indexKey == null) {
                     indexKey = Objects.toString(indexKey, "null");
                 }
-                removeKeyFromIndex(indexDb, indexKey, entry.getKey());
+                final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
+                synchronized (lock) {
+                    removeKeyFromIndex(indexDb, indexKey, entry.getKey());
+                }
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {
             Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath,
@@ -389,12 +401,15 @@ public final class ChronicleUtils {
                 final V newValue = values.get(key);
                 final V prevValue = prevValues.get(key);
                 Object newIndexKey = field.get(newValue);
+                final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
 
                 if (prevValue == null) {
                     if (isEnum || newIndexKey == null) {
                         newIndexKey = Objects.toString(newIndexKey, "null");
                     }
-                    addKeyToIndex(indexDb, newIndexKey, key);
+                    synchronized (lock) {
+                        addKeyToIndex(indexDb, newIndexKey, key);
+                    }
                 } else {
                     Object prevIndexKey = field.get(prevValue);
                     if (!Objects.equals(newIndexKey, prevIndexKey)) {
@@ -407,8 +422,10 @@ public final class ChronicleUtils {
                         if (newIndexKey == null)
                             newIndexKey = "null";
 
-                        removeKeyFromIndex(indexDb, prevIndexKey, key);
-                        addKeyToIndex(indexDb, newIndexKey, key);
+                        synchronized (lock) {
+                            removeKeyFromIndex(indexDb, prevIndexKey, key);
+                            addKeyToIndex(indexDb, newIndexKey, key);
+                        }
                     }
                 }
             }
