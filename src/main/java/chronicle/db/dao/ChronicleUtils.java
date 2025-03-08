@@ -338,20 +338,21 @@ public final class ChronicleUtils {
             final Field field = sampleValue.getClass().getField(file);
             final boolean isEnum = field.getType().isEnum();
 
-            for (final var entry : values.entrySet()) {
-                final V value = entry.getValue();
-                Object indexKey = field.get(value);
-                if (isEnum || indexKey == null) {
-                    indexKey = Objects.toString(indexKey, "null");
-                }
-                final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
-                synchronized (lock) {
-                    final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                    try {
+            final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
+            synchronized (lock) {
+                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                try {
+                    for (final var entry : values.entrySet()) {
+                        final V value = entry.getValue();
+                        Object indexKey = field.get(value);
+                        if (isEnum || indexKey == null) {
+                            indexKey = Objects.toString(indexKey, "null");
+                        }
+
                         removeKeyFromIndex(indexDb, indexKey, entry.getKey());
-                    } finally {
-                        MAP_DB.close(indexPath);
                     }
+                } finally {
+                    MAP_DB.close(indexPath);
                 }
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {
@@ -397,47 +398,41 @@ public final class ChronicleUtils {
             final V sampleValue = values.values().iterator().next();
             final Field field = sampleValue.getClass().getField(file);
             final boolean isEnum = field.getType().isEnum();
+            final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
 
-            for (final K key : values.keySet()) {
-                final V newValue = values.get(key);
-                final V prevValue = prevValues.get(key);
-                Object newIndexKey = field.get(newValue);
-                final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
+            synchronized (lock) {
+                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                try {
+                    for (final K key : values.keySet()) {
+                        final V newValue = values.get(key);
+                        final V prevValue = prevValues.get(key);
+                        Object newIndexKey = field.get(newValue);
 
-                if (prevValue == null) {
-                    if (isEnum || newIndexKey == null) {
-                        newIndexKey = Objects.toString(newIndexKey, "null");
-                    }
-                    synchronized (lock) {
-                        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                        try {
+                        if (prevValue == null) {
+                            if (isEnum || newIndexKey == null) {
+                                newIndexKey = Objects.toString(newIndexKey, "null");
+                            }
                             addKeyToIndex(indexDb, newIndexKey, key);
-                        } finally {
-                            MAP_DB.close(indexPath);
-                        }
-                    }
-                } else {
-                    Object prevIndexKey = field.get(prevValue);
-                    if (!Objects.equals(newIndexKey, prevIndexKey)) {
-                        if (isEnum) {
-                            prevIndexKey = String.valueOf(prevIndexKey);
-                            newIndexKey = String.valueOf(newIndexKey);
-                        }
-                        if (prevIndexKey == null)
-                            prevIndexKey = "null";
-                        if (newIndexKey == null)
-                            newIndexKey = "null";
 
-                        synchronized (lock) {
-                            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                            try {
+                        } else {
+                            Object prevIndexKey = field.get(prevValue);
+                            if (!Objects.equals(newIndexKey, prevIndexKey)) {
+                                if (isEnum) {
+                                    prevIndexKey = String.valueOf(prevIndexKey);
+                                    newIndexKey = String.valueOf(newIndexKey);
+                                }
+                                if (prevIndexKey == null)
+                                    prevIndexKey = "null";
+                                if (newIndexKey == null)
+                                    newIndexKey = "null";
+
                                 removeKeyFromIndex(indexDb, prevIndexKey, key);
                                 addKeyToIndex(indexDb, newIndexKey, key);
-                            } finally {
-                                MAP_DB.close(indexPath);
                             }
                         }
                     }
+                } finally {
+                    MAP_DB.close(indexPath);
                 }
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {
