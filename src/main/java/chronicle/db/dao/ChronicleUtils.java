@@ -301,15 +301,15 @@ public final class ChronicleUtils {
         // Write to disk in parallel
         fieldIndexMap.entrySet().parallelStream().forEach(entry -> {
             final String indexPath = indexDirPath + "/" + entry.getKey();
-            deleteFileIfExists(indexPath);
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-            try {
-                final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
-                synchronized (lock) {
+            final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
+            synchronized (lock) {
+                deleteFileIfExists(indexPath);
+                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                try {
                     indexDb.putAll(entry.getValue());
+                } finally {
+                    MAP_DB.close(indexPath);
                 }
-            } finally {
-                MAP_DB.close(indexPath);
             }
         });
     }
@@ -329,7 +329,6 @@ public final class ChronicleUtils {
             final String file) {
         final String indexPath = dataPath + "/indexes/" + file; // Avoid concatenation in loop
 
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
         try {
             if (values.isEmpty())
                 return; // Early exit for empty input
@@ -347,15 +346,18 @@ public final class ChronicleUtils {
                 }
                 final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
                 synchronized (lock) {
-                    removeKeyFromIndex(indexDb, indexKey, entry.getKey());
+                    final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                    try {
+                        removeKeyFromIndex(indexDb, indexKey, entry.getKey());
+                    } finally {
+                        MAP_DB.close(indexPath);
+                    }
                 }
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {
             Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath,
                     e);
             deleteFileIfExists(indexPath);
-        } finally {
-            MAP_DB.close(indexPath);
         }
     }
 
@@ -387,7 +389,6 @@ public final class ChronicleUtils {
             final Map<K, V> values, final String file, final Map<K, V> prevValues) {
         final String indexPath = dataPath + "/indexes/" + file; // Precompute outside sync
 
-        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
         try {
             if (values.isEmpty())
                 return; // Early exit
@@ -408,7 +409,12 @@ public final class ChronicleUtils {
                         newIndexKey = Objects.toString(newIndexKey, "null");
                     }
                     synchronized (lock) {
-                        addKeyToIndex(indexDb, newIndexKey, key);
+                        final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                        try {
+                            addKeyToIndex(indexDb, newIndexKey, key);
+                        } finally {
+                            MAP_DB.close(indexPath);
+                        }
                     }
                 } else {
                     Object prevIndexKey = field.get(prevValue);
@@ -423,8 +429,13 @@ public final class ChronicleUtils {
                             newIndexKey = "null";
 
                         synchronized (lock) {
-                            removeKeyFromIndex(indexDb, prevIndexKey, key);
-                            addKeyToIndex(indexDb, newIndexKey, key);
+                            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                            try {
+                                removeKeyFromIndex(indexDb, prevIndexKey, key);
+                                addKeyToIndex(indexDb, newIndexKey, key);
+                            } finally {
+                                MAP_DB.close(indexPath);
+                            }
                         }
                     }
                 }
@@ -432,8 +443,6 @@ public final class ChronicleUtils {
         } catch (NoSuchFieldException | IllegalAccessException e) {
             Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
             deleteFileIfExists(indexPath);
-        } finally {
-            MAP_DB.close(indexPath);
         }
     }
 
