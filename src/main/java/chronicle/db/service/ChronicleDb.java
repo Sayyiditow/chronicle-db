@@ -165,4 +165,13 @@ public final class ChronicleDb {
         final byte ordinal = in.readByte();
         return ordinal >= 0 ? en.getEnumConstants()[ordinal] : null;
     }
+
+    public short writeEnum2(final Enum<?> en) {
+        return (short) (en != null ? en.ordinal() : -1);
+    }
+
+    public <E extends Enum<E>> E readEnum2(final BytesIn<?> in, final Class<E> en) {
+        final short ordinal = in.readShort();
+        return ordinal >= 0 ? en.getEnumConstants()[ordinal] : null;
+    }
 }
