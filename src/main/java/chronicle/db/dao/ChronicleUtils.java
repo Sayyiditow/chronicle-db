@@ -268,7 +268,7 @@ public final class ChronicleUtils {
                 try {
                     fieldMap.put(field, sampleValue.getClass().getField(field));
                 } catch (final NoSuchFieldException e) {
-                    Logger.error("No such field exists {} when indexing {} at {}. {}", field, dbName, dataPath,
+                    Logger.error("No such field exists [{}] when indexing {} at {}. {}", field, dbName, dataPath,
                             e.getMessage());
                     nonExistentFields.add(field);
                     deleteFileIfExists(indexDirPath + "/" + field);
@@ -293,7 +293,7 @@ public final class ChronicleUtils {
                     }
                     indexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(key);
                 } catch (final IllegalAccessException e) { // IllegalArgumentException unlikely after precompute
-                    Logger.error("Error getting field value for {} at {}. {}", field, dbName, e.getMessage());
+                    Logger.error("Error getting field value for [{}] at {}. {}", field, dbName, e.getMessage());
                 }
             }
         }
@@ -356,7 +356,7 @@ public final class ChronicleUtils {
                 }
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {
-            Logger.error("No such field exists {} when removing from index {} at {}. {}", file, dbName, dataPath,
+            Logger.error("No such field exists [{}] when removing from index {} at {}. {}", file, dbName, dataPath,
                     e);
             deleteFileIfExists(indexPath);
         }
@@ -436,7 +436,7 @@ public final class ChronicleUtils {
                 }
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {
-            Logger.error("No such field exists {} when adding to index {} at. {}", file, dbName, dataPath, e);
+            Logger.error("No such field exists [{}] when adding to index {} at. {}", file, dbName, dataPath, e);
             deleteFileIfExists(indexPath);
         }
     }
@@ -499,7 +499,7 @@ public final class ChronicleUtils {
                     final Field field = value.getClass().getField(f);
                     valueMap.put(f, field.get(value));
                 } catch (NoSuchFieldException | IllegalAccessException e) {
-                    Logger.error("No such field: {} when making a subset of {}. {}", f, objectName, e);
+                    Logger.error("No such field: [{}] when making a subset of {}. {}", f, objectName, e);
                 }
             }
         }
