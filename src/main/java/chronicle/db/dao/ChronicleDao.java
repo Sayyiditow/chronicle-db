@@ -9,10 +9,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +18,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.stream.Collectors;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
@@ -90,6 +87,13 @@ public interface ChronicleDao<K, V> {
         return 1;
     }
 
+    /**
+     * If an object needs indexes, use this to declare.
+     */
+    default List<String> indexFileNames() throws IOException {
+        return List.of();
+    }
+
     private void createDataDirs(final String dataPath) {
         if (!Files.exists(Path.of(dataPath))) {
             for (final String dir : DB_DIRS) {
@@ -129,30 +133,18 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * If this database object contains indexes
-     * 
-     * @throws IOException
-     */
-    default boolean containsIndexes() throws IOException {
-        return CHRONICLE_UTILS.getFileList(dataPath() + INDEX_DIR).size() > 0;
-    }
-
-    default List<String> indexFileNames() throws IOException {
-        return CHRONICLE_UTILS.getFileList(dataPath() + INDEX_DIR);
-    }
-
-    /**
      * Delete and rerun all indexes. Faster when inserting a lot of records.
      * 
      * @throws IOException
      */
-    default String[] deleteIndexes() throws IOException {
+    default List<String> deleteIndexes() throws IOException {
         final var available = indexFileNames();
+
         available.forEach(f -> {
             CHRONICLE_UTILS.deleteFileIfExists(dataPath() + INDEX_DIR + f);
         });
 
-        return available.toArray(new String[available.size()]);
+        return available;
     }
 
     /**
@@ -193,7 +185,8 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      * 
      */
-    private void initIndex(final Map<K, V> db, final String[] fields, final String indexDirPath) throws IOException {
+    private void initIndex(final Map<K, V> db, final List<String> fields, final String indexDirPath)
+            throws IOException {
         CHRONICLE_UTILS.index(db, name(), fields, dataPath(), indexDirPath);
     }
 
@@ -204,7 +197,7 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      * 
      */
-    default void initIndex(final String[] fields) throws IOException {
+    default void initIndex(final List<String> fields) throws IOException {
         initIndex(fetch(), fields, dataPath() + INDEX_DIR);
     }
 
@@ -214,9 +207,15 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     default void refreshIndexes() throws IOException {
-        Logger.info("Re-initializing indexes at {}.", dataPath());
         final var indexFiles = indexFileNames();
-        initIndex(indexFiles.toArray(new String[indexFiles.size()]));
+        if (!indexFiles.isEmpty()) {
+            Logger.info("Re-initializing indexes at {}.", dataPath());
+            initIndex(indexFiles);
+        }
+    }
+
+    default List<String> availableIndexes() throws IOException {
+        return CHRONICLE_UTILS.getFileList(dataPath() + INDEX_DIR);
     }
 
     /**
@@ -225,18 +224,20 @@ public interface ChronicleDao<K, V> {
      * @param fields
      * @throws IOException
      */
-    default void initDefaultIndexes(final String[] fields) throws IOException {
+    default void initDefaultIndexes() throws IOException {
         if (!CHRONICLE_UTILS.getFileList(dataPath() + DATA_DIR).isEmpty()) {
-            final var indexFiles = new HashSet<>(indexFileNames());
+            final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
 
-            if (indexFiles.size() != fields.length) {
-                final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-                synchronized (lock) {
-                    final var toIndex = Arrays.stream(fields).filter(field -> !indexFiles.contains(field))
-                            .collect(Collectors.toList());
+            synchronized (lock) {
+                final var availableIndexes = availableIndexes();
+                final var indexFileNames = indexFileNames();
+                if (availableIndexes.size() != indexFileNames.size()) {
+                    // Find items in indexFileNames not in availableIndexes
+                    final List<String> missingIndexes = new ArrayList<>(indexFileNames);
+                    missingIndexes.removeAll(availableIndexes);
 
-                    if (!toIndex.isEmpty()) {
-                        initIndex(toIndex.toArray(new String[toIndex.size()]));
+                    if (!missingIndexes.isEmpty()) {
+                        initIndex(missingIndexes);
                     }
                 }
             }
@@ -309,37 +310,6 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Archives data from the active object to speed up access
-     * The files/ will not be moved, only the data and indexes
-     * 
-     * @param folderName the arhive folder name - prefer monthly yyyyMM
-     * @param keys       the set of keys to move out from the main object
-     */
-    default void archive(final String folderName, final Set<K> keys) throws IOException {
-        final Map<K, V> values = get(keys);
-        final var archiveDataPath = dataPath().replace(name(), "") + folderName + "/" + name();
-        createDataDirs(archiveDataPath);
-        final var archiveDb = CHRONICLE_DB.getDb(name(), values.size(), averageKey(), averageValue(),
-                archiveDataPath + DATA_DIR + DATA_FILE, bloatFactor());
-        try {
-            archiveDb.putAll(values);
-            final var indexFiles = indexFileNames();
-            final var fields = indexFiles.toArray(new String[indexFiles.size()]);
-            initIndex(archiveDb, fields, archiveDataPath + INDEX_DIR);
-
-            for (final K key : keys) {
-                CHRONICLE_UTILS.moveDirContentsStartsWith(Path.of(dataPath() + FILES_DIR),
-                        Path.of(archiveDataPath + FILES_DIR), key.toString());
-            }
-
-            delete(archiveDb.keySet());
-            initIndex(fields);
-        } finally {
-            archiveDb.close();
-        }
-    }
-
-    /**
      * Remove a value using key
      * 
      * @param key the key to remove
@@ -350,6 +320,8 @@ public interface ChronicleDao<K, V> {
         final var db = getDb();
         CHRONICLE_UTILS.deleteLog(name(), key, dataPath());
         V value = null;
+        final var indexFileNames = indexFileNames();
+
         try {
             value = db.remove(key);
         } finally {
@@ -358,7 +330,9 @@ public interface ChronicleDao<K, V> {
 
         if (value != null) {
             CHRONICLE_UTILS.successDeleteLog(name(), key, dataPath());
-            CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, value));
+
+            if (!indexFileNames.isEmpty())
+                CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value));
             return true;
         }
 
@@ -377,8 +351,9 @@ public interface ChronicleDao<K, V> {
         final var db = getDb();
         Map<K, V> updatedMap = new HashMap<>();
         var updated = false;
+        final var indexFileNames = indexFileNames();
 
-        if (containsIndexes()) {
+        if (!indexFileNames.isEmpty()) {
             updatedMap = get(keys);
         }
 
@@ -390,7 +365,9 @@ public interface ChronicleDao<K, V> {
 
         if (updated) {
             Logger.info("Objects with keys {} deleted from {} at {}.", keys, name(), dataPath());
-            CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), updatedMap);
+            if (!indexFileNames.isEmpty()) {
+                CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, updatedMap);
+            }
         }
 
         return updated;
@@ -547,6 +524,7 @@ public interface ChronicleDao<K, V> {
 
         final var prevValueMap = new HashMap<K, V>(1);
         prevValueMap.put(key, prevValue);
+
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), prevValueMap);
         Logger.info("UPDATED into {} using key {} at {}.", name(), key, dataPath());
 
@@ -576,12 +554,14 @@ public interface ChronicleDao<K, V> {
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
         final var db = getDb();
         final var prevValues = new HashMap<K, V>(map.size());
+        final var indexFileNames = indexFileNames();
 
         try {
             for (final var entry : map.entrySet()) {
                 final K key = entry.getKey();
-                if (db.containsKey(key)) {
-                    prevValues.put(key, db.get(key));
+                final V oldValue = db.getUsing(key, using());
+                if (oldValue != null) {
+                    prevValues.put(key, oldValue);
                 }
             }
             db.putAll(map);
@@ -589,7 +569,8 @@ public interface ChronicleDao<K, V> {
             db.close();
         }
 
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+        if (!indexFileNames.isEmpty())
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, map, prevValues);
 
         return PutStatus.INSERTED;
     }
@@ -602,6 +583,7 @@ public interface ChronicleDao<K, V> {
 
         Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
         final var db = getDb();
+        final var indexFileNames = indexFileNames();
 
         try {
             db.putAll(map);
@@ -609,7 +591,8 @@ public interface ChronicleDao<K, V> {
             db.close();
         }
 
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+        if (!indexFileNames.isEmpty())
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, map, prevValues);
 
         return PutStatus.INSERTED;
     }
@@ -630,6 +613,7 @@ public interface ChronicleDao<K, V> {
         Logger.info("Updating multiple values into {} at {}.", name(), dataPath());
         final var db = getDb();
         final var prevValues = new HashMap<K, V>(map.size());
+        final var indexFileNames = indexFileNames();
 
         try {
             for (final var entry : map.entrySet()) {
@@ -641,7 +625,8 @@ public interface ChronicleDao<K, V> {
             db.close();
         }
 
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+        if (!indexFileNames.isEmpty())
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, map, prevValues);
 
         return PutStatus.UPDATED;
     }

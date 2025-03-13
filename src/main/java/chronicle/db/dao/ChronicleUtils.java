@@ -254,12 +254,12 @@ public final class ChronicleUtils {
      * @throws IOException
      * 
      */
-    public <K, V> void index(final Map<K, V> db, final String dbName, final String[] fields,
+    public <K, V> void index(final Map<K, V> db, final String dbName, final List<String> fields,
             final String dataPath, final String indexDirPath) {
-        final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.length);
-        final Map<String, Field> fieldMap = new HashMap<>(fields.length);
-        final Set<String> nonExistentFields = new HashSet<>(fields.length); // Faster contains() than Map
-        Logger.info("Indexing {} db at {} for : {}.", dbName, dataPath, Arrays.toString(fields));
+        final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.size());
+        final Map<String, Field> fieldMap = new HashMap<>(fields.size());
+        final Set<String> nonExistentFields = new HashSet<>(fields.size()); // Faster contains() than Map
+        Logger.info("Indexing {} db at {} for : {}.", dbName, dataPath, fields);
 
         // Precompute Field objects for all fields once, assuming V types are uniform
         final V sampleValue = db.isEmpty() ? null : db.values().iterator().next();
