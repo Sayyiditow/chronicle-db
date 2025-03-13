@@ -41,7 +41,7 @@ import chronicle.db.entity.Search.SearchType;
 
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleUtils {
-    private static final ConcurrentMap<String, Object> WRITE_LOCKS = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, Object> indexWriteLocks = new ConcurrentHashMap<>();
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
 
     public <K> void getLog(final String name, final K key, final String path) {
@@ -301,7 +301,7 @@ public final class ChronicleUtils {
         // Write to disk in parallel
         fieldIndexMap.entrySet().parallelStream().forEach(entry -> {
             final String indexPath = indexDirPath + "/" + entry.getKey();
-            final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
+            final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
             synchronized (lock) {
                 deleteFileIfExists(indexPath);
                 final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
@@ -338,7 +338,7 @@ public final class ChronicleUtils {
             final Field field = sampleValue.getClass().getField(file);
             final boolean isEnum = field.getType().isEnum();
 
-            final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
+            final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
             synchronized (lock) {
                 final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
                 try {
@@ -398,7 +398,7 @@ public final class ChronicleUtils {
             final V sampleValue = values.values().iterator().next();
             final Field field = sampleValue.getClass().getField(file);
             final boolean isEnum = field.getType().isEnum();
-            final var lock = WRITE_LOCKS.computeIfAbsent(indexPath, k -> new Object());
+            final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
 
             synchronized (lock) {
                 final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);

@@ -656,6 +656,25 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
+     * Add/Update multiple values into the db with no indexing
+     * 
+     * @param map the map to add
+     * @throws IOException
+     */
+    default PutStatus putAllIgnoreEntries(final Map<K, V> map) throws IOException {
+        Logger.info("Inserting multiple values into {} at {}.", name(), dataPath());
+        final var db = getDb();
+
+        try {
+            db.putAll(map);
+        } finally {
+            db.close();
+        }
+
+        return PutStatus.INSERTED;
+    }
+
+    /**
      * Migrate all records
      * 
      * @param map the map to add
