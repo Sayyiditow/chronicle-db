@@ -28,13 +28,12 @@ public final class MapDb {
         // Get or create the map
         return (HTreeMap<K, V>) mapCache.computeIfAbsent(filePath, k -> {
             try {
-                final var db = DBMaker.fileDB(filePath)
+                return DBMaker.fileDB(filePath)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
-                        .fileMmapEnableIfSupported()
-                        .fileMmapPreclearDisable()
-                        .cleanerHackEnable().make();
-                return db.hashMap("map").createOrOpen();
+                        .fileChannelEnable()
+                        .make().hashMap("map")
+                        .createOrOpen();
             } catch (final Exception e) {
                 // Roll back openMaps increment on failure
                 openMaps.compute(filePath, (k2, v2) -> v2 <= 1 ? null : v2 - 1);
