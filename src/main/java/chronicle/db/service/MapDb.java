@@ -1,6 +1,7 @@
 package chronicle.db.service;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.LongAdder;
 
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
@@ -11,9 +12,18 @@ public final class MapDb {
     }
 
     public static final MapDb MAP_DB = new MapDb();
-    private static final ConcurrentHashMap<String, Integer> openMaps = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<String, HTreeMap<?, ?>> mapCache = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<String, Object> closeLocks = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
+
+    private static class MapEntry {
+        final HTreeMap<?, ?> map;
+        final LongAdder refCount;
+
+        MapEntry(final HTreeMap<?, ?> map) {
+            this.map = map;
+            this.refCount = new LongAdder();
+            this.refCount.increment(); // Start with a reference count of 1
+        }
+    }
 
     /**
      * Opens a MapDB for reads and writes (or reads only if readOnly is true).
@@ -22,46 +32,53 @@ public final class MapDb {
      */
     @SuppressWarnings("unchecked")
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
-        // Track that we are opening this file path
-        openMaps.compute(filePath, (k, v) -> v == null ? 1 : v + 1);
+        final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
+            if (existingEntry != null) {
+                // Increment reference count for existing entry
+                existingEntry.refCount.increment();
+                return existingEntry;
+            }
 
-        // Get or create the map
-        return (HTreeMap<K, V>) mapCache.computeIfAbsent(filePath, k -> {
+            // Create a new entry
             try {
-                return DBMaker.fileDB(filePath)
+                return new MapEntry(DBMaker.fileDB(filePath)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
-                        .fileChannelEnable()
-                        .make().hashMap("map")
-                        .createOrOpen();
+                        .fileMmapEnableIfSupported()
+                        .fileMmapPreclearDisable()
+                        .cleanerHackEnable()
+                        .make()
+                        .hashMap("map")
+                        .createOrOpen());
             } catch (final Exception e) {
-                // Roll back openMaps increment on failure
-                openMaps.compute(filePath, (k2, v2) -> v2 <= 1 ? null : v2 - 1);
+                Logger.error("MapDB initialization failed for {}.", filePath);
                 Logger.error(e);
-                throw new RuntimeException("MapDB initialization failed for " + filePath, e);
+                return null;
             }
         });
+
+        if (entry != null) {
+            return (HTreeMap<K, V>) entry.map;
+        }
+
+        //returns null if any error occured, to prevent close() running when no increment was done
+        return null;
     }
 
     /**
      * Closes the MapDB instance for the given filePath when no longer in use.
      */
     public void close(final String filePath) {
-        openMaps.compute(filePath, (k, v) -> {
-            if (v == null || v <= 1) {
-                final var lock = closeLocks.computeIfAbsent(filePath, p -> new Object());
-                // Ensure no other thread is opening the DB at the same time
-                synchronized (lock) {
-                    if (openMaps.getOrDefault(filePath, 0) <= 1) {
-                        final var map = mapCache.remove(filePath);
-                        if (map != null && !map.isClosed()) {
-                            map.close();
-                        }
-                        return null;
-                    }
+        mapCache.computeIfPresent(filePath, (k, entry) -> {
+            entry.refCount.decrement();
+            if (entry.refCount.sum() == 0) {
+                // If the reference count reaches 0, close the map and remove the entry
+                if (!entry.map.isClosed()) {
+                    entry.map.close();
                 }
+                return null; // Remove the entry from the map
             }
-            return v - 1;
+            return entry; // Otherwise, keep the entry
         });
     }
 }
