@@ -23,7 +23,7 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
-    public static final int actualSegments = Runtime.getRuntime().availableProcessors() * 2;
+    public static final int CHRONICLE_SEGMENTS = Runtime.getRuntime().availableProcessors() * 2;
 
     /**
      * Create or fetch a db
@@ -46,11 +46,11 @@ public final class ChronicleDb {
 
         if (file.exists()) {
             return ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor)
-                    .actualSegments(actualSegments).createPersistedTo(file);
+                    .actualSegments(CHRONICLE_SEGMENTS).createPersistedTo(file);
         }
 
         return ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
-                .actualSegments(actualSegments).averageValue(averageValue).maxBloatFactor(maxBloatFactor)
+                .actualSegments(CHRONICLE_SEGMENTS).averageValue(averageValue).maxBloatFactor(maxBloatFactor)
                 .createPersistedTo(file);
     }
 
