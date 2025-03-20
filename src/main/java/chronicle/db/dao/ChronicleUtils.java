@@ -305,13 +305,8 @@ public final class ChronicleUtils {
             synchronized (lock) {
                 deleteFileIfExists(indexPath);
                 final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                if (indexDb != null) {
-                    try {
-                        indexDb.putAll(entry.getValue());
-                    } finally {
-                        MAP_DB.close(indexPath);
-                    }
-                }
+                indexDb.putAll(entry.getValue());
+                MAP_DB.close(indexPath);
             }
         });
     }
