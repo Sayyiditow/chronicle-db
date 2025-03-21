@@ -41,7 +41,7 @@ public final class MapDb {
 
             // Create a new entry
             try {
-                return new MapEntry(DBMaker.fileDB(filePath)
+                final var map = DBMaker.fileDB(filePath)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -49,7 +49,8 @@ public final class MapDb {
                         .cleanerHackEnable()
                         .make()
                         .hashMap("map")
-                        .createOrOpen());
+                        .createOrOpen();
+                return new MapEntry(map);
             } catch (final Exception e) {
                 Logger.error("MapDB initialization failed for {}.", filePath);
                 Logger.error(e);
@@ -61,7 +62,8 @@ public final class MapDb {
             return (HTreeMap<K, V>) entry.map;
         }
 
-        //returns null if any error occured, to prevent close() running when no increment was done
+        // returns null if any error occured, to prevent close() running when no
+        // increment was done
         return null;
     }
 
