@@ -643,7 +643,7 @@ public interface ChronicleDao<K, V> {
             try {
                 CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
             } catch (IllegalAccessException | NoSuchFieldException e) {
-                Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
+                Logger.error("No such field [{}] exists on searching {}.", search.field(), name());
                 break;
             }
         }
@@ -665,7 +665,7 @@ public interface ChronicleDao<K, V> {
             try {
                 CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
             } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException | SecurityException e) {
-                Logger.error("No such field: {} exists on searching {}. {}", search.field(), name(), e);
+                Logger.error("No such field [{}] exists on searching {}.", search.field(), name());
                 break;
             }
             if (map.size() == limit) {
