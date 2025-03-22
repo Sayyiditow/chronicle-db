@@ -543,6 +543,13 @@ public final class ChronicleUtils {
             field.set(object, fieldValue);
     }
 
+    public <V> void partialUpdateConcatenator(final V object, final String fieldName, final String fieldValue)
+            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
+        final var field = object.getClass().getField(fieldName);
+        final var value = (String) field.get(object);
+        field.set(object, value + fieldValue);
+    }
+
     public void deleteFileIfExists(final String filePath) {
         try {
             Files.delete(Path.of(filePath));
