@@ -29,7 +29,7 @@ public final class SequenceDb {
         } else {
             return ChronicleMapBuilder.of(String.class, Long.class)
                     .name(file.getName()).entries(entries).averageKey(UUID.randomUUID().toString())
-                    .actualSegments(ChronicleDb.CHRONICLE_SEGMENTS).averageValue(0L)
+                    .actualSegments(ChronicleDb.CHRONICLE_SEGMENTS)
                     .createPersistedTo(file);
         }
     }
