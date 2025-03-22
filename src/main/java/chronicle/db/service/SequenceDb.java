@@ -2,7 +2,6 @@ package chronicle.db.service;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Map;
 import java.util.UUID;
 
 import net.openhft.chronicle.map.ChronicleMap;
@@ -21,7 +20,7 @@ public final class SequenceDb {
      * @param entries  The expected number of unique keys (sequences).
      * @throws IOException If the ChronicleMap cannot be created or persisted.
      */
-    public ChronicleMap<String, Long> getSequenceDb(final String filePath, final long entries) throws IOException {
+    public ChronicleMap<String, Long> getDb(final String filePath, final long entries) throws IOException {
         final var file = new File(filePath);
 
         if (file.exists()) {
@@ -41,7 +40,7 @@ public final class SequenceDb {
      * @param key The sequence identifier (e.g., "user", "order").
      * @return The next Long value in the sequence.
      */
-    public long getNextSequence(final Map<String, Long> db, final String key) {
+    public long getNextSequence(final ChronicleMap<String, Long> db, final String key) {
         return db.compute(key, (k, currentValue) -> (currentValue != null ? currentValue : 0L) + 1L);
     }
 
@@ -51,7 +50,7 @@ public final class SequenceDb {
      * @param key The sequence identifier.
      * @return The current Long value, or 0 if not set.
      */
-    public long getCurrentSequence(final Map<String, Long> db, final String key) {
+    public long getCurrentSequence(final ChronicleMap<String, Long> db, final String key) {
         return db.getOrDefault(key, 0L);
     }
 
