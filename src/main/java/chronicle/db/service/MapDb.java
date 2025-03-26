@@ -7,6 +7,7 @@ import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
+@SuppressWarnings("unchecked")
 public final class MapDb {
     private MapDb() {
     }
@@ -30,7 +31,6 @@ public final class MapDb {
      * Returns an HTreeMap—call close(filePath) to release resources and unlock.
      * Uses mmap if supported for maximum performance.
      */
-    @SuppressWarnings("unchecked")
     public <K, V> HTreeMap<K, V> getDb(final String filePath) {
         final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
@@ -82,5 +82,15 @@ public final class MapDb {
             }
             return entry; // Otherwise, keep the entry
         });
+    }
+
+    public <K, V> HTreeMap<K, V> getMemoryDirectDb() {
+        return (HTreeMap<K, V>) DBMaker.memoryDirectDB()
+                .allocateStartSize(5 * 1024 * 1024) // 5 MB initial size
+                .allocateIncrement(2 * 1024 * 1024) // Grow by 2 MB
+                .closeOnJvmShutdown()
+                .make()
+                .hashMap("memory-direct")
+                .create();
     }
 }
