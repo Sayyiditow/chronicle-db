@@ -413,7 +413,6 @@ public final class ChronicleUtils {
                                     newIndexKey = Objects.toString(newIndexKey, "null");
                                 }
                                 addKeyToIndex(indexDb, newIndexKey, key);
-
                             } else {
                                 Object prevIndexKey = field.get(prevValue);
                                 if (!Objects.equals(newIndexKey, prevIndexKey)) {
