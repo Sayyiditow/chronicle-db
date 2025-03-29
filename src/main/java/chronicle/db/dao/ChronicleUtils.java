@@ -15,7 +15,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -217,13 +216,18 @@ public final class ChronicleUtils {
                 if (!containsIgnoreCase(currentValue, searchTerm))
                     map.put(key, value);
             }
+            // for arrays
             case CONTAINS -> {
-                if (Collections.singleton(currentValue).contains(searchTerm))
-                    map.put(key, value);
+                for (final var obj : (Object[]) currentValue) {
+                    if (obj.equals(searchTerm))
+                        map.put(key, value);
+                }
             }
             case NOT_CONTAINS -> {
-                if (!Collections.singleton(currentValue).contains(searchTerm))
-                    map.put(key, value);
+                for (final var obj : (Object[]) currentValue) {
+                    if (!obj.equals(searchTerm))
+                        map.put(key, value);
+                }
             }
             case STARTS_WITH -> {
                 if (String.valueOf(currentValue).toLowerCase().startsWith(String.valueOf(searchTerm).toLowerCase()))

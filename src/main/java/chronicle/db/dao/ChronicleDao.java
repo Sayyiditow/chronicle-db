@@ -806,17 +806,20 @@ public interface ChronicleDao<K, V> {
                     }
                 }
             }
+            // for arrays
             case CONTAINS -> {
                 for (final var entry : index.entrySet()) {
-                    if (Collections.singleton(entry.getKey()).contains(searchTerm)) {
-                        keys.addAll(entry.getValue());
+                    for (final var obj : (Object[]) entry.getKey()) {
+                        if (obj.equals(searchTerm))
+                            keys.addAll(entry.getValue());
                     }
                 }
             }
             case NOT_CONTAINS -> {
                 for (final var entry : index.entrySet()) {
-                    if (!Collections.singleton(entry.getKey()).contains(searchTerm)) {
-                        keys.addAll(entry.getValue());
+                    for (final var obj : (Object[]) entry.getKey()) {
+                        if (!obj.equals(searchTerm))
+                            keys.addAll(entry.getValue());
                     }
                 }
             }
