@@ -372,7 +372,7 @@ public interface ChronicleDao<K, V> {
             return null;
         }
         final var file = getDbFile(key, KEY_MAP_CACHE.get(dataPath()));
-        Logger.info("Querying key [{}] at [{}].", key, file);
+        Logger.info("Querying key [{}] at [{}].", key, dataPath());
 
         try (final var db = getDb(file)) {
             return db.getUsing(key, using());
@@ -432,7 +432,7 @@ public interface ChronicleDao<K, V> {
 
         final var keyMap = KEY_MAP_CACHE.get(dataPath());
         final var file = getDbFile(key, keyMap);
-        Logger.info("Deleting key [{}] at [{}].", key, file);
+        Logger.info("Deleting key [{}] at [{}].", key, dataPath());
         final var keyLock = LOCKS.computeIfAbsent(dataPath() + key, k -> new Object());
 
         V value = null;
@@ -450,7 +450,6 @@ public interface ChronicleDao<K, V> {
             }
             final var indexFileNames = indexFileNames();
             CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value));
-            Logger.info("[{}] deleted at [{}].", key, file);
             return true;
         }
     }
