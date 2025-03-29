@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -42,21 +43,19 @@ import chronicle.db.entity.Search.SearchType;
 public final class ChronicleUtils {
     private static final ConcurrentMap<String, Object> indexWriteLocks = new ConcurrentHashMap<>();
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
+    private static final ConcurrentMap<Class<?>, Map<String, Field>> FIELD_CACHE = new ConcurrentHashMap<>();
 
-    public <K> void getLog(final String name, final K key, final String path) {
-        Logger.info("Querying {} using key {} at {}.", name, key, path);
-    }
-
-    public <K> void deleteLog(final String name, final K key, final String path) {
-        Logger.info("Deleting from {} using key {} at {}.", name, key, path);
-    }
-
-    public <K> void deleteAllLog(final String name, final Set<K> keys) {
-        Logger.info("Deleting from db: {} using multiple keys {}.", name, keys);
-    }
-
-    public <K> void successDeleteLog(final String name, final K key, final String path) {
-        Logger.info("Object with key {} deleted from {} at {}.", key, name, path);
+    private Field getCachedField(final Class<?> clazz, final String fieldName) {
+        return FIELD_CACHE.computeIfAbsent(clazz, c -> new ConcurrentHashMap<>())
+                .computeIfAbsent(fieldName, f -> {
+                    try {
+                        final Field field = clazz.getDeclaredField(f);
+                        return field;
+                    } catch (final NoSuchFieldException e) {
+                        Logger.error("No such field [{}] in class [{}].", f, clazz.getSimpleName(), e);
+                        return null;
+                    }
+                });
     }
 
     public <T> String toJsonFromObj(final T prop) {
@@ -168,16 +167,17 @@ public final class ChronicleUtils {
 
     public <K, V> void search(final Search search, final K key, final V value, final Map<K, V> map)
             throws NoSuchFieldException, IllegalAccessException {
-        final Field field = value.getClass().getField(search.field());
-        if (field == null)
+        final Field field = getCachedField(value.getClass(), search.field());
+        if (field == null) {
+            Logger.error("No such field [{}] exists on searching {}", search.field(), value.getClass().getSimpleName());
             return;
+        }
 
         final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), field.getType());
-        List<Object> searchTermList = null;
         final SearchType searchType = search.searchType();
-        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
-            searchTermList = setSearchTermNonIndexed((List<Object>) search.searchTerm(), field.getType());
-        }
+        final List<Object> searchTermList = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? setSearchTermNonIndexed((List<Object>) search.searchTerm(), field.getType())
+                : null;
 
         final Object currentValue = field.get(value);
         if (currentValue == null)
@@ -260,44 +260,32 @@ public final class ChronicleUtils {
      */
     public <K, V> void index(final Map<K, V> db, final String dbName, final List<String> fields,
             final String dataPath, final String indexDirPath) {
-        final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.size());
-        final Map<String, Field> fieldMap = new HashMap<>(fields.size());
-        final Set<String> nonExistentFields = new HashSet<>(fields.size()); // Faster contains() than Map
         Logger.info("Indexing {} db at {} for : {}.", dbName, dataPath, fields);
-
-        // Precompute Field objects for all fields once, assuming V types are uniform
         final V sampleValue = db.isEmpty() ? null : db.values().iterator().next();
-        if (sampleValue != null) {
-            for (final String field : fields) {
-                try {
-                    fieldMap.put(field, sampleValue.getClass().getField(field));
-                } catch (final NoSuchFieldException e) {
-                    Logger.error("No such field exists [{}] when indexing {} at {}. {}", field, dbName, dataPath,
-                            e.getMessage());
-                    nonExistentFields.add(field);
-                    deleteFileIfExists(indexDirPath + "/" + field);
-                }
-            }
+        if (sampleValue == null)
+            return;
+
+        final Map<String, Field> fieldMap = new HashMap<>(fields.size());
+        final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.size());
+        for (final String field : fields) {
+            final Field f = getCachedField(sampleValue.getClass(), field);
+            if (f != null)
+                fieldMap.put(field, f);
         }
 
-        // Index building
         for (final var entry : db.entrySet()) {
             final K key = entry.getKey();
             final V value = entry.getValue();
-            for (final String field : fields) {
-                if (nonExistentFields.contains(field))
-                    continue;
-
-                final Field f = fieldMap.get(field); // Already precomputed
+            for (final String field : fieldMap.keySet()) {
+                final Field f = fieldMap.get(field);
                 final Map<Object, List<K>> indexMap = fieldIndexMap.computeIfAbsent(field, k -> new HashMap<>());
                 try {
                     Object currentValue = f.get(value);
-                    if (f.getType().isEnum() || currentValue == null) {
+                    if (f.getType().isEnum() || currentValue == null)
                         currentValue = Objects.toString(currentValue, "null");
-                    }
                     indexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(key);
-                } catch (final IllegalAccessException e) { // IllegalArgumentException unlikely after precompute
-                    Logger.error("Error getting field value for [{}] at {}. {}", field, dbName, e.getMessage());
+                } catch (final IllegalAccessException e) {
+                    // should not happen, all fields are public
                 }
             }
         }
@@ -307,7 +295,6 @@ public final class ChronicleUtils {
             final String indexPath = indexDirPath + "/" + entry.getKey();
             final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
             synchronized (lock) {
-                deleteFileIfExists(indexPath);
                 final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
                 indexDb.putAll(entry.getValue());
                 MAP_DB.close(indexPath);
@@ -315,53 +302,54 @@ public final class ChronicleUtils {
         });
     }
 
-    private <K> void removeKeyFromIndex(final HTreeMap<Object, List<K>> indexDb, final Object indexKey, final K key) {
-        final List<K> prevKeys = indexDb.get(indexKey);
-        if (prevKeys != null && prevKeys.remove(key)) {
-            if (prevKeys.isEmpty()) {
-                indexDb.remove(indexKey);
-            } else {
-                indexDb.put(indexKey, prevKeys);
-            }
-        }
-    }
-
     private <K, V> void removeFromIndex(final String dbName, final String dataPath, final Map<K, V> values,
             final String file) {
-        final String indexPath = dataPath + "/indexes/" + file; // Avoid concatenation in loop
+        final String indexPath = dataPath + "/indexes/" + file;
+        if (values.isEmpty())
+            return;
 
-        try {
-            if (values.isEmpty())
-                return; // Early exit for empty input
+        final V sampleValue = values.values().iterator().next();
+        final Field field = getCachedField(sampleValue.getClass(), file);
+        if (field == null) {
+            deleteFileIfExists(indexPath);
+            return;
+        }
+        final boolean isEnum = field.getType().isEnum();
 
-            // Precompute field once, assuming uniform V type
-            final V sampleValue = values.values().iterator().next();
-            final Field field = sampleValue.getClass().getField(file);
-            final boolean isEnum = field.getType().isEnum();
+        final Map<Object, List<K>> updatesToRemove = new HashMap<>(values.size());
+        for (final var entry : values.entrySet()) {
+            final V value = entry.getValue();
+            Object indexKey;
+            try {
+                indexKey = field.get(value);
+            } catch (final IllegalAccessException e) {
+                // should not happen as all fields are public
+                continue;
+            }
+            if (isEnum || indexKey == null)
+                indexKey = Objects.toString(indexKey, "null");
+            updatesToRemove.computeIfAbsent(indexKey, k -> new ArrayList<>()).add(entry.getKey());
+        }
 
-            final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
-            synchronized (lock) {
-                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                if (indexDb != null) {
-                    try {
-                        for (final var entry : values.entrySet()) {
-                            final V value = entry.getValue();
-                            Object indexKey = field.get(value);
-                            if (isEnum || indexKey == null) {
-                                indexKey = Objects.toString(indexKey, "null");
-                            }
-
-                            removeKeyFromIndex(indexDb, indexKey, entry.getKey());
+        final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
+        synchronized (lock) {
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+            if (indexDb != null) {
+                try {
+                    for (final var entry : updatesToRemove.entrySet()) {
+                        final List<K> currentList = indexDb.get(entry.getKey());
+                        if (currentList != null) {
+                            currentList.removeAll(entry.getValue());
+                            if (currentList.isEmpty())
+                                indexDb.remove(entry.getKey());
+                            else
+                                indexDb.put(entry.getKey(), currentList);
                         }
-                    } finally {
-                        MAP_DB.close(indexPath);
                     }
+                } finally {
+                    MAP_DB.close(indexPath);
                 }
             }
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            Logger.error("No such field exists [{}] when removing from index {} at {}. {}", file, dbName, dataPath,
-                    e);
-            deleteFileIfExists(indexPath);
         }
     }
 
@@ -382,66 +370,85 @@ public final class ChronicleUtils {
         });
     }
 
-    private <K> void addKeyToIndex(final HTreeMap<Object, List<K>> indexDb, final Object indexKey, final K key) {
-        final List<K> keys = indexDb.computeIfAbsent(indexKey, k -> new ArrayList<>());
-        if (!keys.contains(key) && keys.add(key)) {
-            indexDb.put(indexKey, keys);
+    public <K, V> void updateIndex(final String dbName, final String dataPath, final Map<K, V> values,
+            final String file, final Map<K, V> prevValues) {
+        if (values.isEmpty())
+            return;
+        final String indexPath = dataPath + "/indexes/" + file;
+
+        final V sampleValue = values.values().iterator().next();
+        final Field field = getCachedField(sampleValue.getClass(), file);
+        if (field == null) {
+            deleteFileIfExists(indexPath);
+            return;
         }
-    }
+        final boolean isEnum = field.getType().isEnum();
 
-    private <K, V> void updateIndex(final String dbName, final String dataPath,
-            final Map<K, V> values, final String file, final Map<K, V> prevValues) {
-        final String indexPath = dataPath + "/indexes/" + file; // Precompute outside sync
+        final Map<Object, List<K>> updatesToAdd = new HashMap<>(values.size());
+        final Map<Object, List<K>> updatesToRemove = new HashMap<>(prevValues.size());
 
-        try {
-            if (values.isEmpty())
-                return; // Early exit
+        for (final K key : values.keySet()) {
+            final V newValue = values.get(key);
+            final V prevValue = prevValues.get(key);
+            Object newIndexKey;
+            try {
+                newIndexKey = field.get(newValue);
+            } catch (final IllegalAccessException e) {
+                // should not happen
+                continue;
+            }
+            if (isEnum || newIndexKey == null)
+                newIndexKey = Objects.toString(newIndexKey, "null");
 
-            // Precompute field, assume uniform V type
-            final V sampleValue = values.values().iterator().next();
-            final Field field = sampleValue.getClass().getField(file);
-            final boolean isEnum = field.getType().isEnum();
-            final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
-
-            synchronized (lock) {
-                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
-                if (indexDb != null) {
-                    try {
-                        for (final K key : values.keySet()) {
-                            final V newValue = values.get(key);
-                            final V prevValue = prevValues.get(key);
-                            Object newIndexKey = field.get(newValue);
-
-                            if (prevValue == null) {
-                                if (isEnum || newIndexKey == null) {
-                                    newIndexKey = Objects.toString(newIndexKey, "null");
-                                }
-                                addKeyToIndex(indexDb, newIndexKey, key);
-                            } else {
-                                Object prevIndexKey = field.get(prevValue);
-                                if (!Objects.equals(newIndexKey, prevIndexKey)) {
-                                    if (isEnum) {
-                                        prevIndexKey = String.valueOf(prevIndexKey);
-                                        newIndexKey = String.valueOf(newIndexKey);
-                                    }
-                                    if (prevIndexKey == null)
-                                        prevIndexKey = "null";
-                                    if (newIndexKey == null)
-                                        newIndexKey = "null";
-
-                                    removeKeyFromIndex(indexDb, prevIndexKey, key);
-                                    addKeyToIndex(indexDb, newIndexKey, key);
-                                }
-                            }
-                        }
-                    } finally {
-                        MAP_DB.close(indexPath);
+            if (prevValue == null) {
+                updatesToAdd.computeIfAbsent(newIndexKey, k -> new ArrayList<>()).add(key);
+            } else {
+                Object prevIndexKey;
+                try {
+                    prevIndexKey = field.get(prevValue);
+                } catch (final IllegalAccessException e) {
+                    // should not happen
+                    continue;
+                }
+                if (!Objects.equals(newIndexKey, prevIndexKey)) {
+                    if (isEnum) {
+                        prevIndexKey = String.valueOf(prevIndexKey);
+                        newIndexKey = String.valueOf(newIndexKey);
                     }
+                    if (prevIndexKey == null)
+                        prevIndexKey = "null";
+                    if (newIndexKey == null)
+                        newIndexKey = "null";
+                    updatesToRemove.computeIfAbsent(prevIndexKey, k -> new ArrayList<>()).add(key);
+                    updatesToAdd.computeIfAbsent(newIndexKey, k -> new ArrayList<>()).add(key);
                 }
             }
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            Logger.error("No such field exists [{}] when adding to index {} at. {}", file, dbName, dataPath, e);
-            deleteFileIfExists(indexPath);
+        }
+
+        final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
+        synchronized (lock) {
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+            if (indexDb != null) {
+                try {
+                    for (final var entry : updatesToRemove.entrySet()) {
+                        final List<K> currentList = indexDb.get(entry.getKey());
+                        if (currentList != null) {
+                            currentList.removeAll(entry.getValue());
+                            if (currentList.isEmpty())
+                                indexDb.remove(entry.getKey());
+                            else
+                                indexDb.put(entry.getKey(), currentList);
+                        }
+                    }
+                    for (final var entry : updatesToAdd.entrySet()) {
+                        final List<K> currentList = indexDb.computeIfAbsent(entry.getKey(), k -> new ArrayList<>());
+                        currentList.addAll(entry.getValue());
+                        indexDb.put(entry.getKey(), currentList);
+                    }
+                } finally {
+                    MAP_DB.close(indexPath);
+                }
+            }
         }
     }
 
@@ -474,7 +481,7 @@ public final class ChronicleUtils {
     public <K, V> CsvObject formatChronicleDataToCsv(final Map<K, V> map)
             throws NoSuchMethodException, IllegalAccessException, InvocationTargetException {
         if (map.isEmpty())
-            return new CsvObject(new String[0], List.of());
+            return new CsvObject(new String[0], Collections.emptyList());
 
         final V sampleValue = map.values().iterator().next();
         final Method headersMethod = sampleValue.getClass().getDeclaredMethod("header");

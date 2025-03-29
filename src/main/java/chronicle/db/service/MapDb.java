@@ -42,6 +42,8 @@ public final class MapDb {
             // Create a new entry
             try {
                 final var map = DBMaker.fileDB(filePath)
+                        .allocateStartSize(20 * 1024 * 1024) // 20 MB initial size
+                        .allocateIncrement(10 * 1024 * 1024) // Grow by 10 MB
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -86,8 +88,8 @@ public final class MapDb {
 
     public <K, V> HTreeMap<K, V> getMemoryDirectDb() {
         return (HTreeMap<K, V>) DBMaker.memoryDirectDB()
-                .allocateStartSize(5 * 1024 * 1024) // 5 MB initial size
-                .allocateIncrement(2 * 1024 * 1024) // Grow by 2 MB
+                .allocateStartSize(20 * 1024 * 1024) // 20 MB initial size
+                .allocateIncrement(10 * 1024 * 1024) // Grow by 10 MB
                 .closeOnJvmShutdown()
                 .make()
                 .hashMap("memory-direct")
