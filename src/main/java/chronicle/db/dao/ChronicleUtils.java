@@ -166,7 +166,7 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void search(final Search search, final K key, final V value, final Map<K, V> map)
-            throws NoSuchFieldException, IllegalAccessException {
+            throws IllegalArgumentException, IllegalAccessException {
         final Field field = getCachedField(value.getClass(), search.field());
         if (field == null) {
             Logger.error("No such field [{}] exists on searching {}", search.field(), value.getClass().getSimpleName());

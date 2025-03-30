@@ -870,18 +870,16 @@ public interface ChronicleDao<K, V> {
      * @param db     the map
      * @param search object search
      * @return a map of the fitting values
+     * @throws IllegalAccessException
+     * @throws IllegalArgumentException
      */
-    default Map<K, V> search(final Map<K, V> db, final Search search) {
+    default Map<K, V> search(final Map<K, V> db, final Search search)
+            throws IllegalArgumentException, IllegalAccessException {
         Logger.info("Searching DB at {} for {}.", dataPath(), search);
         final Map<K, V> map = new HashMap<>();
 
         for (final var entry : db.entrySet()) {
-            try {
-                CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
-            } catch (IllegalAccessException | NoSuchFieldException e) {
-                Logger.error("No such field [{}] exists on searching {}.", search.field(), name());
-                break;
-            }
+            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
         }
 
         return map;
@@ -892,18 +890,16 @@ public interface ChronicleDao<K, V> {
      * 
      * @param search object search
      * @return a map of the fitting values
+     * @throws IllegalAccessException
+     * @throws IllegalArgumentException
      */
-    default Map<K, V> search(final Map<K, V> db, final Search search, final int limit) {
+    default Map<K, V> search(final Map<K, V> db, final Search search, final int limit)
+            throws IllegalArgumentException, IllegalAccessException {
         Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
         final Map<K, V> map = new HashMap<>();
 
         for (final var entry : db.entrySet()) {
-            try {
-                CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
-            } catch (IllegalArgumentException | IllegalAccessException | NoSuchFieldException | SecurityException e) {
-                Logger.error("No such field [{}] exists on searching {}.", search.field(), name());
-                break;
-            }
+            CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue(), map);
             if (map.size() == limit) {
                 break;
             }
@@ -919,8 +915,10 @@ public interface ChronicleDao<K, V> {
      * @param search object search
      * @return a map of the fitting values
      * @throws IOException
+     * @throws IllegalAccessException
+     * @throws IllegalArgumentException
      */
-    default Map<K, V> search(final Search search) throws IOException {
+    default Map<K, V> search(final Search search) throws IOException, IllegalArgumentException, IllegalAccessException {
         Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
         final Map<K, V> results = new HashMap<>();
         final var files = getDataFiles();
@@ -940,8 +938,11 @@ public interface ChronicleDao<K, V> {
      * @param search object search
      * @return a map of the fitting values
      * @throws IOException
+     * @throws IllegalAccessException
+     * @throws IllegalArgumentException
      */
-    default Map<K, V> search(final Search search, final int limit) throws IOException {
+    default Map<K, V> search(final Search search, final int limit)
+            throws IOException, IllegalArgumentException, IllegalAccessException {
         Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
         final Map<K, V> results = new HashMap<>();
         final var files = getDataFiles();
@@ -1091,7 +1092,7 @@ public interface ChronicleDao<K, V> {
     }
 
     private Set<K> indexedSearch(final Search search, final Map<Object, List<K>> index, final int limit) {
-        Logger.info("Index searching at [{}] for {}.", dataPath(), search);
+        Logger.info("Index searching at [{}] for {} with limit {}.", dataPath(), search, limit);
         if (index == null || index.isEmpty()) {
             return Collections.emptySet();
         }
