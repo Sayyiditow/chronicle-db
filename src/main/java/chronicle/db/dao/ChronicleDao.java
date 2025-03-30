@@ -390,7 +390,7 @@ public interface ChronicleDao<K, V> {
         if (keys == null || keys.isEmpty()) {
             return Collections.emptyMap();
         }
-        Logger.info("Querying multiple keys {} at [{}].", keys, dataPath());
+        Logger.info("Querying {} keys at [{}].", keys.size(), dataPath());
         final var map = new HashMap<K, V>(keys.size());
 
         final var keyMap = KEY_MAP_CACHE.get(dataPath());
@@ -471,7 +471,7 @@ public interface ChronicleDao<K, V> {
             return false;
         }
 
-        Logger.info("Deleting multiple values using keys {} at [{}].", keys, dataPath());
+        Logger.info("Deleting {} keys at [{}].", keys.size(), dataPath());
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var deletedMap = new HashMap<K, V>();
