@@ -49,8 +49,7 @@ public final class ChronicleUtils {
         return FIELD_CACHE.computeIfAbsent(clazz, c -> new ConcurrentHashMap<>())
                 .computeIfAbsent(fieldName, f -> {
                     try {
-                        final Field field = clazz.getDeclaredField(f);
-                        return field;
+                        return clazz.getField(f);
                     } catch (final NoSuchFieldException e) {
                         Logger.error("No such field [{}] in class [{}].", f, clazz.getSimpleName(), e);
                         return null;
@@ -507,9 +506,9 @@ public final class ChronicleUtils {
                 valueMap.put(objectName + ".id", key);
             } else {
                 try {
-                    final Field field = value.getClass().getField(f);
+                    final Field field = getCachedField(value.getClass(), f);
                     valueMap.put(f, field.get(value));
-                } catch (NoSuchFieldException | IllegalAccessException e) {
+                } catch (final IllegalAccessException e) {
                     Logger.error("No such field: [{}] when making a subset of {}. {}", f, objectName, e);
                 }
             }
@@ -545,7 +544,7 @@ public final class ChronicleUtils {
 
     public <V> void partialUpdateSetter(final V object, final String fieldName, final Object fieldValue)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
-        final var field = object.getClass().getField(fieldName);
+        final var field = getCachedField(object.getClass(), fieldName);
         final var type = field.getType();
         if (type.isEnum())
             field.set(object, toEnum(type, fieldValue));
@@ -555,7 +554,7 @@ public final class ChronicleUtils {
 
     public <V> void partialUpdateConcatenator(final V object, final String fieldName, final String fieldValue)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
-        final var field = object.getClass().getField(fieldName);
+        final var field = getCachedField(object.getClass(), fieldName);
         final var value = (String) field.get(object);
         field.set(object, value + fieldValue);
     }

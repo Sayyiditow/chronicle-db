@@ -347,7 +347,7 @@ public interface ChronicleDao<K, V> {
 
     private Map<String, Set<K>> getDbFiles(final Set<K> keys, final HTreeMap<?, String> keyMap) {
         if (keyMap == null) {
-            return Collections.emptyMap();
+            return Map.of(DATA_FILE, keys);
         }
 
         final var fileMap = new HashMap<String, Set<K>>();
