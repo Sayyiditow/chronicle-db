@@ -507,9 +507,11 @@ public final class ChronicleUtils {
             } else {
                 try {
                     final Field field = getCachedField(value.getClass(), f);
-                    valueMap.put(f, field.get(value));
-                } catch (final IllegalAccessException | NullPointerException e) {
-                    Logger.error("No such field: [{}] when making a subset of [{}]. {}", f, objectName, e);
+                    if (field != null)
+                        valueMap.put(f, field.get(value));
+                } catch (final IllegalAccessException e) {
+                    // should not happen, all fields must be public
+                    Logger.error("Access denied to field [{}] in [{}]", f, objectName);
                 }
             }
         }
