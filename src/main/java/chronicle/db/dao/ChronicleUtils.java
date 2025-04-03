@@ -149,21 +149,19 @@ public final class ChronicleUtils {
         for (int i = 0; i < searchTerms.size(); i++) {
             final var searchTerm = searchTerms.get(i);
 
-            if (searchTerm != null) {
-                if (fieldClass.isEnum() && (searchTerm instanceof String)) {
-                    searchTermSet.add(toEnum(fieldClass, searchTerm));
-                    continue;
-                }
-
-                if (fieldClass == long.class
-                        && (searchTerm instanceof String || searchTerm instanceof Integer)) {
-                    searchTermSet.add(Long.parseLong(searchTerm.toString()));
-                    continue;
-                }
-
-                // Default: Add the original value
-                searchTermSet.add(searchTerm);
+            if (fieldClass.isEnum() && (searchTerm instanceof String)) {
+                searchTermSet.add(toEnum(fieldClass, searchTerm));
+                continue;
             }
+
+            if (fieldClass == long.class
+                    && (searchTerm instanceof String || searchTerm instanceof Integer)) {
+                searchTermSet.add(Long.parseLong(searchTerm.toString()));
+                continue;
+            }
+
+            // Default: Add the original value
+            searchTermSet.add(searchTerm);
         }
 
         return searchTermSet;
