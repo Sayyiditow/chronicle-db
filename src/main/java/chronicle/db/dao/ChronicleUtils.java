@@ -106,8 +106,10 @@ public final class ChronicleUtils {
     }
 
     public Set<Object> setSearchTerm(final List<Object> searchTerms, final Class<?> fieldClass) {
-        final var searchTermSet = new HashSet<>();
-        for (int i = 0; i < searchTerms.size(); i++) {
+        final int size = searchTerms.size();
+        final var searchTermSet = new HashSet<>(size);
+
+        for (int i = 0; i < size; i++) {
             final var searchTerm = searchTerms.get(i);
             if (searchTerm == null) {
                 searchTermSet.add("null"); // Explicitly setting "null" as string
@@ -122,6 +124,8 @@ public final class ChronicleUtils {
             if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
                 searchTerms.add(Long.parseLong(searchTerm.toString()));
             }
+            // Default: Add the original value
+            searchTermSet.add(searchTerm);
         }
 
         return searchTermSet;
@@ -139,17 +143,26 @@ public final class ChronicleUtils {
     }
 
     public Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
-        final var searchTermSet = new HashSet<>();
+        final int size = searchTerms.size();
+        final var searchTermSet = new HashSet<>(size);
+
         for (int i = 0; i < searchTerms.size(); i++) {
             final var searchTerm = searchTerms.get(i);
 
             if (searchTerm != null) {
                 if (fieldClass.isEnum() && (searchTerm instanceof String)) {
                     searchTermSet.add(toEnum(fieldClass, searchTerm));
-                } else if (fieldClass == long.class
+                    continue;
+                }
+
+                if (fieldClass == long.class
                         && (searchTerm instanceof String || searchTerm instanceof Integer)) {
                     searchTermSet.add(Long.parseLong(searchTerm.toString()));
+                    continue;
                 }
+
+                // Default: Add the original value
+                searchTermSet.add(searchTerm);
             }
         }
 
