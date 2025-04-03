@@ -508,8 +508,8 @@ public final class ChronicleUtils {
                 try {
                     final Field field = getCachedField(value.getClass(), f);
                     valueMap.put(f, field.get(value));
-                } catch (final IllegalAccessException e) {
-                    Logger.error("No such field: [{}] when making a subset of {}. {}", f, objectName, e);
+                } catch (final IllegalAccessException | NullPointerException e) {
+                    Logger.error("No such field: [{}] when making a subset of [{}]. {}", f, objectName, e);
                 }
             }
         }
