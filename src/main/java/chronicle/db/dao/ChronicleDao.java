@@ -1199,9 +1199,11 @@ public interface ChronicleDao<K, V> {
                 for (final var entry : index.entrySet()) {
                     if (matchingKeys.size() >= limit)
                         break;
-                    if (Collections.singleton(entry.getKey()).contains(searchTerm)) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                    for (final var obj : (Object[]) entry.getKey()) {
+                        if (searchTermSet.contains(obj)) {
+                            matchingKeys.addAll(entry.getValue());
+                            break;
+                        }
                     }
                 }
             }
@@ -1209,9 +1211,11 @@ public interface ChronicleDao<K, V> {
                 for (final var entry : index.entrySet()) {
                     if (matchingKeys.size() >= limit)
                         break;
-                    if (!Collections.singleton(entry.getKey()).contains(searchTerm)) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                    for (final var obj : (Object[]) entry.getKey()) {
+                        if (!searchTermSet.contains(obj)) {
+                            matchingKeys.addAll(entry.getValue());
+                            break;
+                        }
                     }
                 }
             }
