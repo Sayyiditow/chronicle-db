@@ -875,7 +875,7 @@ public interface ChronicleDao<K, V> {
      */
     default Map<K, V> search(final Map<K, V> db, final Search search)
             throws IllegalArgumentException, IllegalAccessException {
-        Logger.info("Searching DB at {} for {}.", dataPath(), search);
+        Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
         final Map<K, V> map = new HashMap<>();
 
         for (final var entry : db.entrySet()) {
@@ -895,7 +895,7 @@ public interface ChronicleDao<K, V> {
      */
     default Map<K, V> search(final Map<K, V> db, final Search search, final int limit)
             throws IllegalArgumentException, IllegalAccessException {
-        Logger.info("Searching DB at {} for {} with limit {}.", dataPath(), search, limit);
+        Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
         final Map<K, V> map = new HashMap<>();
 
         for (final var entry : db.entrySet()) {
