@@ -982,9 +982,10 @@ public interface ChronicleDao<K, V> {
         }
 
         final Object searchTerm = CHRONICLE_UTILS.setSearchTerm(search.searchTerm(), fieldClass);
-        final List<Object> searchTermList = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass)
-                : null;
+        final Set<Object> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN
+                || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS)
+                        ? CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass)
+                        : null;
 
         switch (searchType) {
             case EQUAL -> {
@@ -1045,16 +1046,20 @@ public interface ChronicleDao<K, V> {
             case CONTAINS -> {
                 for (final var entry : index.entrySet()) {
                     for (final var obj : (Object[]) entry.getKey()) {
-                        if (obj.equals(searchTerm))
+                        if (searchTermSet.contains(obj)) {
                             matchingKeys.addAll(entry.getValue());
+                            break;
+                        }
                     }
                 }
             }
             case NOT_CONTAINS -> {
                 for (final var entry : index.entrySet()) {
                     for (final var obj : (Object[]) entry.getKey()) {
-                        if (!obj.equals(searchTerm))
+                        if (!searchTermSet.contains(obj)) {
                             matchingKeys.addAll(entry.getValue());
+                            break;
+                        }
                     }
                 }
             }
@@ -1074,14 +1079,14 @@ public interface ChronicleDao<K, V> {
             }
             case IN -> {
                 for (final var entry : index.entrySet()) {
-                    if (searchTermList.contains(entry.getKey())) {
+                    if (searchTermSet.contains(entry.getKey())) {
                         matchingKeys.addAll(entry.getValue());
                     }
                 }
             }
             case NOT_IN -> {
                 for (final var entry : index.entrySet()) {
-                    if (!searchTermList.contains(entry.getKey())) {
+                    if (!searchTermSet.contains(entry.getKey())) {
                         matchingKeys.addAll(entry.getValue());
                     }
                 }
@@ -1106,10 +1111,10 @@ public interface ChronicleDao<K, V> {
         }
 
         final Object searchTerm = CHRONICLE_UTILS.setSearchTerm(search.searchTerm(), fieldClass);
-        final List<Object> searchTermList = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass)
-                : null;
-
+        final Set<Object> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN
+                || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS)
+                        ? CHRONICLE_UTILS.setSearchTerm((List<Object>) search.searchTerm(), fieldClass)
+                        : null;
         switch (searchType) {
             case EQUAL -> {
                 final List<K> keys = index.get(searchTerm);
@@ -1234,7 +1239,7 @@ public interface ChronicleDao<K, V> {
                 for (final var entry : index.entrySet()) {
                     if (matchingKeys.size() >= limit)
                         break;
-                    if (searchTermList.contains(entry.getKey())) {
+                    if (searchTermSet.contains(entry.getKey())) {
                         entry.getValue().stream().limit(limit - matchingKeys.size())
                                 .forEach(matchingKeys::add);
                     }
@@ -1244,7 +1249,7 @@ public interface ChronicleDao<K, V> {
                 for (final var entry : index.entrySet()) {
                     if (matchingKeys.size() >= limit)
                         break;
-                    if (!searchTermList.contains(entry.getKey())) {
+                    if (!searchTermSet.contains(entry.getKey())) {
                         entry.getValue().stream().limit(limit - matchingKeys.size())
                                 .forEach(matchingKeys::add);
                     }

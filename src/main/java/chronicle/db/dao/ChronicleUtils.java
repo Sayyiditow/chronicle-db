@@ -105,25 +105,26 @@ public final class ChronicleUtils {
         }
     }
 
-    public List<Object> setSearchTerm(final List<Object> searchTerms, final Class<?> fieldClass) {
+    public Set<Object> setSearchTerm(final List<Object> searchTerms, final Class<?> fieldClass) {
+        final var searchTermSet = new HashSet<>();
         for (int i = 0; i < searchTerms.size(); i++) {
             final var searchTerm = searchTerms.get(i);
             if (searchTerm == null) {
-                searchTerms.set(i, "null"); // Explicitly setting "null" as string
+                searchTermSet.add("null"); // Explicitly setting "null" as string
                 continue;
             }
             // Handle enums first
             if (searchTerm.getClass().isEnum()) {
-                searchTerms.set(i, searchTerm.toString());
+                searchTermSet.add(searchTerm.toString());
                 continue;
             }
             // Optimize for long field type conversion
             if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
-                searchTerms.set(i, Long.parseLong(searchTerm.toString()));
+                searchTerms.add(Long.parseLong(searchTerm.toString()));
             }
         }
 
-        return searchTerms;
+        return searchTermSet;
     }
 
     public Object setSearchTerm(final Object searchTerm, final Class<?> fieldClass) {
@@ -137,21 +138,22 @@ public final class ChronicleUtils {
         return searchTerm;
     }
 
-    public List<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
+    public Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
+        final var searchTermSet = new HashSet<>();
         for (int i = 0; i < searchTerms.size(); i++) {
             final var searchTerm = searchTerms.get(i);
 
             if (searchTerm != null) {
                 if (fieldClass.isEnum() && (searchTerm instanceof String)) {
-                    searchTerms.set(i, toEnum(fieldClass, searchTerm));
+                    searchTermSet.add(toEnum(fieldClass, searchTerm));
                 } else if (fieldClass == long.class
                         && (searchTerm instanceof String || searchTerm instanceof Integer)) {
-                    searchTerms.set(i, Long.parseLong(searchTerm.toString()));
+                    searchTermSet.add(Long.parseLong(searchTerm.toString()));
                 }
             }
         }
 
-        return searchTerms;
+        return searchTermSet;
     }
 
     public Object setSearchTermNonIndexed(final Object searchTerm, final Class<?> fieldClass) {
@@ -174,9 +176,10 @@ public final class ChronicleUtils {
 
         final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), field.getType());
         final SearchType searchType = search.searchType();
-        final List<Object> searchTermList = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? setSearchTermNonIndexed((List<Object>) search.searchTerm(), field.getType())
-                : null;
+        final Set<Object> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN
+                || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS)
+                        ? setSearchTermNonIndexed((List<Object>) search.searchTerm(), field.getType())
+                        : null;
 
         final Object currentValue = field.get(value);
         if (currentValue == null)
@@ -218,14 +221,18 @@ public final class ChronicleUtils {
             // for arrays
             case CONTAINS -> {
                 for (final var obj : (Object[]) currentValue) {
-                    if (obj.equals(searchTerm))
+                    if (searchTermSet.contains(obj)) {
                         map.put(key, value);
+                        break;
+                    }
                 }
             }
             case NOT_CONTAINS -> {
                 for (final var obj : (Object[]) currentValue) {
-                    if (!obj.equals(searchTerm))
+                    if (!searchTermSet.contains(obj)) {
                         map.put(key, value);
+                        break;
+                    }
                 }
             }
             case STARTS_WITH -> {
@@ -237,11 +244,11 @@ public final class ChronicleUtils {
                     map.put(key, value);
             }
             case IN -> {
-                if (searchTermList.contains(currentValue))
+                if (searchTermSet.contains(currentValue))
                     map.put(key, value);
             }
             case NOT_IN -> {
-                if (!searchTermList.contains(currentValue))
+                if (!searchTermSet.contains(currentValue))
                     map.put(key, value);
             }
         }
