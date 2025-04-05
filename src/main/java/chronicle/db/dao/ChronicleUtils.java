@@ -277,15 +277,14 @@ public final class ChronicleUtils {
      */
     public <K, V> void index(final Map<K, V> db, final String dbName, final List<String> fields,
             final String dataPath, final String indexDirPath) {
-        Logger.info("Indexing [{}] db at [{}] for : {}.", dbName, dataPath, fields);
-        final V sampleValue = db.isEmpty() ? null : db.values().iterator().next();
-        if (sampleValue == null)
+        Logger.info("Indexing {} at [{}].", fields, dataPath);
+        if (db.isEmpty())
             return;
 
         final Map<String, Field> fieldMap = new HashMap<>(fields.size());
         final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.size());
         for (final String field : fields) {
-            final Field f = getCachedField(sampleValue.getClass(), field);
+            final Field f = getCachedField(db.values().iterator().next().getClass(), field);
             if (f != null)
                 fieldMap.put(field, f);
         }
