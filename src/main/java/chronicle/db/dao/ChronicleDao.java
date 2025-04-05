@@ -231,11 +231,9 @@ public interface ChronicleDao<K, V> {
      * Only runs to initialize an index on the field first time
      * 
      * @param field the field of the V value object
-     * @throws IOException
      * 
      */
-    private void initIndex(final Map<K, V> db, final List<String> fields, final String indexDirPath)
-            throws IOException {
+    private void initIndex(final Map<K, V> db, final List<String> fields, final String indexDirPath) {
         CHRONICLE_UTILS.index(db, name(), fields, dataPath(), indexDirPath);
     }
 
