@@ -815,7 +815,8 @@ public interface ChronicleDao<K, V> {
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var prevValues = new HashMap<K, V>(map.size());
+            final int putSize = map.size();
+            final var prevValues = new HashMap<K, V>(putSize);
 
             // update old records first then only move to new record inserts.
             var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
@@ -857,7 +858,7 @@ public interface ChronicleDao<K, V> {
                     db.close();
                 }
             }
-            Logger.info("Put {} records at [{}].", map.size(), dataPath());
+            Logger.info("Put {} records at [{}].", putSize, dataPath());
 
             return status;
         }
