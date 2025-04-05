@@ -277,7 +277,7 @@ public final class ChronicleUtils {
      */
     public <K, V> void index(final Map<K, V> db, final String dbName, final List<String> fields,
             final String dataPath, final String indexDirPath) {
-        Logger.info("Indexing {} db at {} for : {}.", dbName, dataPath, fields);
+        Logger.info("Indexing [{}] db at [{}] for : {}.", dbName, dataPath, fields);
         final V sampleValue = db.isEmpty() ? null : db.values().iterator().next();
         if (sampleValue == null)
             return;
@@ -583,7 +583,7 @@ public final class ChronicleUtils {
         try {
             Files.delete(Path.of(filePath));
         } catch (final IOException e) {
-            Logger.info("No such file {}.", filePath);
+            Logger.info("File for deletion does not exist [{}].", filePath);
         }
     }
 
@@ -591,7 +591,7 @@ public final class ChronicleUtils {
         try {
             Files.move(source, dest, REPLACE_EXISTING);
         } catch (final IOException e) {
-            Logger.error("Error moving from {}  to {}. {}", source, dest, e);
+            Logger.error("Error moving from [{}]  to [{}]. {}", source, dest, e);
         }
     }
 
