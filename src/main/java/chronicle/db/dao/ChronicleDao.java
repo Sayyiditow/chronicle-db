@@ -718,7 +718,9 @@ public interface ChronicleDao<K, V> {
             for (final var entry : dbFiles.entrySet()) {
                 try (final var db = getDb(entry.getKey())) {
                     for (final K key : entry.getValue()) {
-                        prevValues.put(key, db.put(key, map.get(key)));
+                        final var record = db.put(key, map.get(key));
+                        if (record != null)
+                            prevValues.put(key, record);
                     }
                 }
             }
