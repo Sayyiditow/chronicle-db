@@ -562,27 +562,31 @@ public final class ChronicleUtils {
     }
 
     public <V> void updateObjectValues(final V oldObject, final Set<String> fields, final V newObject)
-            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
+            throws IllegalArgumentException, IllegalAccessException {
         for (final var k : fields) {
             final var field = getCachedField(oldObject.getClass(), k);
-            field.set(oldObject, field.get(newObject));
+            if (field != null)
+                field.set(oldObject, field.get(newObject));
         }
     }
 
     public <V> void nonEnumPartialUpdateSetter(final V object, final String fieldName, final Object fieldValue)
-            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
+            throws IllegalArgumentException, IllegalAccessException {
         final var field = getCachedField(object.getClass(), fieldName);
-        field.set(object, fieldValue);
+        if (field != null)
+            field.set(object, fieldValue);
     }
 
     public <V> void partialUpdateSetter(final V object, final String fieldName, final Object fieldValue)
-            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
+            throws IllegalArgumentException, IllegalAccessException {
         final var field = getCachedField(object.getClass(), fieldName);
         final var type = field.getType();
-        if (type.isEnum())
-            field.set(object, toEnum(type, fieldValue));
-        else
-            field.set(object, fieldValue);
+        if (field != null) {
+            if (type.isEnum())
+                field.set(object, toEnum(type, fieldValue));
+            else
+                field.set(object, fieldValue);
+        }
     }
 
     public <V> void partialUpdateConcatenator(final V object, final String fieldName, final String fieldValue)
