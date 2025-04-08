@@ -12,7 +12,6 @@ import java.util.Map;
 import org.tinylog.Logger;
 
 import chronicle.db.dao.ChronicleDao;
-import net.openhft.chronicle.bytes.BytesIn;
 import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
 
@@ -145,32 +144,5 @@ public final class ChronicleDb {
 
     public <K, V> Map<K, V> getMapForMultiInserts(final ChronicleDao<K, V> dao) {
         return new HashMap<K, V>();
-    }
-
-    public String writeString(final String string) {
-        return string == null ? "" : string;
-    }
-
-    public String readString(final BytesIn<?> in) {
-        final String s = in.readUtf8();
-        return s != null && s.isEmpty() ? null : s;
-    }
-
-    public byte writeEnum(final Enum<?> en) {
-        return (byte) (en != null ? en.ordinal() : -1);
-    }
-
-    public <E extends Enum<E>> E readEnum(final BytesIn<?> in, final Class<E> en) {
-        final byte ordinal = in.readByte();
-        return ordinal >= 0 ? en.getEnumConstants()[ordinal] : null;
-    }
-
-    public short writeEnum2(final Enum<?> en) {
-        return (short) (en != null ? en.ordinal() : -1);
-    }
-
-    public <E extends Enum<E>> E readEnum2(final BytesIn<?> in, final Class<E> en) {
-        final short ordinal = in.readShort();
-        return ordinal >= 0 ? en.getEnumConstants()[ordinal] : null;
     }
 }
