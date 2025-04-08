@@ -51,7 +51,7 @@ public final class ChronicleUtils {
                     try {
                         return clazz.getField(f);
                     } catch (final NoSuchFieldException e) {
-                        Logger.warn("No such field [{}] in class [{}].", f, clazz.getSimpleName(), e);
+                        Logger.warn("No such field [{}] in class [{}].", f, clazz.getSimpleName());
                         return null;
                     }
                 });
