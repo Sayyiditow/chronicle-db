@@ -181,7 +181,6 @@ public final class ChronicleUtils {
             throws IllegalArgumentException, IllegalAccessException {
         final Field field = getCachedField(value.getClass(), search.field());
         if (field == null) {
-            Logger.error("No such field [{}] exists on searching {}", search.field(), value.getClass().getSimpleName());
             return;
         }
 
