@@ -1580,9 +1580,8 @@ public interface ChronicleDao<K, V> {
         final MessageDigest digest = MessageDigest.getInstance("SHA-256");
         final var files = getDataFiles();
         final var sortedFiles = files.stream().sorted().collect(Collectors.toList());
-        final var size = sortedFiles.size();
 
-        for (int i = 0; i < size; i++) {
+        for (int i = 0; i < sortedFiles.size(); i++) {
             final var file = sortedFiles.get(i);
             final var db = openDb(file);
             if (db != null) {
@@ -1610,15 +1609,15 @@ public interface ChronicleDao<K, V> {
                         digest.update(keyBytes);
                         digest.update(valueBytes);
                     }
-
-                    if (i == size) {
-                        final byte[] hashBytes = digest.digest();
-                        final String hash = Base64.getEncoder().encodeToString(hashBytes);
-                        Files.writeString(Path.of(dataPath() + DATA_DIR + "hash"), hash);
-                    }
                 } finally {
                     closeDb(file);
                 }
+
+                final byte[] hashBytes = digest.digest();
+                final String hash = Base64.getEncoder().encodeToString(hashBytes);
+                final var hashFile = Path.of(dataPath() + DATA_DIR + "hash");
+                Files.writeString(hashFile, hash);
+                Logger.info("Combined hash for all files at [{}] saved to [{}]", dataPath(), hashFile);
             }
         }
     }
