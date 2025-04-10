@@ -12,7 +12,6 @@ import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -30,10 +29,6 @@ import java.util.stream.Stream;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
-
-import com.jsoniter.JsonIterator;
-import com.jsoniter.output.JsonStream;
-import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Search;
@@ -55,23 +50,6 @@ public final class ChronicleUtils {
                         return null;
                     }
                 });
-    }
-
-    public <T> String toJsonFromObj(final T prop) {
-        return JsonStream.serialize(prop);
-    }
-
-    public <T> void toJsonFileFromObj(final String path, final T prop) throws IOException {
-        Files.writeString(Path.of(path), toJsonFromObj(prop), StandardOpenOption.WRITE,
-                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.CREATE);
-    }
-
-    public <T> T fromJsonToObj(final String json, final TypeLiteral<T> typeLiteral) {
-        return JsonIterator.deserialize(json, typeLiteral);
-    }
-
-    public <T> T fromJsonFileToObj(final String path, final TypeLiteral<T> typeLiteral) throws IOException {
-        return JsonIterator.deserialize(Files.readAllBytes(Path.of(path)), typeLiteral);
     }
 
     /**
@@ -310,7 +288,7 @@ public final class ChronicleUtils {
             final String indexPath = indexDirPath + "/" + entry.getKey();
             final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
             synchronized (lock) {
-                final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+                final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexPath);
                 indexDb.putAll(entry.getValue());
                 MAP_DB.close(indexPath);
             }
@@ -348,7 +326,7 @@ public final class ChronicleUtils {
 
         final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexPath);
             if (indexDb != null) {
                 try {
                     for (final var entry : updatesToRemove.entrySet()) {
@@ -442,7 +420,7 @@ public final class ChronicleUtils {
 
         final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.getDb(indexPath);
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexPath);
             if (indexDb != null) {
                 try {
                     for (final var entry : updatesToRemove.entrySet()) {

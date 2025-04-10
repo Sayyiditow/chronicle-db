@@ -1,6 +1,7 @@
 package chronicle.db.service;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.LongAdder;
 
 import org.mapdb.DBMaker;
@@ -13,7 +14,7 @@ public final class MapDb {
     }
 
     public static final MapDb MAP_DB = new MapDb();
-    private static final ConcurrentHashMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
 
     private static class MapEntry {
         final HTreeMap<?, ?> map;
@@ -27,11 +28,15 @@ public final class MapDb {
     }
 
     /**
-     * Opens a MapDB for reads and writes (or reads only if readOnly is true).
-     * Returns an HTreeMap—call close(filePath) to release resources and unlock.
-     * Uses mmap if supported for maximum performance.
+     * Opens a shared MapDB instance. Call close(filePath) to release it.
+     * Do not use try-with-resources as it will prematurely close the shared
+     * instance.
+     * 
+     * @param filePath filepath to create
+     * 
+     * @return HTreeMap or null, if null do not run close()
      */
-    public <K, V> HTreeMap<K, V> getDb(final String filePath) {
+    public <K, V> HTreeMap<K, V> open(final String filePath) {
         final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 // Increment reference count for existing entry
@@ -54,8 +59,7 @@ public final class MapDb {
                         .createOrOpen();
                 return new MapEntry(map);
             } catch (final Exception e) {
-                Logger.error("MapDB initialization failed for {}.", filePath);
-                Logger.error(e);
+                Logger.error("MapDB initialization failed for [{}]. {}", filePath, e);
                 return null;
             }
         });
@@ -64,22 +68,20 @@ public final class MapDb {
             return (HTreeMap<K, V>) entry.map;
         }
 
-        // returns null if any error occured, to prevent close() running when no
-        // increment was done
         return null;
     }
 
     /**
      * Closes the MapDB instance for the given filePath when no longer in use.
+     * 
+     * @param filePath filepath to close
      */
     public void close(final String filePath) {
         mapCache.computeIfPresent(filePath, (k, entry) -> {
             entry.refCount.decrement();
             if (entry.refCount.sum() == 0) {
                 // If the reference count reaches 0, close the map and remove the entry
-                if (!entry.map.isClosed()) {
-                    entry.map.close();
-                }
+                entry.map.close();
                 return null; // Remove the entry from the map
             }
             return entry; // Otherwise, keep the entry

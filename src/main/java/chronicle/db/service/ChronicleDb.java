@@ -8,6 +8,9 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.LongAdder;
 
 import org.tinylog.Logger;
 
@@ -23,9 +26,23 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
     public static final int CHRONICLE_SEGMENTS = Runtime.getRuntime().availableProcessors() * 2;
+    private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
+
+    private static class MapEntry {
+        final ChronicleMap<?, ?> map;
+        final LongAdder refCount;
+
+        MapEntry(final ChronicleMap<?, ?> map) {
+            this.map = map;
+            this.refCount = new LongAdder();
+            this.refCount.increment(); // Start with a reference count of 1
+        }
+    }
 
     /**
-     * Create or fetch a db
+     * Opens a shared ChronicleMap instance. Call close(filePath) to release it.
+     * Do not use try-with-resources as it will prematurely close the shared
+     * instance.
      * 
      * @param entries    the number of entries of the db as a starter
      * @param averageKey the average key
@@ -34,22 +51,60 @@ public final class ChronicleDb {
      * @param valueClass the class of the value (best to implement Value interface
      *                   for complex structures)
      * @throws IOException
+     * @return ChronicleMap or null, if null do not run close()
      */
-    public <K, V> ChronicleMap<K, V> getDb(final String name, final long entries,
+    public <K, V> ChronicleMap<K, V> open(final String name, final long entries,
             final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
             throws IOException {
-        final File file = new File(filePath);
-        final Class<K> keyClass = (Class<K>) averageKey.getClass();
-        final Class<V> valueClass = (Class<V>) averageValue.getClass();
+        final MapEntry entry = mapCache.compute(filePath, (k, existingEntry) -> {
+            if (existingEntry != null) {
+                // Increment reference count for existing entry
+                existingEntry.refCount.increment();
+                return existingEntry;
+            }
 
-        if (file.exists()) {
-            return ChronicleMapBuilder.of(keyClass, valueClass).maxBloatFactor(maxBloatFactor)
-                    .actualSegments(CHRONICLE_SEGMENTS).createPersistedTo(file);
+            // Create a new entry
+            try {
+                final File file = new File(filePath);
+                final Class<K> keyClass = (Class<K>) averageKey.getClass();
+                final Class<V> valueClass = (Class<V>) averageValue.getClass();
+                final ChronicleMapBuilder<K, V> builder = ChronicleMapBuilder.of(keyClass, valueClass)
+                        .maxBloatFactor(maxBloatFactor).actualSegments(CHRONICLE_SEGMENTS);
+                if (!file.exists()) {
+                    builder.name(name).entries(entries).averageKey(averageKey).averageValue(averageValue);
+                }
+                final ChronicleMap<K, V> map = builder.createPersistedTo(file);
+                return new MapEntry(map);
+            } catch (final IOException e) {
+                Logger.error("ChronicleMap initialization failed for [{}]. {}", filePath, e);
+                return null;
+            }
+        });
+
+        if (entry != null) {
+            return (ChronicleMap<K, V>) entry.map;
         }
 
-        return ChronicleMapBuilder.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
-                .actualSegments(CHRONICLE_SEGMENTS).averageValue(averageValue).maxBloatFactor(maxBloatFactor)
-                .createPersistedTo(file);
+        return null;
+    }
+
+    /**
+     * Releases a reference to the ChronicleMap for the given filePath.
+     * Closes the map and removes it from the cache when the last reference is
+     * released.
+     * 
+     * @param filePath the path to the file to close
+     */
+    public void close(final String filePath) {
+        mapCache.computeIfPresent(filePath, (k, entry) -> {
+            entry.refCount.decrement();
+            if (entry.refCount.sum() == 0) {
+                // Last reference: close the map and remove the entry
+                entry.map.close();
+                return null; // Remove from cache
+            }
+            return entry; // Keep the entry
+        });
     }
 
     /**
