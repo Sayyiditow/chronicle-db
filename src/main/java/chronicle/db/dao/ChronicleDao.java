@@ -1576,12 +1576,15 @@ public interface ChronicleDao<K, V> {
     /**
      * Computes and saves hashes of each db file to /hash/
      * Use when failover occurs from one server to another
+     * 
+     * @return Map of hash file name and its hash
      */
-    default void computeDbHash() throws IOException, NoSuchAlgorithmException {
+    default Map<String, String> computeDbHash() throws IOException, NoSuchAlgorithmException {
         Logger.info("Computing hash at [{}]", dataPath());
 
         final String hashDirPath = dataPath() + HASH_DIR;
         final var sortedFiles = getDataFiles().stream().sorted().collect(Collectors.toList());
+        final var mapOfHash = new HashMap<String, String>();
 
         for (final String file : sortedFiles) {
             final MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -1614,21 +1617,51 @@ public interface ChronicleDao<K, V> {
                 final byte[] hashBytes = digest.digest();
                 final String hash = Base64.getEncoder().encodeToString(hashBytes);
                 Files.createDirectories(Path.of(hashDirPath));
-                final var hashFile = Path.of(hashDirPath + file + ".hash");
+                final String hashFileName = file + ".hash";
+                final var hashFile = Path.of(hashDirPath, hashFileName);
                 Files.writeString(hashFile, hash);
                 Logger.info("Hash for [{}] saved to [{}]", file, hashFile);
+                mapOfHash.put(hashFileName, hash);
             }
         }
+
+        return mapOfHash;
     }
 
+    /**
+     * Verifies DB hashes against another DB provided in a map.
+     * 
+     * @param fileNameHash Map of filename (e.g., "data-2.hash") to its hash
+     *                     from primary
+     * @return true if all hashes match, false if any mismatch
+     * @throws IOException if hash files can’t be read
+     */
     default boolean verifyDbHashes(final Map<String, String> fileNameHash) throws IOException {
+        Logger.info("Verifying hashes at [{}]", dataPath());
+        final String hashDirPath = dataPath() + HASH_DIR;
         boolean allMatch = true;
 
         for (final var entry : fileNameHash.entrySet()) {
-            final var thisHash = Files.readString(Path.of(dataPath() + HASH_DIR + entry.getKey()));
-            allMatch = thisHash.equals(entry.getValue());
+            final String fileName = entry.getKey(); // e.g., "data-2.map.hash"
+            final String primaryHash = entry.getValue();
+            final Path hashFilePath = Path.of(hashDirPath, fileName);
+
+            if (!Files.exists(hashFilePath)) {
+                Logger.error("Hash file [{}] not found.", hashFilePath);
+                allMatch = false;
+                continue;
+            }
+
+            final String secondaryHash = Files.readString(hashFilePath);
+            if (!secondaryHash.equals(primaryHash)) {
+                Logger.error("Mismatch for [{}]: Primary=[{}], Secondary=[{}]", fileName, primaryHash, secondaryHash);
+                allMatch = false;
+            }
         }
 
+        if (allMatch) {
+            Logger.info("All hashes match. Safe to failover.");
+        }
         return allMatch;
     }
 }
