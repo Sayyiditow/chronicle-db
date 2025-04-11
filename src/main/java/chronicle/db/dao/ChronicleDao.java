@@ -1583,6 +1583,7 @@ public interface ChronicleDao<K, V> {
         Logger.info("Computing hash at [{}]", dataPath());
 
         final String hashDirPath = dataPath() + HASH_DIR;
+        Files.createDirectories(Path.of(hashDirPath));
         final var sortedFiles = getDataFiles().stream().sorted().collect(Collectors.toList());
         final var mapOfHash = new HashMap<String, String>();
 
@@ -1616,12 +1617,11 @@ public interface ChronicleDao<K, V> {
 
                 final byte[] hashBytes = digest.digest();
                 final String hash = Base64.getEncoder().encodeToString(hashBytes);
-                Files.createDirectories(Path.of(hashDirPath));
                 final String hashFileName = file + ".hash";
                 final var hashFile = Path.of(hashDirPath, hashFileName);
                 Files.writeString(hashFile, hash);
-                Logger.info("Hash for [{}] saved to [{}]", file, hashFile);
                 mapOfHash.put(hashFileName, hash);
+                Logger.info("Hash for [{}] saved to [{}]", file, hashFile);
             }
         }
 
@@ -1642,7 +1642,7 @@ public interface ChronicleDao<K, V> {
         boolean allMatch = true;
 
         for (final var entry : fileNameHash.entrySet()) {
-            final String fileName = entry.getKey(); // e.g., "data-2.map.hash"
+            final String fileName = entry.getKey();
             final String primaryHash = entry.getValue();
             final Path hashFilePath = Path.of(hashDirPath, fileName);
 
