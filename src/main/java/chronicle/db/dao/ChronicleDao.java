@@ -47,9 +47,9 @@ public interface ChronicleDao<K, V> {
     ConcurrentMap<String, Set<String>> DATA_FILE_CACHE = new ConcurrentHashMap<>();
     ConcurrentMap<String, HTreeMap<?, String>> KEY_MAP_CACHE = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
-            DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery",
+            HASH_DIR = "/hash/", DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery",
             ENTRY_SIZE_FILE = "entrySize", KEY_FILE = "keys";
-    String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
+    String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR, HASH_DIR };
 
     /**
      * Name of db for logging purposes
@@ -236,16 +236,16 @@ public interface ChronicleDao<K, V> {
             try {
                 final Set<String> dataFiles = CHRONICLE_UTILS.getFileList(dataPath() + DATA_DIR).stream()
                         .filter(file -> file.startsWith("data"))
-                        .collect(Collectors.toSet());
+                        .collect(Collectors.toCollection(HashSet::new));
+
                 if (dataFiles.isEmpty()) {
-                    final var defaultSet = new HashSet<String>();
-                    defaultSet.add("data");
-                    return defaultSet;
+                    return new HashSet<>(Collections.singleton("data"));
                 }
                 return dataFiles;
             } catch (final IOException e) {
-                Logger.error("Failed to initialize data file cache for {}. {}", dataPath(), e.getMessage());
-                return new HashSet<>();
+                // should never happen
+                Logger.error("Failed to initialize data file cache for [{}]. {}", dataPath(), e);
+                return null;
             }
         });
     }
@@ -377,18 +377,18 @@ public interface ChronicleDao<K, V> {
     }
 
     private Map<String, Set<K>> getDbFiles(final Set<K> keys, final HTreeMap<?, String> keyMap) {
-        if (keyMap == null) {
-            return Map.of(DATA_FILE, keys);
+        if (keyMap != null) {
+            final var fileMap = new HashMap<String, Set<K>>();
+            for (final K k : keys) {
+                final var file = keyMap.get(k);
+                if (file != null) {
+                    fileMap.computeIfAbsent(file, f -> new HashSet<>()).add(k);
+                }
+            }
+            return fileMap;
         }
 
-        final var fileMap = new HashMap<String, Set<K>>();
-        for (final K k : keys) {
-            final var file = keyMap.get(k);
-            if (file != null) {
-                fileMap.computeIfAbsent(file, f -> new HashSet<>()).add(k);
-            }
-        }
-        return fileMap;
+        return Collections.emptyMap();
     }
 
     /**
@@ -631,7 +631,7 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     private void rotateFile(final HTreeMap<K, String> keyMap) throws IOException {
-        final String rotatedFile = "data-" + System.currentTimeMillis();
+        final String rotatedFile = "data-" + (getDataFiles().size() + 1);
         final var currentPath = Path.of(dataPath() + DATA_DIR + DATA_FILE);
         final var rotatedPath = Path.of(dataPath() + DATA_DIR + rotatedFile);
         Files.move(currentPath, rotatedPath, REPLACE_EXISTING);
@@ -658,7 +658,7 @@ public interface ChronicleDao<K, V> {
      * First time rotation when keyMap is null
      */
     private HTreeMap<K, String> rotateFile() throws IOException {
-        final String rotatedFile = "data-" + System.currentTimeMillis();
+        final String rotatedFile = "data-" + (getDataFiles().size() + 1);
         final var currentPath = Path.of(dataPath() + DATA_DIR + DATA_FILE);
         final var rotatedPath = Path.of(dataPath() + DATA_DIR + rotatedFile);
         Files.move(currentPath, rotatedPath, REPLACE_EXISTING);
@@ -825,9 +825,9 @@ public interface ChronicleDao<K, V> {
                 if (db != null) {
                     try {
                         for (final K key : entry.getValue()) {
-                            final var record = db.put(key, map.get(key));
-                            if (record != null)
-                                prevValues.put(key, record);
+                            if (db.containsKey(key)) {
+                                prevValues.put(key, db.put(key, map.get(key)));
+                            }
                         }
                     } finally {
                         closeDb(file);
@@ -948,7 +948,9 @@ public interface ChronicleDao<K, V> {
                 if (db != null) {
                     try {
                         for (final K key : entry.getValue()) {
-                            prevValues.put(key, db.put(key, map.get(key)));
+                            if (db.containsKey(key)) {
+                                prevValues.put(key, db.put(key, map.get(key)));
+                            }
                         }
                     } finally {
                         closeDb(file);
@@ -1577,12 +1579,12 @@ public interface ChronicleDao<K, V> {
      */
     default void computeDbHash() throws IOException, NoSuchAlgorithmException {
         Logger.info("Computing hash at [{}]", dataPath());
-        final MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        final var files = getDataFiles();
-        final var sortedFiles = files.stream().sorted().collect(Collectors.toList());
 
-        for (int i = 0; i < sortedFiles.size(); i++) {
-            final var file = sortedFiles.get(i);
+        final String hashDirPath = dataPath() + HASH_DIR;
+        final var sortedFiles = getDataFiles().stream().sorted().collect(Collectors.toList());
+
+        for (final String file : sortedFiles) {
+            final MessageDigest digest = MessageDigest.getInstance("SHA-256");
             final var db = openDb(file);
             if (db != null) {
                 try {
@@ -1596,11 +1598,7 @@ public interface ChronicleDao<K, V> {
                     });
 
                     // Sort using a Comparator that casts keys to Comparable
-                    entries.sort((e1, e2) -> {
-                        final Comparable<K> comparableKey1 = (Comparable<K>) e1.getKey();
-                        final Comparable<K> comparableKey2 = (Comparable<K>) e2.getKey();
-                        return comparableKey1.compareTo((K) comparableKey2);
-                    });
+                    entries.sort((e1, e2) -> e1.getKey().toString().compareTo(e2.getKey().toString()));
 
                     // Hash sorted entries
                     for (final Map.Entry<K, byte[]> entry : entries) {
@@ -1615,10 +1613,22 @@ public interface ChronicleDao<K, V> {
 
                 final byte[] hashBytes = digest.digest();
                 final String hash = Base64.getEncoder().encodeToString(hashBytes);
-                final var hashFile = Path.of(dataPath() + DATA_DIR + "hash");
+                Files.createDirectories(Path.of(hashDirPath));
+                final var hashFile = Path.of(hashDirPath + file + ".hash");
                 Files.writeString(hashFile, hash);
-                Logger.info("Combined hash for all files at [{}] saved to [{}]", dataPath(), hashFile);
+                Logger.info("Hash for [{}] saved to [{}]", file, hashFile);
             }
         }
+    }
+
+    default boolean verifyDbHashes(final Map<String, String> fileNameHash) throws IOException {
+        boolean allMatch = true;
+
+        for (final var entry : fileNameHash.entrySet()) {
+            final var thisHash = Files.readString(Path.of(dataPath() + HASH_DIR + entry.getKey()));
+            allMatch = thisHash.equals(entry.getValue());
+        }
+
+        return allMatch;
     }
 }
