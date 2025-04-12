@@ -377,18 +377,34 @@ public interface ChronicleDao<K, V> {
     }
 
     private Map<String, Set<K>> getDbFiles(final Set<K> keys, final HTreeMap<?, String> keyMap) {
-        if (keyMap != null) {
-            final var fileMap = new HashMap<String, Set<K>>();
-            for (final K k : keys) {
-                final var file = keyMap.get(k);
-                if (file != null) {
-                    fileMap.computeIfAbsent(file, f -> new HashSet<>()).add(k);
-                }
+        final var fileMap = new HashMap<String, Set<K>>();
+        for (final K k : keys) {
+            final var file = keyMap.get(k);
+            if (file != null) {
+                fileMap.computeIfAbsent(file, f -> new HashSet<>()).add(k);
             }
-            return fileMap;
         }
 
-        return Collections.emptyMap();
+        return fileMap;
+    }
+
+    private Map<String, Set<K>> getDbFiles(final Set<K> keys) throws IOException {
+        final var fileMap = new HashMap<String, Set<K>>();
+        final var db = openDb();
+
+        if (db != null) {
+            try {
+                for (final K k : keys) {
+                    if (db.containsKey(k)) {
+                        fileMap.computeIfAbsent(DATA_FILE, f -> new HashSet<>()).add(k);
+                    }
+                }
+            } finally {
+                closeDb();
+            }
+        }
+
+        return fileMap;
     }
 
     /**
@@ -817,7 +833,7 @@ public interface ChronicleDao<K, V> {
 
             // update old records first then only move to new record inserts.
             var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
-            final var dbFiles = getDbFiles(map.keySet(), keyMap);
+            final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
 
             for (final var entry : dbFiles.entrySet()) {
                 final var file = entry.getKey();
@@ -891,7 +907,7 @@ public interface ChronicleDao<K, V> {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
-            final var dbFiles = getDbFiles(map.keySet(), keyMap);
+            final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
             final var prevValues = new HashMap<K, V>(map.size());
 
             for (final var entry : dbFiles.entrySet()) {
@@ -940,7 +956,7 @@ public interface ChronicleDao<K, V> {
 
             // update old records first then only move to new record inserts.
             var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
-            final var dbFiles = getDbFiles(map.keySet(), keyMap);
+            final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
 
             for (final var entry : dbFiles.entrySet()) {
                 final var file = entry.getKey();
