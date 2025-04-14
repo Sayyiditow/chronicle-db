@@ -1618,54 +1618,95 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Computes and saves hashes of each db file to /hash/
-     * Use when failover occurs from one server to another
-     * 
+     * Helper class to store file metadata for comparison
+     */
+    record FileMetadata(long lastModified, long size) {
+    }
+
+    /**
+     * Computes and saves hashes of each db file to /hash/. Reuses existing hashes
+     * for unchanged files.
+     * Use when failover occurs from one server to another.
+     *
      * @return Map of hash file name and its hash
      */
     default Map<String, String> computeDbHash() throws IOException, NoSuchAlgorithmException {
-        Logger.info("Computing hash at [{}]", dataPath());
+        Logger.info("Computing incremental hashes at [{}]", dataPath());
 
-        final String hashDirPath = dataPath() + HASH_DIR;
-        Files.createDirectories(Path.of(hashDirPath));
+        final String hashDir = dataPath() + HASH_DIR;
+        final var hashDirPath = Path.of(hashDir);
+        Files.createDirectories(hashDirPath);
         final var sortedFiles = getDataFiles().stream().sorted().collect(Collectors.toList());
         final var mapOfHash = new HashMap<String, String>();
 
-        for (final String file : sortedFiles) {
-            final MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            final var db = openDb(file);
-            if (db != null) {
+        // Load existing hash files
+        final Map<String, String> existingHashes = new HashMap<>();
+        try (var stream = Files.list(hashDirPath)) {
+            stream.forEach(p -> {
                 try {
-                    // Collect and sort entries
-                    final List<Map.Entry<K, byte[]>> entries = new ArrayList<>();
-                    db.forEachEntry(entry -> {
-                        final K key = entry.key().get();
-                        final V value = entry.value().get();
-                        final byte[] valueBytes = KryoSerializer.serialize(value);
-                        entries.add(Map.entry(key, valueBytes));
-                    });
-
-                    // Sort using a Comparator that casts keys to Comparable
-                    entries.sort((e1, e2) -> e1.getKey().toString().compareTo(e2.getKey().toString()));
-
-                    // Hash sorted entries
-                    for (final Map.Entry<K, byte[]> entry : entries) {
-                        final byte[] keyBytes = entry.getKey().toString().getBytes(StandardCharsets.UTF_8);
-                        final byte[] valueBytes = entry.getValue();
-                        digest.update(keyBytes);
-                        digest.update(valueBytes);
-                    }
-                } finally {
-                    closeDb(file);
+                    final String fileName = p.getFileName().toString();
+                    existingHashes.put(fileName, Files.readString(p));
+                } catch (final IOException e) {
+                    Logger.warn("Failed to read hash file [{}]: {}", p, e.getMessage());
                 }
+            });
+        }
 
-                final byte[] hashBytes = digest.digest();
-                final String hash = Base64.getEncoder().encodeToString(hashBytes);
-                final String hashFileName = file + ".hash";
-                final var hashFile = Path.of(hashDirPath, hashFileName);
-                Files.writeString(hashFile, hash);
-                mapOfHash.put(hashFileName, hash);
-                Logger.info("Hash for [{}] saved to [{}]", file, hashFile);
+        for (final String file : sortedFiles) {
+            final String hashFileName = file + ".hash";
+            final Path hashFilePath = Path.of(hashDir, hashFileName);
+            final Path dataFilePath = Path.of(dataPath(), file);
+
+            // Check if hash exists and file hasn't changed
+            boolean recomputeHash = true;
+            if (existingHashes.containsKey(hashFileName)) {
+                try {
+                    // Reuse hash if hash file is newer than data file
+                    if (Files.getLastModifiedTime(hashFilePath).toMillis() >= Files.getLastModifiedTime(dataFilePath)
+                            .toMillis()) {
+                        mapOfHash.put(hashFileName, existingHashes.get(hashFileName));
+                        Logger.info("Reusing hash for unchanged file [{}]", file);
+                        recomputeHash = false;
+                    }
+                } catch (final IOException e) {
+                    Logger.warn("Failed to check metadata for [{}], recomputing hash: {}", file, e.getMessage());
+                }
+            }
+
+            if (recomputeHash) {
+                final MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                final var db = openDb(file);
+                if (db != null) {
+                    try {
+                        // Collect and sort entries
+                        final List<Map.Entry<K, byte[]>> entries = new ArrayList<>();
+                        db.forEachEntry(entry -> {
+                            final K key = entry.key().get();
+                            final V value = entry.value().get();
+                            final byte[] valueBytes = KryoSerializer.serialize(value);
+                            entries.add(Map.entry(key, valueBytes));
+                        });
+
+                        // Sort by key
+                        entries.sort((e1, e2) -> e1.getKey().toString().compareTo(e2.getKey().toString()));
+
+                        // Hash sorted entries
+                        for (final Map.Entry<K, byte[]> entry : entries) {
+                            final byte[] keyBytes = entry.getKey().toString().getBytes(StandardCharsets.UTF_8);
+                            final byte[] valueBytes = entry.getValue();
+                            digest.update(keyBytes);
+                            digest.update(valueBytes);
+                        }
+
+                        final byte[] hashBytes = digest.digest();
+                        final String hash = Base64.getEncoder().encodeToString(hashBytes);
+                        Files.writeString(hashFilePath, hash);
+                        mapOfHash.put(hashFileName, hash);
+                        Logger.info("Computed new hash for [{}] saved to [{}]", file, hashFilePath);
+                    } finally {
+                        closeDb(file);
+                    }
+                }
             }
         }
 
