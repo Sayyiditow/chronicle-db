@@ -25,7 +25,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
@@ -33,6 +32,7 @@ import org.tinylog.Logger;
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
+import net.openhft.chronicle.map.ChronicleMap;
 
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleUtils {
@@ -60,7 +60,7 @@ public final class ChronicleUtils {
      * @return a list of files
      */
     public List<String> getFileList(final String dirPath) throws IOException {
-        try (Stream<Path> stream = Files.list(Path.of(dirPath))) {
+        try (final var stream = Files.list(Path.of(dirPath))) {
             return stream.map(Path::getFileName).map(Path::toString).collect(Collectors.toList());
         }
     }
@@ -252,7 +252,7 @@ public final class ChronicleUtils {
      * @throws IOException
      * 
      */
-    public <K, V> void index(final Map<K, V> db, final String dbName, final List<String> fields,
+    public <K, V> void index(final ChronicleMap<K, V> db, final String dbName, final List<String> fields,
             final String dataPath, final String indexDirPath) {
         Logger.info("Indexing {} at [{}].", fields, dataPath);
         if (db.isEmpty())
@@ -260,15 +260,29 @@ public final class ChronicleUtils {
 
         final Map<String, Field> fieldMap = new HashMap<>(fields.size());
         final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.size());
+
+        final Class<?>[] valueType = new Class<?>[1];
+
+        // fastest way to get first value class
+        try {
+            db.forEachEntry(e -> {
+                if (valueType[0] == null && e.value() != null) {
+                    valueType[0] = e.value().get().getClass();
+                    throw new RuntimeException("Breaking forEachEntry.");
+                }
+            });
+        } catch (final RuntimeException e) {// ignored
+        }
+
         for (final String field : fields) {
-            final Field f = getCachedField(db.values().iterator().next().getClass(), field);
+            final Field f = getCachedField(valueType[0], field);
             if (f != null)
                 fieldMap.put(field, f);
         }
 
-        for (final var entry : db.entrySet()) {
-            final K key = entry.getKey();
-            final V value = entry.getValue();
+        db.forEachEntry(entry -> {
+            final K key = entry.key().get();
+            final V value = entry.value().get();
             for (final String field : fieldMap.keySet()) {
                 final Field f = fieldMap.get(field);
                 final Map<Object, List<K>> indexMap = fieldIndexMap.computeIfAbsent(field, k -> new HashMap<>());
@@ -281,7 +295,7 @@ public final class ChronicleUtils {
                     // should not happen, all fields are public
                 }
             }
-        }
+        });
 
         // Write to disk in parallel
         fieldIndexMap.entrySet().parallelStream().forEach(entry -> {

@@ -151,9 +151,9 @@ public interface ChronicleDao<K, V> {
             final var db = openDb(file);
             if (db != null) {
                 try {
-                    for (final K key : db.keySet()) {
-                        keyMap.put(key, file);
-                    }
+                    db.forEachEntry(entry -> {
+                        keyMap.put(entry.key().get(), file);
+                    });
                 } finally {
                     closeDb(file);
                 }
@@ -233,8 +233,8 @@ public interface ChronicleDao<K, V> {
      */
     private Set<String> getDataFiles() {
         return DATA_FILE_CACHE.computeIfAbsent(dataPath(), k -> {
-            try {
-                final Set<String> dataFiles = CHRONICLE_UTILS.getFileList(dataPath() + DATA_DIR).stream()
+            try (final var stream = Files.list(Path.of(dataPath() + DATA_DIR))) {
+                final var dataFiles = stream.map(Path::getFileName).map(Path::toString)
                         .filter(file -> file.startsWith("data"))
                         .collect(Collectors.toCollection(HashSet::new));
 
@@ -256,7 +256,7 @@ public interface ChronicleDao<K, V> {
      * @param field the field of the V value object
      * 
      */
-    private void initIndex(final Map<K, V> db, final List<String> fields, final String indexDirPath) {
+    private void initIndex(final ChronicleMap<K, V> db, final List<String> fields, final String indexDirPath) {
         CHRONICLE_UTILS.index(db, name(), fields, dataPath(), indexDirPath);
     }
 
@@ -575,7 +575,6 @@ public interface ChronicleDao<K, V> {
                 final var db = openDb();
                 if (db != null) {
                     try {
-
                         for (final K key : keys) {
                             final var deleted = db.remove(key);
                             if (deleted != null) {
@@ -670,23 +669,23 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     private void rotateFile(final HTreeMap<K, String> keyMap) throws IOException {
-        final String rotatedFile = "data-" + (getDataFiles().size() + 1);
+        final var currentFiles = getDataFiles();
+        final String rotatedFile = "data-" + (currentFiles.size() + 1);
         final var currentPath = Path.of(dataPath() + DATA_DIR + DATA_FILE);
         final var rotatedPath = Path.of(dataPath() + DATA_DIR + rotatedFile);
-        Files.move(currentPath, rotatedPath, REPLACE_EXISTING);
+        Files.move(currentPath, rotatedPath);
 
         final var oldDb = openDb(rotatedFile);
         if (oldDb != null) {
             try {
-                for (final K oldKey : oldDb.keySet()) {
-                    keyMap.put(oldKey, rotatedFile);
-                }
+                oldDb.forEachEntry(entry -> {
+                    keyMap.put(entry.key().get(), rotatedFile);
+                });
             } finally {
                 closeDb(rotatedFile);
             }
         }
 
-        final var currentFiles = getDataFiles();
         currentFiles.add(rotatedFile);
         DATA_FILE_CACHE.put(dataPath(), currentFiles);
 
@@ -697,7 +696,8 @@ public interface ChronicleDao<K, V> {
      * First time rotation when keyMap is null
      */
     private HTreeMap<K, String> rotateFile() throws IOException {
-        final String rotatedFile = "data-" + (getDataFiles().size() + 1);
+        final var currentFiles = getDataFiles();
+        final String rotatedFile = "data-" + (currentFiles.size() + 1);
         final var currentPath = Path.of(dataPath() + DATA_DIR + DATA_FILE);
         final var rotatedPath = Path.of(dataPath() + DATA_DIR + rotatedFile);
         Files.move(currentPath, rotatedPath, REPLACE_EXISTING);
@@ -707,15 +707,14 @@ public interface ChronicleDao<K, V> {
         final var oldDb = openDb(rotatedFile);
         if (oldDb != null) {
             try {
-                for (final K oldKey : oldDb.keySet()) {
-                    keyMap.put(oldKey, rotatedFile);
-                }
+                oldDb.forEachEntry(entry -> {
+                    keyMap.put(entry.key().get(), rotatedFile);
+                });
             } finally {
                 closeDb(rotatedFile);
             }
         }
 
-        final var currentFiles = getDataFiles();
         currentFiles.add(rotatedFile);
         DATA_FILE_CACHE.put(dataPath(), currentFiles);
 
@@ -1051,6 +1050,24 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
+     * Same as above, just faster with forEachEntry for first search using whole db
+     */
+    private Map<K, V> search(final ChronicleMap<K, V> db, final Search search) {
+        Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
+        final Map<K, V> map = new HashMap<>();
+
+        db.forEachEntry(entry -> {
+            try {
+                CHRONICLE_UTILS.search(search, entry.key().get(), entry.value().get(), map);
+            } catch (IllegalArgumentException | IllegalAccessException e) {
+                throw new RuntimeException("Search failed. ", e);
+            }
+        });
+
+        return map;
+    }
+
+    /**
      * Search the chronicle map based on values
      * 
      * @param search object search
@@ -1074,16 +1091,38 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
+     * Same as above, just faster with forEachEntry for first search using whole db
+     */
+    private Map<K, V> search(final ChronicleMap<K, V> db, final Search search, final int limit) {
+        Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
+        final Map<K, V> map = new HashMap<>();
+
+        try {
+            db.forEachEntry(entry -> {
+                try {
+                    CHRONICLE_UTILS.search(search, entry.key().get(), entry.value().get(), map);
+                } catch (IllegalArgumentException | IllegalAccessException e) {
+                    throw new RuntimeException("Search failed. ", e);
+                }
+                if (map.size() == limit) {
+                    throw new RuntimeException("Breaking forEachEntry.");
+                }
+            });
+        } catch (final RuntimeException e) {// ignored
+        }
+
+        return map;
+    }
+
+    /**
      * Search the chronicle map based on values
      * 
      * @param db     the map
      * @param search object search
      * @return a map of the fitting values
      * @throws IOException
-     * @throws IllegalAccessException
-     * @throws IllegalArgumentException
      */
-    default Map<K, V> search(final Search search) throws IOException, IllegalArgumentException, IllegalAccessException {
+    default Map<K, V> search(final Search search) throws IOException {
         Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
         final Map<K, V> results = new HashMap<>();
         final var files = getDataFiles();
@@ -1626,50 +1665,52 @@ public interface ChronicleDao<K, V> {
     /**
      * Computes and saves hashes of each db file to /hash/. Reuses existing hashes
      * for unchanged files.
-     * Use when failover occurs from one server to another.
      *
      * @return Map of hash file name and its hash
+     * @throws IOException
+     * @throws NoSuchAlgorithmException
      */
     default Map<String, String> computeDbHash() throws IOException, NoSuchAlgorithmException {
         Logger.info("Computing incremental hashes at [{}]", dataPath());
 
-        final String hashDir = dataPath() + HASH_DIR;
-        final var hashDirPath = Path.of(hashDir);
-        Files.createDirectories(hashDirPath);
+        final String hashDirPath = dataPath() + HASH_DIR;
+        Files.createDirectories(Path.of(hashDirPath));
         final var sortedFiles = getDataFiles().stream().sorted().collect(Collectors.toList());
         final var mapOfHash = new HashMap<String, String>();
 
         // Load existing hash files
         final Map<String, String> existingHashes = new HashMap<>();
-        try (var stream = Files.list(hashDirPath)) {
-            stream.forEach(p -> {
+        try (var stream = Files.list(Path.of(hashDirPath))) {
+            stream.filter(p -> p.toString().endsWith(".hash")).forEach(p -> {
                 try {
                     final String fileName = p.getFileName().toString();
                     existingHashes.put(fileName, Files.readString(p));
                 } catch (final IOException e) {
-                    Logger.warn("Failed to read hash file [{}]: {}", p, e.getMessage());
+                    Logger.warn("Failed to read hash file [{}]: {}", p, e.getMessage(), e);
                 }
             });
         }
 
         for (final String file : sortedFiles) {
             final String hashFileName = file + ".hash";
-            final Path hashFilePath = Path.of(hashDir, hashFileName);
-            final Path dataFilePath = Path.of(dataPath(), file);
+            final Path hashFilePath = Path.of(hashDirPath, hashFileName);
+            final Path dataFilePath = Path.of(dataPath(), DATA_DIR, file);
 
             // Check if hash exists and file hasn't changed
             boolean recomputeHash = true;
             if (existingHashes.containsKey(hashFileName)) {
                 try {
-                    // Reuse hash if hash file is newer than data file
-                    if (Files.getLastModifiedTime(hashFilePath).toMillis() >= Files.getLastModifiedTime(dataFilePath)
-                            .toMillis()) {
+                    final var hashFileLastModified = Files.getLastModifiedTime(hashFilePath);
+                    final var dataFileLastModified = Files.getLastModifiedTime(dataFilePath);
+                    System.out.println(hashFileLastModified);
+                    System.out.println(dataFileLastModified);
+                    if (hashFileLastModified.compareTo(dataFileLastModified) >= 0) {
                         mapOfHash.put(hashFileName, existingHashes.get(hashFileName));
                         Logger.info("Reusing hash for unchanged file [{}]", file);
                         recomputeHash = false;
                     }
                 } catch (final IOException e) {
-                    Logger.warn("Failed to check metadata for [{}], recomputing hash: {}", file, e.getMessage());
+                    // should not happen.
                 }
             }
 
@@ -1677,35 +1718,36 @@ public interface ChronicleDao<K, V> {
                 final MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 final var db = openDb(file);
                 if (db != null) {
+                    // Collect and sort entries
+                    final List<Map.Entry<K, byte[]>> entries = new ArrayList<>();
                     try {
-                        // Collect and sort entries
-                        final List<Map.Entry<K, byte[]>> entries = new ArrayList<>();
                         db.forEachEntry(entry -> {
                             final K key = entry.key().get();
                             final V value = entry.value().get();
                             final byte[] valueBytes = KryoSerializer.serialize(value);
                             entries.add(Map.entry(key, valueBytes));
                         });
-
-                        // Sort by key
-                        entries.sort((e1, e2) -> e1.getKey().toString().compareTo(e2.getKey().toString()));
-
-                        // Hash sorted entries
-                        for (final Map.Entry<K, byte[]> entry : entries) {
-                            final byte[] keyBytes = entry.getKey().toString().getBytes(StandardCharsets.UTF_8);
-                            final byte[] valueBytes = entry.getValue();
-                            digest.update(keyBytes);
-                            digest.update(valueBytes);
-                        }
-
-                        final byte[] hashBytes = digest.digest();
-                        final String hash = Base64.getEncoder().encodeToString(hashBytes);
-                        Files.writeString(hashFilePath, hash);
-                        mapOfHash.put(hashFileName, hash);
-                        Logger.info("Computed new hash for [{}] saved to [{}]", file, hashFilePath);
                     } finally {
+                        // Close db before hashing to finalize data file modifications
                         closeDb(file);
                     }
+
+                    // Sort by key
+                    entries.sort((e1, e2) -> e1.getKey().toString().compareTo(e2.getKey().toString()));
+
+                    // Hash sorted entries
+                    for (final Map.Entry<K, byte[]> entry : entries) {
+                        final byte[] keyBytes = entry.getKey().toString().getBytes(StandardCharsets.UTF_8);
+                        final byte[] valueBytes = entry.getValue();
+                        digest.update(keyBytes);
+                        digest.update(valueBytes);
+                    }
+
+                    final byte[] hashBytes = digest.digest();
+                    final String hash = Base64.getEncoder().encodeToString(hashBytes);
+                    Files.writeString(hashFilePath, hash);
+                    mapOfHash.put(hashFileName, hash);
+                    Logger.info("Computed new hash for [{}] saved to [{}]", file, hashFilePath);
                 }
             }
         }
