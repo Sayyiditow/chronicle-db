@@ -9,8 +9,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
@@ -38,7 +40,7 @@ import net.openhft.chronicle.map.ChronicleMap;
 
 /**
  *
- * @param <K> Type of the unique identifier
+ * @param <K> Type of the unique identifier, use String or Long
  * @param <V> Type of the single element
  */
 @SuppressWarnings("unchecked")
@@ -47,9 +49,10 @@ public interface ChronicleDao<K, V> {
     ConcurrentMap<String, Set<String>> DATA_FILE_CACHE = new ConcurrentHashMap<>();
     ConcurrentMap<String, HTreeMap<?, String>> KEY_MAP_CACHE = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
-            HASH_DIR = "/hash/", DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery",
-            ENTRY_SIZE_FILE = "entrySize", KEY_FILE = "keys";
-    String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR, HASH_DIR };
+            HASH_DIR = "/hashes/", TS_DIR = "/timestamps/", DATA_FILE = "data", CORRUPTED_FILE = "corrupted",
+            RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize", KEY_FILE = "keys",
+            HASH_EXT = ".hash", TS_EXT = ".time";
+    String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR, HASH_DIR, TS_DIR };
 
     /**
      * Name of db for logging purposes
@@ -105,18 +108,6 @@ public interface ChronicleDao<K, V> {
         return Collections.emptyList();
     }
 
-    private void createDataDirs(final String dataPath) {
-        if (!Files.exists(Path.of(dataPath))) {
-            for (final String dir : DB_DIRS) {
-                try {
-                    Files.createDirectories(Path.of(dataPath + dir));
-                } catch (final IOException e) {
-                    Logger.error("Error on db directory creation for {}. {}.", dataPath, e.getMessage());
-                }
-            }
-        }
-    }
-
     /**
      * Get the db object, close with closeDb()
      * 
@@ -166,7 +157,19 @@ public interface ChronicleDao<K, V> {
      *
      */
     default void createDataDirs() {
-        createDataDirs(dataPath());
+        // check if the ts directory exists, this is the last dir to be created
+        // for each db path
+        if (!Files.exists(Path.of(dataPath() + TS_DIR))) {
+            for (final String dir : DB_DIRS) {
+                try {
+                    Files.createDirectories(Path.of(dataPath() + dir));
+                } catch (final IOException e) {
+                    Logger.error("Error on db directory creation for [{}].", dataPath());
+                    Logger.error(e);
+                }
+            }
+        }
+
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             if (!KEY_MAP_CACHE.containsKey(dataPath())) {
@@ -183,22 +186,26 @@ public interface ChronicleDao<K, V> {
         }
     }
 
+    private void updateTimestamp(final String dbFile) throws IOException {
+        final var tsFilePath = Path.of(dataPath(), TS_DIR, dbFile + TS_EXT);
+        if (!Files.exists(tsFilePath)) {
+            Files.createFile(tsFilePath);
+        }
+        Files.setLastModifiedTime(tsFilePath, FileTime.from(Instant.now()));
+    }
+
     /**
      * Helps to backup all data files in /data to /backup
+     * 
+     * @throws IOException
      */
-    default void backup() {
-        try {
-            final var dataPath = dataPath() + DATA_DIR;
-            final var backupPath = dataPath() + BACKUP_DIR;
-            final var backupDirPath = Path.of(backupPath);
-            final var dataFiles = CHRONICLE_UTILS.getFileList(dataPath);
-            Files.createDirectories(backupDirPath);
+    default void backup() throws IOException {
+        final var dataPath = dataPath() + DATA_DIR;
+        final var backupPath = dataPath() + BACKUP_DIR;
+        final var dataFiles = CHRONICLE_UTILS.getFileList(dataPath);
 
-            for (final var file : dataFiles) {
-                Files.copy(Path.of(dataPath + file), Path.of(backupPath + file), REPLACE_EXISTING);
-            }
-        } catch (final IOException e) {
-            Logger.error("Error on db backup for {}. {}.", dataPath(), e.getMessage());
+        for (final var file : dataFiles) {
+            Files.copy(Path.of(dataPath + file), Path.of(backupPath + file), REPLACE_EXISTING);
         }
     }
 
@@ -222,7 +229,6 @@ public interface ChronicleDao<K, V> {
      * 
      * @param field the field of the V value object
      * @return map of the index
-     * @throws IOException
      */
     default String getIndexPath(final String field) {
         return dataPath() + INDEX_DIR + field;
@@ -244,7 +250,7 @@ public interface ChronicleDao<K, V> {
                 return dataFiles;
             } catch (final IOException e) {
                 // should never happen
-                Logger.error("Failed to initialize data file cache for [{}]. {}", dataPath(), e);
+                Logger.error("Failed to initialize data file cache for [{}].", dataPath());
                 return null;
             }
         });
@@ -545,6 +551,7 @@ public interface ChronicleDao<K, V> {
             }
             final var indexFileNames = indexFileNames();
             CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value));
+            updateTimestamp(file);
             return true;
         }
     }
@@ -589,6 +596,7 @@ public interface ChronicleDao<K, V> {
                 if (deletedMap.isEmpty()) {
                     return false;
                 }
+                updateTimestamp(DATA_FILE);
                 removeFromIndex(deletedMap);
                 return true;
             }
@@ -601,15 +609,13 @@ public interface ChronicleDao<K, V> {
                     if (db != null) {
                         try {
                             for (final K key : entry.getValue()) {
-                                final var deleted = db.remove(key);
-                                if (deleted != null) {
-                                    keyMap.remove(key);
-                                    deletedMap.put(key, deleted);
-                                }
+                                keyMap.remove(key);
+                                deletedMap.put(key, db.remove(key));
                             }
                         } finally {
                             closeDb(file);
                         }
+                        updateTimestamp(file);
                     }
                 }
             }
@@ -684,6 +690,7 @@ public interface ChronicleDao<K, V> {
             } finally {
                 closeDb(rotatedFile);
             }
+            updateTimestamp(rotatedFile);
         }
 
         currentFiles.add(rotatedFile);
@@ -713,6 +720,7 @@ public interface ChronicleDao<K, V> {
             } finally {
                 closeDb(rotatedFile);
             }
+            updateTimestamp(rotatedFile);
         }
 
         currentFiles.add(rotatedFile);
@@ -721,6 +729,20 @@ public interface ChronicleDao<K, V> {
         Logger.info("Rotated data file at [{}] to {}.", dataPath(), rotatedFile);
 
         return keyMap;
+    }
+
+    private ChronicleMap<K, V> checkAndRotate(ChronicleMap<K, V> db, HTreeMap<K, String> keyMap) throws IOException {
+        if (db.size() >= entries()) {
+            closeDb();
+            if (keyMap == null) {
+                keyMap = rotateFile();
+            } else {
+                rotateFile(keyMap);
+            }
+            db = openDb();
+        }
+
+        return db;
     }
 
     /**
@@ -739,7 +761,7 @@ public interface ChronicleDao<K, V> {
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
+            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
             final var file = getDbFile(key, keyMap);
             var db = openDb(file);
             V prevValue = null;
@@ -748,15 +770,7 @@ public interface ChronicleDao<K, V> {
                 try {
                     // only rotate if current file is full and insert mode
                     if (DATA_FILE.equals(file) && !db.containsKey(key)) {
-                        if (db.size() >= entries()) {
-                            closeDb();
-                            if (keyMap == null) {
-                                keyMap = rotateFile();
-                            } else {
-                                rotateFile(keyMap);
-                            }
-                            db = openDb();
-                        }
+                        db = checkAndRotate(db, keyMap);
                     }
                     prevValue = db.put(key, value);
                 } finally {
@@ -775,6 +789,7 @@ public interface ChronicleDao<K, V> {
                 CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                         Collections.emptyMap());
             }
+            updateTimestamp(file);
             Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
             return status;
         }
@@ -824,6 +839,7 @@ public interface ChronicleDao<K, V> {
                 CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                         Map.of(key, prevValue));
             }
+            updateTimestamp(file);
             Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
 
             return status;
@@ -855,7 +871,7 @@ public interface ChronicleDao<K, V> {
             final var prevValues = new HashMap<K, V>(putSize);
 
             // update old records first then only move to new record inserts.
-            var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
+            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
             final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
 
             for (final var entry : dbFiles.entrySet()) {
@@ -869,6 +885,7 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb(file);
                     }
+                    updateTimestamp(file);
                 }
             }
 
@@ -884,15 +901,7 @@ public interface ChronicleDao<K, V> {
                         for (final var entry : map.entrySet()) {
                             final K key = entry.getKey();
                             final V value = entry.getValue();
-                            if (db.size() >= entries()) {
-                                closeDb();
-                                if (keyMap == null) {
-                                    keyMap = rotateFile();
-                                } else {
-                                    rotateFile(keyMap);
-                                }
-                                db = openDb();
-                            }
+                            db = checkAndRotate(db, keyMap);
                             db.put(key, value);
                             if (keyMap != null) {
                                 keyMap.put(key, DATA_FILE);
@@ -901,6 +910,7 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb();
                     }
+                    updateTimestamp(DATA_FILE);
                 }
             }
 
@@ -942,6 +952,7 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb(file);
                     }
+                    updateTimestamp(file);
                 }
             }
 
@@ -974,7 +985,7 @@ public interface ChronicleDao<K, V> {
             final var prevValues = new HashMap<K, V>(putSize);
 
             // update old records first then only move to new record inserts.
-            var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
+            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
             final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
 
             for (final var entry : dbFiles.entrySet()) {
@@ -988,6 +999,7 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb(file);
                     }
+                    updateTimestamp(file);
                 }
             }
 
@@ -997,21 +1009,12 @@ public interface ChronicleDao<K, V> {
 
             if (!map.isEmpty()) {
                 var db = openDb();
-
                 if (db != null) {
                     try {
                         for (final var entry : map.entrySet()) {
                             final K key = entry.getKey();
                             final V value = entry.getValue();
-                            if (db.size() >= entries()) {
-                                closeDb();
-                                if (keyMap == null) {
-                                    keyMap = rotateFile();
-                                } else {
-                                    rotateFile(keyMap);
-                                }
-                                db = openDb();
-                            }
+                            db = checkAndRotate(db, keyMap);
                             db.put(key, value);
                             if (keyMap != null) {
                                 keyMap.put(key, DATA_FILE);
@@ -1020,6 +1023,7 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb();
                     }
+                    updateTimestamp(DATA_FILE);
                 }
             }
             Logger.info("Put {} records at [{}].", putSize, dataPath());
@@ -1672,16 +1676,15 @@ public interface ChronicleDao<K, V> {
      */
     default Map<String, String> computeDbHash() throws IOException, NoSuchAlgorithmException {
         Logger.info("Computing incremental hashes at [{}]", dataPath());
-
         final String hashDirPath = dataPath() + HASH_DIR;
-        Files.createDirectories(Path.of(hashDirPath));
+        final String tsDirPath = dataPath() + TS_DIR;
         final var sortedFiles = getDataFiles().stream().sorted().collect(Collectors.toList());
         final var mapOfHash = new HashMap<String, String>();
 
         // Load existing hash files
         final Map<String, String> existingHashes = new HashMap<>();
         try (var stream = Files.list(Path.of(hashDirPath))) {
-            stream.filter(p -> p.toString().endsWith(".hash")).forEach(p -> {
+            stream.filter(p -> p.toString().endsWith(HASH_EXT)).forEach(p -> {
                 try {
                     final String fileName = p.getFileName().toString();
                     existingHashes.put(fileName, Files.readString(p));
@@ -1692,21 +1695,19 @@ public interface ChronicleDao<K, V> {
         }
 
         for (final String file : sortedFiles) {
-            final String hashFileName = file + ".hash";
+            final String hashFileName = file + HASH_EXT;
             final Path hashFilePath = Path.of(hashDirPath, hashFileName);
-            final Path dataFilePath = Path.of(dataPath(), DATA_DIR, file);
+            final Path tsFilePath = Path.of(tsDirPath, file + TS_EXT);
 
             // Check if hash exists and file hasn't changed
             boolean recomputeHash = true;
             if (existingHashes.containsKey(hashFileName)) {
                 try {
                     final var hashFileLastModified = Files.getLastModifiedTime(hashFilePath);
-                    final var dataFileLastModified = Files.getLastModifiedTime(dataFilePath);
-                    System.out.println(hashFileLastModified);
-                    System.out.println(dataFileLastModified);
-                    if (hashFileLastModified.compareTo(dataFileLastModified) >= 0) {
+                    final var tsFileLastModified = Files.getLastModifiedTime(tsFilePath);
+                    if (hashFileLastModified.compareTo(tsFileLastModified) >= 0) {
                         mapOfHash.put(hashFileName, existingHashes.get(hashFileName));
-                        Logger.info("Reusing hash for unchanged file [{}]", file);
+                        Logger.info("Reusing hash for [{}] at [{}]", file, dataPath());
                         recomputeHash = false;
                     }
                 } catch (final IOException e) {
@@ -1747,7 +1748,7 @@ public interface ChronicleDao<K, V> {
                     final String hash = Base64.getEncoder().encodeToString(hashBytes);
                     Files.writeString(hashFilePath, hash);
                     mapOfHash.put(hashFileName, hash);
-                    Logger.info("Computed new hash for [{}] saved to [{}]", file, hashFilePath);
+                    Logger.info("Computed new hash for [{}] at [{}]", file, dataPath());
                 }
             }
         }
