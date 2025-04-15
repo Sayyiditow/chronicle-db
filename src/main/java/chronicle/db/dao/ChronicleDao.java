@@ -134,9 +134,9 @@ public interface ChronicleDao<K, V> {
             final var db = openDb(file);
             if (db != null) {
                 try {
-                    db.forEachEntry(entry -> {
-                        keyMap.put(entry.key().get(), file);
-                    });
+                    for (final K key : db.keySet()) {
+                        keyMap.put(key, file);
+                    }
                 } finally {
                     closeDb(file);
                 }
@@ -665,9 +665,9 @@ public interface ChronicleDao<K, V> {
         final var oldDb = openDb(rotatedFile);
         if (oldDb != null) {
             try {
-                oldDb.forEachEntry(entry -> {
-                    keyMap.put(entry.key().get(), rotatedFile);
-                });
+                for (final K key : oldDb.keySet()) {
+                    keyMap.put(key, rotatedFile);
+                }
             } finally {
                 closeDb(rotatedFile);
             }
@@ -694,9 +694,9 @@ public interface ChronicleDao<K, V> {
         final var oldDb = openDb(rotatedFile);
         if (oldDb != null) {
             try {
-                oldDb.forEachEntry(entry -> {
-                    keyMap.put(entry.key().get(), rotatedFile);
-                });
+                for (final K key : oldDb.keySet()) {
+                    keyMap.put(key, rotatedFile);
+                }
             } finally {
                 closeDb(rotatedFile);
             }
@@ -1026,24 +1026,6 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Same as above, just faster with forEachEntry for first search using whole db
-     */
-    private Map<K, V> search(final ChronicleMap<K, V> db, final Search search) {
-        Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
-        final Map<K, V> map = new HashMap<>();
-
-        db.forEachEntry(entry -> {
-            try {
-                CHRONICLE_UTILS.search(search, entry.key().get(), entry.value().get(), map);
-            } catch (IllegalArgumentException | IllegalAccessException e) {
-                throw new RuntimeException("Search failed. ", e);
-            }
-        });
-
-        return map;
-    }
-
-    /**
      * Search the chronicle map based on values
      * 
      * @param search object search
@@ -1067,38 +1049,16 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Same as above, just faster with forEachEntry for first search using whole db
-     */
-    private Map<K, V> search(final ChronicleMap<K, V> db, final Search search, final int limit) {
-        Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
-        final Map<K, V> map = new HashMap<>();
-
-        try {
-            db.forEachEntry(entry -> {
-                try {
-                    CHRONICLE_UTILS.search(search, entry.key().get(), entry.value().get(), map);
-                } catch (IllegalArgumentException | IllegalAccessException e) {
-                    throw new RuntimeException("Search failed. ", e);
-                }
-                if (map.size() == limit) {
-                    throw new RuntimeException("Breaking forEachEntry.");
-                }
-            });
-        } catch (final RuntimeException e) {// ignored
-        }
-
-        return map;
-    }
-
-    /**
      * Search the chronicle map based on values
      * 
      * @param db     the map
      * @param search object search
      * @return a map of the fitting values
      * @throws IOException
+     * @throws IllegalAccessException
+     * @throws IllegalArgumentException
      */
-    default Map<K, V> search(final Search search) throws IOException {
+    default Map<K, V> search(final Search search) throws IOException, IllegalArgumentException, IllegalAccessException {
         Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
         final Map<K, V> results = new HashMap<>();
         final var files = getDataFiles();
