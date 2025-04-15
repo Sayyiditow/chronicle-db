@@ -1788,7 +1788,7 @@ public interface ChronicleDao<K, V> {
         }
 
         if (allMatch) {
-            Logger.info("All hashes match. Safe to failover.");
+            Logger.info("All hashes match for [{}]", dataPath());
         }
         return allMatch;
     }
