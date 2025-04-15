@@ -155,11 +155,11 @@ public final class ChronicleUtils {
         return searchTerm;
     }
 
-    public <K, V> void search(final Search search, final K key, final V value, final Map<K, V> map)
+    public <K, V> boolean search(final Search search, final K key, final V value)
             throws IllegalArgumentException, IllegalAccessException {
         final Field field = getCachedField(value.getClass(), search.field());
         if (field == null) {
-            return;
+            return false;
         }
 
         final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), field.getType());
@@ -171,75 +171,41 @@ public final class ChronicleUtils {
 
         final Object currentValue = field.get(value);
         if (currentValue == null)
-            return;
+            return false;
 
-        switch (searchType) {
-            case EQUAL -> {
-                if (currentValue.equals(searchTerm))
-                    map.put(key, value);
-            }
-            case NOT_EQUAL -> {
-                if (!currentValue.equals(searchTerm))
-                    map.put(key, value);
-            }
-            case LESS -> {
-                if (compare(currentValue, searchTerm) < 0)
-                    map.put(key, value);
-            }
-            case GREATER -> {
-                if (compare(currentValue, searchTerm) > 0)
-                    map.put(key, value);
-            }
-            case LESS_OR_EQUAL -> {
-                if (compare(currentValue, searchTerm) <= 0)
-                    map.put(key, value);
-            }
-            case GREATER_OR_EQUAL -> {
-                if (compare(currentValue, searchTerm) >= 0)
-                    map.put(key, value);
-            }
-            case LIKE -> {
-                if (containsIgnoreCase(currentValue, searchTerm))
-                    map.put(key, value);
-            }
-            case NOT_LIKE -> {
-                if (!containsIgnoreCase(currentValue, searchTerm))
-                    map.put(key, value);
-            }
-            // for arrays
+        return switch (searchType) {
+            case EQUAL -> currentValue.equals(searchTerm);
+            case NOT_EQUAL -> !currentValue.equals(searchTerm);
+            case LESS -> compare(currentValue, searchTerm) < 0;
+            case GREATER -> compare(currentValue, searchTerm) > 0;
+            case LESS_OR_EQUAL -> compare(currentValue, searchTerm) <= 0;
+            case GREATER_OR_EQUAL -> compare(currentValue, searchTerm) >= 0;
+            case LIKE -> containsIgnoreCase(currentValue, searchTerm);
+            case NOT_LIKE -> !containsIgnoreCase(currentValue, searchTerm);
             case CONTAINS -> {
                 for (final var obj : (Object[]) currentValue) {
                     if (searchTermSet.contains(obj)) {
-                        map.put(key, value);
-                        break;
+                        yield true;
                     }
                 }
+                yield false;
             }
             case NOT_CONTAINS -> {
                 for (final var obj : (Object[]) currentValue) {
                     if (!searchTermSet.contains(obj)) {
-                        map.put(key, value);
-                        break;
+                        yield true;
                     }
                 }
+                yield false;
             }
-            case STARTS_WITH -> {
-                if (String.valueOf(currentValue).toLowerCase().startsWith(String.valueOf(searchTerm).toLowerCase()))
-                    map.put(key, value);
-            }
-            case ENDS_WITH -> {
-                if (String.valueOf(currentValue).toLowerCase().endsWith(String.valueOf(searchTerm).toLowerCase()))
-                    map.put(key, value);
-            }
-            case IN -> {
-                if (searchTermSet.contains(currentValue))
-                    map.put(key, value);
-            }
-            case NOT_IN -> {
-                if (!searchTermSet.contains(currentValue))
-                    map.put(key, value);
-            }
-        }
+            case STARTS_WITH ->
+                String.valueOf(currentValue).toLowerCase().startsWith(String.valueOf(searchTerm).toLowerCase());
+            case ENDS_WITH ->
+                String.valueOf(currentValue).toLowerCase().endsWith(String.valueOf(searchTerm).toLowerCase());
+            case IN -> searchTermSet.contains(currentValue);
+            case NOT_IN -> !searchTermSet.contains(currentValue);
+            default -> false;
+        };
     }
 
     /**
