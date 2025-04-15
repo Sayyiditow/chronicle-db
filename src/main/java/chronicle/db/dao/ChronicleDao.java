@@ -6,15 +6,9 @@ import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -35,7 +29,6 @@ import com.jsoniter.spi.TypeLiteral;
 import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
-import chronicle.db.service.KryoSerializer;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -49,10 +42,9 @@ public interface ChronicleDao<K, V> {
     ConcurrentMap<String, Set<String>> DATA_FILE_CACHE = new ConcurrentHashMap<>();
     ConcurrentMap<String, HTreeMap<?, String>> KEY_MAP_CACHE = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
-            HASH_DIR = "/hashes/", TS_DIR = "/timestamps/", DATA_FILE = "data", CORRUPTED_FILE = "corrupted",
-            RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize", KEY_FILE = "keys",
-            HASH_EXT = ".hash", TS_EXT = ".time";
-    String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR, HASH_DIR, TS_DIR };
+            DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
+            KEY_FILE = "keys";
+    String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
 
     /**
      * Name of db for logging purposes
@@ -157,9 +149,9 @@ public interface ChronicleDao<K, V> {
      *
      */
     default void createDataDirs() {
-        // check if the ts directory exists, this is the last dir to be created
+        // check if the backup directory exists, this is the last dir to be created
         // for each db path
-        if (!Files.exists(Path.of(dataPath() + TS_DIR))) {
+        if (!Files.exists(Path.of(dataPath() + BACKUP_DIR))) {
             for (final String dir : DB_DIRS) {
                 try {
                     Files.createDirectories(Path.of(dataPath() + dir));
@@ -184,14 +176,6 @@ public interface ChronicleDao<K, V> {
                 }
             }
         }
-    }
-
-    private void updateTimestamp(final String dbFile) throws IOException {
-        final var tsFilePath = Path.of(dataPath(), TS_DIR, dbFile + TS_EXT);
-        if (!Files.exists(tsFilePath)) {
-            Files.createFile(tsFilePath);
-        }
-        Files.setLastModifiedTime(tsFilePath, FileTime.from(Instant.now()));
     }
 
     /**
@@ -551,7 +535,6 @@ public interface ChronicleDao<K, V> {
             }
             final var indexFileNames = indexFileNames();
             CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value));
-            updateTimestamp(file);
             return true;
         }
     }
@@ -596,7 +579,6 @@ public interface ChronicleDao<K, V> {
                 if (deletedMap.isEmpty()) {
                     return false;
                 }
-                updateTimestamp(DATA_FILE);
                 removeFromIndex(deletedMap);
                 return true;
             }
@@ -615,7 +597,6 @@ public interface ChronicleDao<K, V> {
                         } finally {
                             closeDb(file);
                         }
-                        updateTimestamp(file);
                     }
                 }
             }
@@ -690,7 +671,6 @@ public interface ChronicleDao<K, V> {
             } finally {
                 closeDb(rotatedFile);
             }
-            updateTimestamp(rotatedFile);
         }
 
         currentFiles.add(rotatedFile);
@@ -720,7 +700,6 @@ public interface ChronicleDao<K, V> {
             } finally {
                 closeDb(rotatedFile);
             }
-            updateTimestamp(rotatedFile);
         }
 
         currentFiles.add(rotatedFile);
@@ -789,7 +768,6 @@ public interface ChronicleDao<K, V> {
                 CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                         Collections.emptyMap());
             }
-            updateTimestamp(file);
             Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
             return status;
         }
@@ -839,7 +817,6 @@ public interface ChronicleDao<K, V> {
                 CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                         Map.of(key, prevValue));
             }
-            updateTimestamp(file);
             Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
 
             return status;
@@ -885,7 +862,6 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb(file);
                     }
-                    updateTimestamp(file);
                 }
             }
 
@@ -910,7 +886,6 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb();
                     }
-                    updateTimestamp(DATA_FILE);
                 }
             }
 
@@ -952,7 +927,6 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb(file);
                     }
-                    updateTimestamp(file);
                 }
             }
 
@@ -999,7 +973,6 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb(file);
                     }
-                    updateTimestamp(file);
                 }
             }
 
@@ -1023,7 +996,6 @@ public interface ChronicleDao<K, V> {
                     } finally {
                         closeDb();
                     }
-                    updateTimestamp(DATA_FILE);
                 }
             }
             Logger.info("Put {} records at [{}].", putSize, dataPath());
@@ -1664,132 +1636,5 @@ public interface ChronicleDao<K, V> {
      * Helper class to store file metadata for comparison
      */
     record FileMetadata(long lastModified, long size) {
-    }
-
-    /**
-     * Computes and saves hashes of each db file to /hash/. Reuses existing hashes
-     * for unchanged files.
-     *
-     * @return Map of hash file name and its hash
-     * @throws IOException
-     * @throws NoSuchAlgorithmException
-     */
-    default Map<String, String> computeDbHash() throws IOException, NoSuchAlgorithmException {
-        Logger.info("Computing incremental hashes at [{}]", dataPath());
-        final String hashDirPath = dataPath() + HASH_DIR;
-        final String tsDirPath = dataPath() + TS_DIR;
-        final var sortedFiles = getDataFiles().stream().sorted().collect(Collectors.toList());
-        final var mapOfHash = new HashMap<String, String>();
-
-        // Load existing hash files
-        final Map<String, String> existingHashes = new HashMap<>();
-        try (var stream = Files.list(Path.of(hashDirPath))) {
-            stream.filter(p -> p.toString().endsWith(HASH_EXT)).forEach(p -> {
-                try {
-                    final String fileName = p.getFileName().toString();
-                    existingHashes.put(fileName, Files.readString(p));
-                } catch (final IOException e) {
-                    Logger.warn("Failed to read hash file [{}]: {}", p, e.getMessage(), e);
-                }
-            });
-        }
-
-        for (final String file : sortedFiles) {
-            final String hashFileName = file + HASH_EXT;
-            final Path hashFilePath = Path.of(hashDirPath, hashFileName);
-            final Path tsFilePath = Path.of(tsDirPath, file + TS_EXT);
-
-            // Check if hash exists and file hasn't changed
-            boolean recomputeHash = true;
-            if (existingHashes.containsKey(hashFileName)) {
-                try {
-                    final var hashFileLastModified = Files.getLastModifiedTime(hashFilePath);
-                    final var tsFileLastModified = Files.getLastModifiedTime(tsFilePath);
-                    if (hashFileLastModified.compareTo(tsFileLastModified) >= 0) {
-                        mapOfHash.put(hashFileName, existingHashes.get(hashFileName));
-                        Logger.info("Reusing hash for [{}] at [{}]", file, dataPath());
-                        recomputeHash = false;
-                    }
-                } catch (final IOException e) {
-                    // should not happen.
-                }
-            }
-
-            if (recomputeHash) {
-                final MessageDigest digest = MessageDigest.getInstance("SHA-256");
-                final var db = openDb(file);
-                if (db != null) {
-                    // Collect and sort entries
-                    final List<Map.Entry<K, byte[]>> entries = new ArrayList<>();
-                    try {
-                        db.forEachEntry(entry -> {
-                            final K key = entry.key().get();
-                            final V value = entry.value().get();
-                            final byte[] valueBytes = KryoSerializer.serialize(value);
-                            entries.add(Map.entry(key, valueBytes));
-                        });
-                    } finally {
-                        // Close db before hashing to finalize data file modifications
-                        closeDb(file);
-                    }
-
-                    // Sort by key
-                    entries.sort((e1, e2) -> e1.getKey().toString().compareTo(e2.getKey().toString()));
-
-                    // Hash sorted entries
-                    for (final Map.Entry<K, byte[]> entry : entries) {
-                        final byte[] keyBytes = entry.getKey().toString().getBytes(StandardCharsets.UTF_8);
-                        final byte[] valueBytes = entry.getValue();
-                        digest.update(keyBytes);
-                        digest.update(valueBytes);
-                    }
-
-                    final byte[] hashBytes = digest.digest();
-                    final String hash = Base64.getEncoder().encodeToString(hashBytes);
-                    Files.writeString(hashFilePath, hash);
-                    mapOfHash.put(hashFileName, hash);
-                    Logger.info("Computed new hash for [{}] at [{}]", file, dataPath());
-                }
-            }
-        }
-
-        return mapOfHash;
-    }
-
-    /**
-     * Verifies DB hashes against another DB provided in a map.
-     * 
-     * @param fileNameHash Map of filename (e.g., "data-2.hash") to its hash
-     *                     from primary
-     * @return true if all hashes match, false if any mismatch
-     * @throws IOException if hash files can’t be read
-     */
-    default boolean verifyDbHashes(final Map<String, String> fileNameHash) throws IOException {
-        Logger.info("Verifying hashes at [{}]", dataPath());
-        final String hashDirPath = dataPath() + HASH_DIR;
-        boolean allMatch = true;
-
-        for (final var entry : fileNameHash.entrySet()) {
-            final String fileName = entry.getKey();
-            final String primaryHash = entry.getValue();
-            final Path hashFilePath = Path.of(hashDirPath, fileName);
-
-            if (!Files.exists(hashFilePath)) {
-                Logger.error("Hash file [{}] not found.", hashFilePath);
-                allMatch = false;
-                continue;
-            }
-
-            final String secondaryHash = Files.readString(hashFilePath);
-            if (!secondaryHash.equals(primaryHash)) {
-                Logger.error("Mismatch for [{}]: Primary=[{}], Secondary=[{}]", fileName, primaryHash, secondaryHash);
-                allMatch = false;
-            }
-        }
-
-        if (allMatch) {
-            Logger.info("All hashes match for [{}]", dataPath());
-        }
-        return allMatch;
     }
 }
