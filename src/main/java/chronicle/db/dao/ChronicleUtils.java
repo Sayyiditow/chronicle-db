@@ -527,14 +527,14 @@ public final class ChronicleUtils {
         }
     }
 
-    public <V> void nonEnumPartialUpdateSetter(final V object, final String fieldName, final Object fieldValue)
+    public <V> void setNonEnumValue(final V object, final String fieldName, final Object fieldValue)
             throws IllegalArgumentException, IllegalAccessException {
         final var field = getCachedField(object.getClass(), fieldName);
         if (field != null)
             field.set(object, fieldValue);
     }
 
-    public <V> void partialUpdateSetter(final V object, final String fieldName, final Object fieldValue)
+    public <V> void setObjectValue(final V object, final String fieldName, final Object fieldValue)
             throws IllegalArgumentException, IllegalAccessException {
         final var field = getCachedField(object.getClass(), fieldName);
         final var type = field.getType();
@@ -546,11 +546,19 @@ public final class ChronicleUtils {
         }
     }
 
-    public <V> void partialUpdateConcatenator(final V object, final String fieldName, final String fieldValue)
+    public <V> void concatenateObjectValue(final V object, final String fieldName, final String fieldValue)
             throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
         final var field = getCachedField(object.getClass(), fieldName);
         final var value = (String) field.get(object);
         field.set(object, value + fieldValue);
+    }
+
+    public <V> void replaceObjectValue(final V object, final String fieldName, final String fieldValue,
+            final String toReplace)
+            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
+        final var field = getCachedField(object.getClass(), fieldName);
+        final var value = ((String) field.get(object)).replace(toReplace, fieldValue);
+        field.set(object, value);
     }
 
     public void deleteFileIfExists(final String filePath) {
