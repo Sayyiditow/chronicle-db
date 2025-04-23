@@ -614,7 +614,7 @@ public interface ChronicleDao<K, V> {
         synchronized (lock) {
             final var dataFilePath = dataPath() + DATA_DIR + DATA_FILE;
             final var backupDataFilePath = dataPath() + BACKUP_DIR + DATA_FILE;
-            final var tempDataFilePath = dataPath() + DATA_DIR + "data.tmp";
+            final var tempFileName = "data.tmp";
             long currentEntrySize = 0;
             boolean success = false;
             final var db = openDb();
@@ -627,13 +627,13 @@ public interface ChronicleDao<K, V> {
                                 newSize, currentEntrySize, dataPath());
                         return;
                     }
-                    final var newDb = openDb(tempDataFilePath, newSize);
+                    final var newDb = openDb(tempFileName, newSize);
                     if (newDb != null) {
                         try {
                             newDb.putAll(db);
                             success = true;
                         } finally {
-                            closeDb(tempDataFilePath);
+                            closeDb(tempFileName);
                         }
                     }
                 } finally {
@@ -642,11 +642,10 @@ public interface ChronicleDao<K, V> {
 
                 if (success) {
                     Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
-                    Files.move(Path.of(tempDataFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
+                    Files.move(Path.of(tempFileName), Path.of(dataFilePath), REPLACE_EXISTING);
                     Logger.info("Resized DB at [{}] from {} to {}.", dataPath(), currentEntrySize, newSize);
                 }
             }
-
         }
     }
 
