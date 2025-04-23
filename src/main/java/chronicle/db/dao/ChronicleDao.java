@@ -615,7 +615,7 @@ public interface ChronicleDao<K, V> {
             final var dataFilePath = dataPath() + DATA_DIR + DATA_FILE;
             final var backupDataFilePath = dataPath() + BACKUP_DIR + DATA_FILE;
             final var tempFileName = "data.tmp";
-            final var tempFilePath = dataPath() + BACKUP_DIR + tempFileName;
+            final var tempFilePath = dataPath() + DATA_DIR + tempFileName;
             long currentEntrySize = 0;
             boolean success = false;
             final var db = openDb();
