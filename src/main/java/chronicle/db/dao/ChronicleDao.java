@@ -276,13 +276,17 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      */
     default void refreshIndexes() throws IOException {
-        final var indexFiles = indexFileNames();
-        if (!indexFiles.isEmpty()) {
-            Logger.info("Re-initializing indexes at [{}].", dataPath());
-            for (final String field : indexFiles) {
-                CHRONICLE_UTILS.deleteFileIfExists(getIndexPath(field));
+        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+
+        synchronized (lock) {
+            final var indexFiles = indexFileNames();
+            if (!indexFiles.isEmpty()) {
+                Logger.info("Re-initializing indexes at [{}].", dataPath());
+                for (final String field : indexFiles) {
+                    CHRONICLE_UTILS.deleteFileIfExists(getIndexPath(field));
+                }
+                initIndex(indexFiles);
             }
-            initIndex(indexFiles);
         }
     }
 
