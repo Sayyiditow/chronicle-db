@@ -1651,10 +1651,4 @@ public interface ChronicleDao<K, V> {
 
         return false;
     }
-
-    /**
-     * Helper class to store file metadata for comparison
-     */
-    record FileMetadata(long lastModified, long size) {
-    }
 }
