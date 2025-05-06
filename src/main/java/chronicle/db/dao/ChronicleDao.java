@@ -1706,16 +1706,16 @@ public interface ChronicleDao<K, V> {
     default List<K> existsList(final Set<K> keys) throws IOException {
         Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
         final var keyMap = KEY_MAP_CACHE.get(dataPath());
-        final var existsList = new ArrayList<K>(keys.size());
+        final var list = new ArrayList<K>(keys.size());
 
         if (keyMap != null) {
             for (final var key : keys) {
                 if (keyMap.containsKey(key)) {
-                    existsList.add(key);
+                    list.add(key);
                 }
             }
 
-            return existsList;
+            return list;
         }
 
         final var db = openDb();
@@ -1723,7 +1723,7 @@ public interface ChronicleDao<K, V> {
             try {
                 for (final var key : keys) {
                     if (db.containsKey(key)) {
-                        existsList.add(key);
+                        list.add(key);
                     }
                 }
             } finally {
@@ -1731,6 +1731,40 @@ public interface ChronicleDao<K, V> {
             }
         }
 
-        return existsList;
+        return list;
+    }
+
+    /**
+     * Returns only the keys that dont exist
+     */
+    default List<K> notExistsList(final Set<K> keys) throws IOException {
+        Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
+        final var keyMap = KEY_MAP_CACHE.get(dataPath());
+        final var list = new ArrayList<K>(keys.size());
+
+        if (keyMap != null) {
+            for (final var key : keys) {
+                if (!keyMap.containsKey(key)) {
+                    list.add(key);
+                }
+            }
+
+            return list;
+        }
+
+        final var db = openDb();
+        if (db != null) {
+            try {
+                for (final var key : keys) {
+                    if (!db.containsKey(key)) {
+                        list.add(key);
+                    }
+                }
+            } finally {
+                closeDb();
+            }
+        }
+
+        return list;
     }
 }
