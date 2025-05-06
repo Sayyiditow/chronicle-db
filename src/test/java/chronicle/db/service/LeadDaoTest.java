@@ -37,7 +37,7 @@ public class LeadDaoTest {
             objects.put(UUID.randomUUID().toString(), obj);
             i--;
         }
-        dao.putAll(objects);
+        dao.put(objects);
         System.out.println(dao.size());
     }
 

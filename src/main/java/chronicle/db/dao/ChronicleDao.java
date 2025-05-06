@@ -779,7 +779,6 @@ public interface ChronicleDao<K, V> {
 
     /**
      * Refer to method above
-     * 
      */
     default PutStatus put(final K key, final V value) throws IOException {
         return put(key, value, indexFileNames());
@@ -829,10 +828,53 @@ public interface ChronicleDao<K, V> {
 
     /**
      * Refer to method above
-     * 
      */
     default PutStatus update(final K key, final V value) throws IOException {
         return update(key, value, indexFileNames());
+    }
+
+    /**
+     * Add a value, will not check if it exists
+     * 
+     * @param key   the key
+     * @param value the value
+     * @return true if updated else false
+     * @throws IOException
+     */
+    default PutStatus insert(final K key, final V value, final List<String> indexFileNames)
+            throws IOException {
+        if (key == null) {
+            return PutStatus.FAILED;
+        }
+
+        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+        synchronized (lock) {
+            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
+            var db = openDb();
+
+            if (db != null) {
+                try {
+                    // only rotate if current file is full and insert mode
+                    db = checkAndRotate(db, keyMap);
+                    db.put(key, value);
+                } finally {
+                    closeDb();
+                }
+            }
+
+            if (keyMap != null)
+                keyMap.put(key, DATA_FILE);
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap());
+            Logger.info("[{}] using key [{}] at [{}].", PutStatus.INSERTED, key, dataPath());
+            return PutStatus.INSERTED;
+        }
+    }
+
+    /**
+     * Refer to method above
+     */
+    default PutStatus insert(final K key, final V value) throws IOException {
+        return insert(key, value, indexFileNames());
     }
 
     /**
@@ -941,18 +983,18 @@ public interface ChronicleDao<K, V> {
             }
 
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
-            Logger.info("Update {} records at [{}].", prevValues.size(), dataPath());
+            Logger.info("Updated {} records at [{}].", prevValues.size(), dataPath());
             return PutStatus.UPDATED;
         }
     }
 
     /**
-     * Add/Update multiple values into the db with no indexing
+     * Add multiple values into the db, this will not check if values exist or not
      * 
      * @param map the map to add
      * @throws IOException
      */
-    default PutStatus putAll(final Map<K, V> map) throws IOException {
+    default PutStatus insert(final Map<K, V> map) throws IOException {
         if (map == null || map.isEmpty()) {
             return PutStatus.FAILED;
         }
@@ -960,51 +1002,30 @@ public interface ChronicleDao<K, V> {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final int putSize = map.size();
-            final var prevValues = new HashMap<K, V>(putSize);
 
             // update old records first then only move to new record inserts.
             final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
-            final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
-
-            for (final var entry : dbFiles.entrySet()) {
-                final var file = entry.getKey();
-                final var db = openDb(file);
-                if (db != null) {
-                    try {
-                        for (final K key : entry.getValue()) {
-                            prevValues.put(key, db.put(key, map.get(key)));
+            var db = openDb();
+            if (db != null) {
+                try {
+                    for (final var entry : map.entrySet()) {
+                        final K key = entry.getKey();
+                        final V value = entry.getValue();
+                        db = checkAndRotate(db, keyMap);
+                        db.put(key, value);
+                        if (keyMap != null) {
+                            keyMap.put(key, DATA_FILE);
                         }
-                    } finally {
-                        closeDb(file);
                     }
+                } finally {
+                    closeDb();
                 }
             }
 
-            final var status = !prevValues.isEmpty() ? PutStatus.UPDATED : PutStatus.INSERTED;
-            // now do inserts after removing the updating keys
-            map.keySet().removeAll(prevValues.keySet());
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, Collections.emptyMap());
+            Logger.info("Inserted {} records at [{}].", putSize, dataPath());
 
-            if (!map.isEmpty()) {
-                var db = openDb();
-                if (db != null) {
-                    try {
-                        for (final var entry : map.entrySet()) {
-                            final K key = entry.getKey();
-                            final V value = entry.getValue();
-                            db = checkAndRotate(db, keyMap);
-                            db.put(key, value);
-                            if (keyMap != null) {
-                                keyMap.put(key, DATA_FILE);
-                            }
-                        }
-                    } finally {
-                        closeDb();
-                    }
-                }
-            }
-            Logger.info("Put {} records at [{}].", putSize, dataPath());
-
-            return status;
+            return PutStatus.INSERTED;
         }
     }
 
