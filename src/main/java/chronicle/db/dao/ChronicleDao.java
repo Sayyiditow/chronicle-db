@@ -1672,4 +1672,65 @@ public interface ChronicleDao<K, V> {
 
         return false;
     }
+
+    default Map<K, Boolean> existsMultiple(final Set<K> keys) throws IOException {
+        Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
+        final var keyMap = KEY_MAP_CACHE.get(dataPath());
+        final var containsMap = new HashMap<K, Boolean>();
+
+        if (keyMap != null) {
+            for (final var key : keys) {
+                containsMap.put(key, keyMap.containsKey(key));
+            }
+
+            return containsMap;
+        }
+
+        final var db = openDb();
+        if (db != null) {
+            try {
+                for (final var key : keys) {
+                    containsMap.put(key, db.containsKey(key));
+                }
+            } finally {
+                closeDb();
+            }
+        }
+
+        return containsMap;
+    }
+
+    /**
+     * Returns only the keys that exist
+     */
+    default List<K> existsList(final Set<K> keys) throws IOException {
+        Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
+        final var keyMap = KEY_MAP_CACHE.get(dataPath());
+        final var existsList = new ArrayList<K>(keys.size());
+
+        if (keyMap != null) {
+            for (final var key : keys) {
+                if (keyMap.containsKey(key)) {
+                    existsList.add(key);
+                }
+            }
+
+            return existsList;
+        }
+
+        final var db = openDb();
+        if (db != null) {
+            try {
+                for (final var key : keys) {
+                    if (db.containsKey(key)) {
+                        existsList.add(key);
+                    }
+                }
+            } finally {
+                closeDb();
+            }
+        }
+
+        return existsList;
+    }
 }
