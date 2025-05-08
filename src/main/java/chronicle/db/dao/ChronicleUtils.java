@@ -476,17 +476,13 @@ public final class ChronicleUtils {
         final V value = entry.getValue();
 
         for (final String f : fields) {
-            if ("id".equals(f)) {
-                valueMap.put(objectName + ".id", key);
-            } else {
-                try {
-                    final Field field = getCachedField(value.getClass(), f);
-                    if (field != null)
-                        valueMap.put(f, field.get(value));
-                } catch (final IllegalAccessException e) {
-                    // should not happen, all fields must be public
-                    Logger.error("Access denied to field [{}] in [{}]", f, objectName);
-                }
+            try {
+                final Field field = getCachedField(value.getClass(), f);
+                if (field != null)
+                    valueMap.put(f, field.get(value));
+            } catch (final IllegalAccessException e) {
+                // should not happen, all fields must be public
+                Logger.error("Access denied to field [{}] in [{}]", f, objectName);
             }
         }
         map.put(key, valueMap);
