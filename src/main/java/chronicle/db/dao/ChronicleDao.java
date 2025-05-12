@@ -1035,11 +1035,9 @@ public interface ChronicleDao<K, V> {
      * @param db     the map
      * @param search object search
      * @return a map of the fitting values
-     * @throws IllegalAccessException
-     * @throws IllegalArgumentException
+     * @throws Throwable
      */
-    default Map<K, V> search(final Map<K, V> db, final Search search)
-            throws IllegalArgumentException, IllegalAccessException {
+    default Map<K, V> search(final Map<K, V> db, final Search search) throws Throwable {
         Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
         final Map<K, V> map = new HashMap<>();
 
@@ -1067,7 +1065,7 @@ public interface ChronicleDao<K, V> {
                 if (CHRONICLE_UTILS.search(search, key, entry.value().get())) {
                     map.put(key, db.getUsing(key, using()));
                 }
-            } catch (IllegalArgumentException | IllegalAccessException e) {
+            } catch (final Throwable e) {
                 Logger.error("Search failed. {}", search);
                 Logger.error(e);
             }
@@ -1081,11 +1079,10 @@ public interface ChronicleDao<K, V> {
      * 
      * @param search object search
      * @return a map of the fitting values
-     * @throws IllegalAccessException
-     * @throws IllegalArgumentException
+     * @throws Throwable
      */
     default Map<K, V> search(final Map<K, V> db, final Search search, final int limit)
-            throws IllegalArgumentException, IllegalAccessException {
+            throws Throwable {
         Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
         final Map<K, V> map = new HashMap<>();
 
@@ -1117,7 +1114,7 @@ public interface ChronicleDao<K, V> {
                     if (CHRONICLE_UTILS.search(search, key, entry.value().get())) {
                         map.put(key, db.getUsing(key, using()));
                     }
-                } catch (IllegalArgumentException | IllegalAccessException e) {
+                } catch (final Throwable e) {
                     Logger.error("Search with limit failed. {}", search);
                     Logger.error(e);
                 }
@@ -1164,11 +1161,8 @@ public interface ChronicleDao<K, V> {
      * @param search object search
      * @return a map of the fitting values
      * @throws IOException
-     * @throws IllegalAccessException
-     * @throws IllegalArgumentException
      */
-    default Map<K, V> search(final Search search, final int limit)
-            throws IOException, IllegalArgumentException, IllegalAccessException {
+    default Map<K, V> search(final Search search, final int limit) throws IOException {
         Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
         final Map<K, V> results = new HashMap<>();
         final var files = getDataFiles();
@@ -1603,8 +1597,7 @@ public interface ChronicleDao<K, V> {
      * @param initialMap the map containing the whole object fields
      * @param fields     the required fields
      */
-    default Map<K, LinkedHashMap<String, Object>> subsetOfValues(final Map<K, V> initialMap,
-            final String[] fields) {
+    default Map<K, LinkedHashMap<String, Object>> subsetOfValues(final Map<K, V> initialMap, final String[] fields) {
         final var map = new HashMap<K, LinkedHashMap<String, Object>>();
 
         for (final var entry : initialMap.entrySet()) {

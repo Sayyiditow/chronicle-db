@@ -4,11 +4,12 @@ import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
-import java.lang.reflect.Array;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -38,18 +39,64 @@ import net.openhft.chronicle.map.ChronicleMap;
 public final class ChronicleUtils {
     private static final ConcurrentMap<String, Object> indexWriteLocks = new ConcurrentHashMap<>();
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
-    private static final ConcurrentMap<Class<?>, Map<String, Field>> FIELD_CACHE = new ConcurrentHashMap<>();
 
-    private Field getCachedField(final Class<?> clazz, final String fieldName) {
-        return FIELD_CACHE.computeIfAbsent(clazz, c -> new ConcurrentHashMap<>())
-                .computeIfAbsent(fieldName, f -> {
-                    try {
-                        return clazz.getField(f);
-                    } catch (final NoSuchFieldException e) {
-                        Logger.warn("No such field [{}] in class [{}].", f, clazz.getSimpleName());
-                        return null;
-                    }
-                });
+    private static class FieldData {
+        final Field field;
+        final MethodHandle getterHandle;
+        final MethodHandle setterHandle;
+
+        FieldData(final Field field, final MethodHandle getterHandle, final MethodHandle setterHandle) {
+            this.field = field;
+            this.getterHandle = getterHandle;
+            this.setterHandle = setterHandle;
+        }
+    }
+
+    private static class ClassData {
+        final Map<String, FieldData> fields = new ConcurrentHashMap<>();
+        final MethodHandle headerHandle;
+        final MethodHandle rowHandle;
+
+        ClassData(final Class<?> clazz) {
+            try {
+                final MethodHandles.Lookup lookup = MethodHandles.lookup();
+                this.headerHandle = lookup.findVirtual(clazz, "header", MethodType.methodType(String[].class));
+                this.rowHandle = lookup.findVirtual(clazz, "row", MethodType.methodType(Object[].class, Object.class));
+            } catch (NoSuchMethodException | IllegalAccessException e) {
+                throw new RuntimeException("Failed to initialize MethodHandles for " + clazz.getSimpleName(), e);
+            }
+        }
+    }
+
+    private static final Map<Class<?>, ClassData> CLASS_DATA_CACHE = new ConcurrentHashMap<>();
+
+    private ClassData getClassData(final Class<?> clazz) {
+        return CLASS_DATA_CACHE.computeIfAbsent(clazz, ClassData::new);
+    }
+
+    private FieldData getFieldData(final Class<?> clazz, final String fieldName) {
+        final ClassData classData = getClassData(clazz);
+        return classData.fields.computeIfAbsent(fieldName, f -> {
+            try {
+                final Field field = clazz.getField(f);
+                final MethodHandle getterHandle = MethodHandles.lookup().unreflectGetter(field);
+                final MethodHandle setterHandle = MethodHandles.lookup().unreflectSetter(field);
+                return new FieldData(field, getterHandle, setterHandle);
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                Logger.warn("No such field [{}] in class [{}].", f, clazz.getSimpleName());
+                return null;
+            }
+        });
+    }
+
+    private MethodHandle getCachedFieldGetterHandle(final Class<?> clazz, final String fieldName) {
+        final FieldData fieldData = getFieldData(clazz, fieldName);
+        return fieldData != null ? fieldData.getterHandle : null;
+    }
+
+    private MethodHandle getCachedFieldSetterHandle(final Class<?> clazz, final String fieldName) {
+        final FieldData fieldData = getFieldData(clazz, fieldName);
+        return fieldData != null ? fieldData.setterHandle : null;
     }
 
     /**
@@ -155,21 +202,21 @@ public final class ChronicleUtils {
         return searchTerm;
     }
 
-    public <K, V> boolean search(final Search search, final K key, final V value)
-            throws IllegalArgumentException, IllegalAccessException {
-        final Field field = getCachedField(value.getClass(), search.field());
-        if (field == null) {
+    public <K, V> boolean search(final Search search, final K key, final V value) throws Throwable {
+        final FieldData fieldData = getFieldData(value.getClass(), search.field());
+        if (fieldData == null) {
             return false;
         }
 
-        final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), field.getType());
+        final var fieldType = fieldData.field.getType();
+        final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), fieldType);
         final SearchType searchType = search.searchType();
         final Set<Object> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN
                 || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS)
-                        ? setSearchTermNonIndexed((List<Object>) search.searchTerm(), field.getType())
+                        ? setSearchTermNonIndexed((List<Object>) search.searchTerm(), fieldType)
                         : null;
 
-        final Object currentValue = field.get(value);
+        final Object currentValue = fieldData.getterHandle.invoke(value);
         if (currentValue == null)
             return false;
 
@@ -224,7 +271,7 @@ public final class ChronicleUtils {
         if (db.isEmpty())
             return;
 
-        final Map<String, Field> fieldMap = new HashMap<>(fields.size());
+        final Map<String, FieldData> fieldMap = new HashMap<>(fields.size());
         final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.size());
 
         final Class<?>[] valueType = new Class<?>[1];
@@ -241,23 +288,23 @@ public final class ChronicleUtils {
         }
 
         for (final String field : fields) {
-            final Field f = getCachedField(valueType[0], field);
-            if (f != null)
-                fieldMap.put(field, f);
+            final FieldData fieldGetterHandle = getFieldData(valueType[0], field);
+            if (fieldGetterHandle != null)
+                fieldMap.put(field, fieldGetterHandle);
         }
 
         db.forEachEntry(entry -> {
             final K key = entry.key().get();
             final V value = entry.value().get();
             for (final String field : fieldMap.keySet()) {
-                final Field f = fieldMap.get(field);
+                final FieldData fieldData = fieldMap.get(field);
                 final Map<Object, List<K>> indexMap = fieldIndexMap.computeIfAbsent(field, k -> new HashMap<>());
                 try {
-                    Object currentValue = f.get(value);
-                    if (f.getType().isEnum() || currentValue == null)
+                    Object currentValue = fieldData.getterHandle.invoke(value);
+                    if (fieldData.field.getType().isEnum() || currentValue == null)
                         currentValue = Objects.toString(currentValue, "null");
                     indexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(key);
-                } catch (final IllegalAccessException e) {
+                } catch (final Throwable e) {
                     // should not happen, all fields are public
                 }
             }
@@ -282,20 +329,20 @@ public final class ChronicleUtils {
             return;
 
         final V sampleValue = values.values().iterator().next();
-        final Field field = getCachedField(sampleValue.getClass(), file);
-        if (field == null) {
+        final FieldData fieldData = getFieldData(sampleValue.getClass(), file);
+        if (fieldData == null) {
             deleteFileIfExists(indexPath);
             return;
         }
-        final boolean isEnum = field.getType().isEnum();
+        final boolean isEnum = fieldData.field.getType().isEnum();
 
         final Map<Object, List<K>> updatesToRemove = new HashMap<>(values.size());
         for (final var entry : values.entrySet()) {
             final V value = entry.getValue();
             Object indexKey;
             try {
-                indexKey = field.get(value);
-            } catch (final IllegalAccessException e) {
+                indexKey = fieldData.getterHandle.invoke(value);
+            } catch (final Throwable e) {
                 // should not happen as all fields are public
                 continue;
             }
@@ -350,12 +397,12 @@ public final class ChronicleUtils {
         final String indexPath = dataPath + "/indexes/" + file;
 
         final V sampleValue = values.values().iterator().next();
-        final Field field = getCachedField(sampleValue.getClass(), file);
-        if (field == null) {
+        final FieldData fieldData = getFieldData(sampleValue.getClass(), file);
+        if (fieldData == null) {
             deleteFileIfExists(indexPath);
             return;
         }
-        final boolean isEnum = field.getType().isEnum();
+        final boolean isEnum = fieldData.field.getType().isEnum();
 
         final Map<Object, List<K>> updatesToAdd = new HashMap<>(values.size());
         final Map<Object, List<K>> updatesToRemove = new HashMap<>(prevValues.size());
@@ -365,8 +412,8 @@ public final class ChronicleUtils {
             final V prevValue = prevValues.get(key);
             Object newIndexKey;
             try {
-                newIndexKey = field.get(newValue);
-            } catch (final IllegalAccessException e) {
+                newIndexKey = fieldData.getterHandle.invoke(newValue);
+            } catch (final Throwable e) {
                 // should not happen
                 continue;
             }
@@ -378,8 +425,8 @@ public final class ChronicleUtils {
             } else {
                 Object prevIndexKey;
                 try {
-                    prevIndexKey = field.get(prevValue);
-                } catch (final IllegalAccessException e) {
+                    prevIndexKey = fieldData.getterHandle.invoke(prevValue);
+                } catch (final Throwable e) {
                     // should not happen
                     continue;
                 }
@@ -445,20 +492,17 @@ public final class ChronicleUtils {
      * Only for chronicle db object types to convert to csv for table display on
      * frontend
      * 
-     * @throws SecurityException
-     * @throws NoSuchMethodException
-     * @throws InvocationTargetException
-     * @throws IllegalArgumentException
-     * @throws IllegalAccessException
+     * @throws Throwable
+     * 
      */
-    public <K, V> CsvObject formatChronicleDataToCsv(final Map<K, V> map)
-            throws NoSuchMethodException, IllegalAccessException, InvocationTargetException {
+    public <K, V> CsvObject formatChronicleDataToCsv(final Map<K, V> map) throws Throwable {
         if (map.isEmpty())
             return new CsvObject(new String[0], Collections.emptyList());
 
         final V sampleValue = map.values().iterator().next();
-        final Method headersMethod = sampleValue.getClass().getDeclaredMethod("header");
-        final Method rowMethod = sampleValue.getClass().getDeclaredMethod("row", Object.class);
+        final var classData = getClassData(sampleValue.getClass());
+        final MethodHandle headersMethod = classData.headerHandle;
+        final MethodHandle rowMethod = classData.rowHandle;
         final String[] headerList = (String[]) headersMethod.invoke(sampleValue);
         final List<Object[]> rowList = new ArrayList<>(map.size());
 
@@ -474,15 +518,18 @@ public final class ChronicleUtils {
         final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
         final K key = entry.getKey();
         final V value = entry.getValue();
+        final var valueClass = value.getClass();
 
         for (final String f : fields) {
-            try {
-                final Field field = getCachedField(value.getClass(), f);
-                if (field != null)
-                    valueMap.put(f, field.get(value));
-            } catch (final IllegalAccessException e) {
-                // should not happen, all fields must be public
-                Logger.error("Access denied to field [{}] in [{}]", f, objectName);
+            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, f);
+            if (methodHandle != null) {
+                try {
+                    valueMap.put(f, methodHandle.invoke(value));
+                } catch (final Throwable e) {
+                    // should not happen, all fields must be public
+                    Logger.error("Field [{}] in [{}] could not get value.", f, objectName);
+                    Logger.error(e);
+                }
             }
         }
         map.put(key, valueMap);
@@ -496,18 +543,20 @@ public final class ChronicleUtils {
     public <K> CsvObject formatSubsetChronicleDataToCsv(final Map<K, LinkedHashMap<String, Object>> map,
             final String[] headers) {
         final List<Object[]> rowList = new ArrayList<>(map.size()); // Pre-size list
-        final String[] updatedHeaders = copyArray(new String[] { "ID" }, headers);
+        final String[] updatedHeaders = new String[headers.length + 1];
+        updatedHeaders[0] = "ID";
+        System.arraycopy(headers, 0, updatedHeaders, 1, headers.length);
 
         for (final var entry : map.entrySet()) {
             final K key = entry.getKey();
             final LinkedHashMap<String, Object> valueMap = entry.getValue();
-            final Object[] obj = new Object[valueMap.size() + 1]; // Size based on value map
+            // Create row array: key + values
+            final Object[] obj = new Object[updatedHeaders.length]; // Size based on headers
             obj[0] = key;
 
-            int i = 1;
-            for (final Object value : valueMap.values()) { // Iterate values directly
-                obj[i++] = value;
-            }
+            // Copy values directly from valueMap.values()
+            final Object[] values = valueMap.values().toArray();
+            System.arraycopy(values, 0, obj, 1, Math.min(values.length, obj.length - 1));
             rowList.add(obj);
         }
 
@@ -515,46 +564,49 @@ public final class ChronicleUtils {
     }
 
     public <V> void updateObjectValues(final V oldObject, final Set<String> fields, final V newObject)
-            throws IllegalArgumentException, IllegalAccessException {
+            throws Throwable {
         for (final var k : fields) {
-            final var field = getCachedField(oldObject.getClass(), k);
-            if (field != null)
-                field.set(oldObject, field.get(newObject));
+            final var fieldData = getFieldData(oldObject.getClass(), k);
+            if (fieldData != null)
+                fieldData.setterHandle.invoke(oldObject, fieldData.getterHandle.invoke(newObject));
         }
     }
 
     public <V> void setNonEnumValue(final V object, final String fieldName, final Object fieldValue)
-            throws IllegalArgumentException, IllegalAccessException {
-        final var field = getCachedField(object.getClass(), fieldName);
-        if (field != null)
-            field.set(object, fieldValue);
+            throws Throwable {
+        final var setterHandle = getCachedFieldSetterHandle(object.getClass(), fieldName);
+        if (setterHandle != null)
+            setterHandle.invoke(object, fieldValue);
     }
 
     public <V> void setObjectValue(final V object, final String fieldName, final Object fieldValue)
-            throws IllegalArgumentException, IllegalAccessException {
-        final var field = getCachedField(object.getClass(), fieldName);
-        final var type = field.getType();
-        if (field != null) {
+            throws Throwable {
+        final var fieldData = getFieldData(object.getClass(), fieldName);
+
+        if (fieldData != null) {
+            final var type = fieldData.field.getType();
             if (type.isEnum())
-                field.set(object, toEnum(type, fieldValue));
+                fieldData.setterHandle.invoke(object, toEnum(type, fieldValue));
             else
-                field.set(object, fieldValue);
+                fieldData.setterHandle.invoke(object, fieldValue);
+
         }
     }
 
     public <V> void concatenateObjectValue(final V object, final String fieldName, final String fieldValue)
-            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
-        final var field = getCachedField(object.getClass(), fieldName);
-        final var value = (String) field.get(object);
-        field.set(object, value + fieldValue);
+            throws Throwable {
+        final var fieldData = getFieldData(object.getClass(), fieldName);
+        if (fieldData != null) {
+            final var value = (String) fieldData.getterHandle.invoke(object);
+            fieldData.setterHandle.invoke(object, value + fieldValue);
+        }
     }
 
     public <V> void replaceObjectValue(final V object, final String fieldName, final String fieldValue,
-            final String toReplace)
-            throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
-        final var field = getCachedField(object.getClass(), fieldName);
-        final var value = ((String) field.get(object)).replace(toReplace, fieldValue);
-        field.set(object, value);
+            final String toReplace) throws Throwable {
+        final var fieldData = getFieldData(object.getClass(), fieldName);
+        final var value = ((String) fieldData.getterHandle.invoke(object)).replace(toReplace, fieldValue);
+        fieldData.setterHandle.invoke(object, value);
     }
 
     public void deleteFileIfExists(final String filePath) {
@@ -578,31 +630,6 @@ public final class ChronicleUtils {
         Files.walk(src).filter(path -> !path.equals(src))
                 .filter(path -> path.getFileName().toString().startsWith(filePrefix))
                 .forEach(source -> move(source, dest.resolve(src.relativize(source))));
-    }
-
-    public <T> T[] copyArray(final T[] prefix, final T[] toCopy) {
-        final int aLen = prefix.length;
-        final int bLen = toCopy.length;
-
-        final T[] copied = (T[]) Array.newInstance(prefix.getClass().getComponentType(), aLen + bLen);
-        System.arraycopy(prefix, 0, copied, 0, aLen);
-        System.arraycopy(toCopy, 0, copied, aLen, bLen);
-
-        return copied;
-    }
-
-    public Map<String, Object> objectToMap(final Object object, final String objectName, final Object key)
-            throws IllegalAccessException {
-        final Field[] fields = object.getClass().getDeclaredFields();
-        final Map<String, Object> map = new HashMap<>(fields.length + 1); // Pre-size with key
-        final String prefix = objectName + "."; // Precompute prefix
-
-        map.put(prefix + "key", key);
-        for (final Field field : fields) {
-            map.put(prefix + field.getName(), field.get(object));
-        }
-
-        return map;
     }
 
     /**
@@ -646,10 +673,11 @@ public final class ChronicleUtils {
 
                 try {
                     final Field f2 = newObj.getClass().getField(destFieldName);
+                    final var f2Type = f2.getType();
                     final Object fieldVal = field.get(currentVal);
                     final Object value = defValue != null
-                            ? (f2.getType().isEnum() ? toEnum(f2.getType(), defValue) : defValue)
-                            : (f2.getType().isEnum() && fieldVal != null ? toEnum(f2.getType(), fieldVal) : fieldVal);
+                            ? (f2Type.isEnum() ? toEnum(f2Type, defValue) : defValue)
+                            : (f2Type.isEnum() && fieldVal != null ? toEnum(f2Type, fieldVal) : fieldVal);
                     f2.set(newObj, value);
                 } catch (final NoSuchFieldException e) {
                 }
@@ -658,7 +686,8 @@ public final class ChronicleUtils {
             for (final Field field : newFieldsSet) { // Use Set for iteration
                 final Object defValue = def.get(field.getName());
                 if (defValue != null) {
-                    final var value = field.getType().isEnum() ? toEnum(field.getType(), defValue) : defValue;
+                    final var fieldType = field.getType();
+                    final var value = fieldType.isEnum() ? toEnum(fieldType, defValue) : defValue;
                     field.set(newObj, value);
                 }
             }

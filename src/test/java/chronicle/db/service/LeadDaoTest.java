@@ -3,7 +3,6 @@ package chronicle.db.service;
 import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -21,8 +20,7 @@ public class LeadDaoTest {
     private static final String DATA_PATH = "src/test/.data/";
 
     @Test
-    public void testInsert() throws ClassNotFoundException, IllegalArgumentException, IllegalAccessException,
-            NoSuchFieldException, SecurityException, InstantiationException, InvocationTargetException, IOException {
+    public void testInsert() throws Throwable {
         final var dao = CHRONICLE_DB.getChronicleDao(DAO, DATA_PATH);
         final Map<String, Object> objects = new HashMap<>();
         int i = 100;

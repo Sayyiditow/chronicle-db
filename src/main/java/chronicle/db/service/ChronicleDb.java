@@ -1,11 +1,9 @@
 package chronicle.db.service;
 
-import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
-
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,6 +25,7 @@ public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
     public static final int CHRONICLE_SEGMENTS = Runtime.getRuntime().availableProcessors() * 2;
     private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
 
     private static class MapEntry {
         final ChronicleMap<?, ?> map;
@@ -129,55 +128,6 @@ public final class ChronicleDb {
     }
 
     /**
-     * Get the object constructor reflectively to be used when inserting/updating
-     * records
-     * 
-     * @throws ClassNotFoundException
-     * @return Constructor<?>
-     */
-
-    public Constructor<?> getObjectConstructor(final String objectClassName) throws ClassNotFoundException {
-        final var objClass = Class.forName(objectClassName);
-
-        final Constructor<?>[] constructors = objClass.getDeclaredConstructors();
-        Constructor<?> c = null;
-        for (final Constructor<?> con : constructors) {
-            if (con.getParameterCount() > 0) {
-                c = con;
-            }
-        }
-
-        return c;
-    }
-
-    /**
-     * Constructs the class using reflection
-     * 
-     * @throws ClassNotFoundException
-     * @throws InvocationTargetException
-     * @throws IllegalArgumentException
-     * @throws IllegalAccessException
-     * @throws InstantiationException
-     */
-    public Object constructObject(final String objectClassName, final Object[] values) throws ClassNotFoundException,
-            InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
-        final var con = getObjectConstructor(objectClassName);
-        final var params = con.getParameterTypes();
-        final Object[] preparedValues = new Object[params.length];
-
-        if (params.length != values.length) {
-            Logger.error("Length of parameters supplied does not match.");
-            return null;
-        }
-
-        for (int i = 0; i < params.length; i++) {
-            preparedValues[i] = params[i].isEnum() ? CHRONICLE_UTILS.toEnum(params[i], values[i]) : values[i];
-        }
-
-        return con.newInstance(preparedValues);
-    }
-
-    /**
      * Gets the Chronicle dao object to run different methods such as CRUD
      * reflectively
      * 
@@ -185,16 +135,24 @@ public final class ChronicleDb {
      * @param daoClassObjectName the static object name
      * 
      * @return ChronicleDao
-     * @throws ClassNotFoundException
-     * @throws IllegalArgumentException
-     * @throws IllegalAccessException
-     * @throws InvocationTargetException
-     * @throws InstantiationException
+     * @throws Throwable
      */
-    public ChronicleDao getChronicleDao(final String daoClassName, final String dataPath) throws ClassNotFoundException,
-            InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
-        final var c = getObjectConstructor(daoClassName);
-        return (ChronicleDao) c.newInstance(dataPath);
+    public ChronicleDao getChronicleDao(final String daoClassName, final String dataPath) throws Throwable {
+        final MethodHandle constructor = constructors.computeIfAbsent(daoClassName, className -> {
+            try {
+                final var objClass = Class.forName(className);
+                for (final var con : objClass.getDeclaredConstructors()) {
+                    if (con.getParameterCount() > 0) {
+                        return MethodHandles.lookup().unreflectConstructor(con);
+                    }
+                }
+                throw new RuntimeException("No constructor with parameters found for " + daoClassName);
+            } catch (final ClassNotFoundException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        return (ChronicleDao) constructor.invoke(dataPath);
     }
 
     public <K, V> Map<K, V> getMapForMultiInserts(final ChronicleDao<K, V> dao) {
