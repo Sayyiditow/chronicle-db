@@ -892,6 +892,7 @@ public interface ChronicleDao<K, V> {
         synchronized (lock) {
             final int putSize = map.size();
             final var prevValues = new HashMap<K, V>(putSize);
+            final Set<K> keysToInsert = new HashSet<>(map.keySet());
 
             // update old records first then only move to new record inserts.
             final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
@@ -904,6 +905,7 @@ public interface ChronicleDao<K, V> {
                     try {
                         for (final K key : entry.getValue()) {
                             prevValues.put(key, db.put(key, map.get(key)));
+                            keysToInsert.remove(key);
                         }
                     } finally {
                         closeDb(file);
@@ -912,17 +914,13 @@ public interface ChronicleDao<K, V> {
             }
 
             final var status = !prevValues.isEmpty() ? PutStatus.UPDATED : PutStatus.INSERTED;
-            final var indexCopyMap = new HashMap<>(map);
-            // now do inserts after removing the updating keys
-            map.keySet().removeAll(prevValues.keySet());
-
             if (!map.isEmpty()) {
+                // Insert new records (only keys in keysToInsert)
                 var db = openDb();
                 if (db != null) {
                     try {
-                        for (final var entry : map.entrySet()) {
-                            final K key = entry.getKey();
-                            final V value = entry.getValue();
+                        for (final K key : keysToInsert) {
+                            final V value = map.get(key);
                             db = checkAndRotate(db, keyMap);
                             db.put(key, value);
                             if (keyMap != null) {
@@ -935,7 +933,7 @@ public interface ChronicleDao<K, V> {
                 }
             }
 
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), indexCopyMap, prevValues);
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
             Logger.info("Put {} records at [{}].", putSize, dataPath());
 
             return status;
