@@ -158,4 +158,8 @@ public final class ChronicleDb {
     public <K, V> Map<K, V> getMapForMultiInserts(final ChronicleDao<K, V> dao) {
         return new HashMap<K, V>();
     }
+
+    public <K, V> ConcurrentMap<K, V> getConcurrentMapForMultiInserts(final ChronicleDao<K, V> dao) {
+        return new ConcurrentHashMap<K, V>();
+    }
 }
