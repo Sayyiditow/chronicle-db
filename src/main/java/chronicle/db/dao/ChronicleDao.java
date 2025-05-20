@@ -1317,6 +1317,22 @@ public interface ChronicleDao<K, V> {
         return matchingKeys;
     }
 
+    private void addKeysUpToLimit(final List<K> keys, final Set<K> matchingKeys, final int limit) {
+        final int remaining = limit - matchingKeys.size();
+        if (keys.size() <= remaining) {
+            matchingKeys.addAll(keys);
+        } else {
+            int count = 0;
+            for (final K key : keys) {
+                if (count >= remaining) {
+                    break;
+                }
+                matchingKeys.add(key);
+                count++;
+            }
+        }
+    }
+
     private Set<K> indexedSearch(final Search search, final Map<Object, List<K>> index, final int limit) {
         Logger.info("Index searching at [{}] for {} with limit {}.", dataPath(), search, limit);
         if (index == null || index.isEmpty()) {
@@ -1339,10 +1355,7 @@ public interface ChronicleDao<K, V> {
             case EQUAL -> {
                 final List<K> keys = index.get(searchTerm);
                 if (keys != null) {
-                    if (keys.size() <= limit)
-                        matchingKeys.addAll(keys);
-                    else
-                        keys.stream().limit(limit).forEach(matchingKeys::add);
+                    addKeysUpToLimit(keys, matchingKeys, limit);
                 }
             }
             case NOT_EQUAL -> {
@@ -1350,8 +1363,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (!entry.getKey().equals(searchTerm)) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1360,8 +1372,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) < 0) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1370,8 +1381,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) > 0) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1380,8 +1390,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) <= 0) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1390,8 +1399,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (CHRONICLE_UTILS.compare(entry.getKey(), searchTerm) >= 0) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1400,8 +1408,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm)) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1410,8 +1417,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (!CHRONICLE_UTILS.containsIgnoreCase(entry.getKey(), searchTerm)) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1421,8 +1427,7 @@ public interface ChronicleDao<K, V> {
                         break;
                     for (final var obj : (Object[]) entry.getKey()) {
                         if (searchTermSet.contains(obj)) {
-                            matchingKeys.addAll(entry.getValue());
-                            break;
+                            addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                         }
                     }
                 }
@@ -1433,8 +1438,7 @@ public interface ChronicleDao<K, V> {
                         break;
                     for (final var obj : (Object[]) entry.getKey()) {
                         if (!searchTermSet.contains(obj)) {
-                            matchingKeys.addAll(entry.getValue());
-                            break;
+                            addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                         }
                     }
                 }
@@ -1444,8 +1448,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (String.valueOf(entry.getKey()).startsWith(String.valueOf(searchTerm))) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1454,8 +1457,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (String.valueOf(entry.getKey()).endsWith(String.valueOf(searchTerm))) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1464,8 +1466,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (searchTermSet.contains(entry.getKey())) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
@@ -1474,8 +1475,7 @@ public interface ChronicleDao<K, V> {
                     if (matchingKeys.size() >= limit)
                         break;
                     if (!searchTermSet.contains(entry.getKey())) {
-                        entry.getValue().stream().limit(limit - matchingKeys.size())
-                                .forEach(matchingKeys::add);
+                        addKeysUpToLimit(entry.getValue(), matchingKeys, limit);
                     }
                 }
             }
