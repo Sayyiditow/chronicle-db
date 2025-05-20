@@ -713,4 +713,18 @@ public final class ChronicleUtils {
 
         return fieldClass;
     }
+
+    public Map<?, ?> limitMapValues(final Map<?, ?> sourceData, final int limit) {
+        final int maxEntries = (int) limit;
+        final var limitedMap = new HashMap<>();
+        int count = 0;
+        for (final var entry : sourceData.entrySet()) {
+            if (count >= maxEntries) {
+                break;
+            }
+            limitedMap.put(entry.getKey(), entry.getValue());
+            count++;
+        }
+        return limitedMap;
+    }
 }
