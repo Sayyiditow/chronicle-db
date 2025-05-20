@@ -701,4 +701,16 @@ public final class ChronicleUtils {
 
         return map;
     }
+
+    public <K> Class<?> getFieldClass(final Map<Object, List<K>> index) {
+        Class<?> fieldClass = null;
+        for (final Object key : index.keySet()) {
+            if (key != null) {
+                fieldClass = key.getClass();
+                break;
+            }
+        }
+
+        return fieldClass;
+    }
 }

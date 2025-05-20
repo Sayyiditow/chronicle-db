@@ -15,7 +15,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -1198,8 +1197,7 @@ public interface ChronicleDao<K, V> {
 
         final Set<K> matchingKeys = new HashSet<>();
         final SearchType searchType = search.searchType();
-        final Class<?> fieldClass = index.keySet().stream().filter(Objects::nonNull).findFirst()
-                .map(Object::getClass).orElse(null);
+        final Class<?> fieldClass = CHRONICLE_UTILS.getFieldClass(index);
         if (fieldClass == null) {
             return matchingKeys;
         }
@@ -1327,8 +1325,7 @@ public interface ChronicleDao<K, V> {
 
         final Set<K> matchingKeys = new HashSet<>();
         final SearchType searchType = search.searchType();
-        final Class<?> fieldClass = index.keySet().stream().filter(Objects::nonNull).findFirst()
-                .map(Object::getClass).orElse(null);
+        final Class<?> fieldClass = CHRONICLE_UTILS.getFieldClass(index);
         if (fieldClass == null) {
             return matchingKeys;
         }
