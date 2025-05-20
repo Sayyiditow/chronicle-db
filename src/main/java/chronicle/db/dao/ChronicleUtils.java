@@ -316,8 +316,13 @@ public final class ChronicleUtils {
             final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
             synchronized (lock) {
                 final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexPath);
-                indexDb.putAll(entry.getValue());
-                MAP_DB.close(indexPath);
+                if (indexDb != null) {
+                    try {
+                        indexDb.putAll(entry.getValue());
+                    } finally {
+                        MAP_DB.close(indexPath);
+                    }
+                }
             }
         });
     }
