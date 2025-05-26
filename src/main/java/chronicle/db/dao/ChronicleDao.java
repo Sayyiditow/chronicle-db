@@ -1319,16 +1319,17 @@ public interface ChronicleDao<K, V> {
 
     private void addKeysUpToLimit(final List<K> keys, final Set<K> matchingKeys, final int limit) {
         final int remaining = limit - matchingKeys.size();
+        if (remaining <= 0)
+            return; // Early exit if no space left
+
         if (keys.size() <= remaining) {
-            matchingKeys.addAll(keys);
+            matchingKeys.addAll(keys); // Safe to add all
         } else {
-            int count = 0;
+            // Add only up to 'remaining' keys
             for (final K key : keys) {
-                if (count >= remaining) {
+                if (matchingKeys.size() >= limit)
                     break;
-                }
                 matchingKeys.add(key);
-                count++;
             }
         }
     }
