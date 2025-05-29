@@ -265,7 +265,7 @@ public final class ChronicleUtils {
      * @throws IOException
      * 
      */
-    public <K, V> void index(final ChronicleMap<K, V> db, final String dbName, final List<String> fields,
+    public <K, V> void index(final ChronicleMap<K, V> db, final String dbName, final Set<String> fields,
             final String dataPath, final String indexDirPath) {
         Logger.info("Indexing {} at [{}].", fields, dataPath);
         if (db.isEmpty())
@@ -389,7 +389,7 @@ public final class ChronicleUtils {
      * @throws InterruptedException
      */
     public <K, V> void removeFromIndex(final String dbName, final String dataPath,
-            final List<String> indexFileNames, final Map<K, V> values) {
+            final Set<String> indexFileNames, final Map<K, V> values) {
         indexFileNames.parallelStream().forEach(file -> {
             removeFromIndex(dbName, dataPath, values, file);
         });
@@ -490,7 +490,7 @@ public final class ChronicleUtils {
      * @throws InterruptedException
      */
     public <K, V> void updateIndex(final String dbName, final String dataPath,
-            final List<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues) {
+            final Set<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues) {
         indexFileNames.parallelStream().forEach(file -> {
             updateIndex(dbName, dataPath, values, file, previousValues);
         });

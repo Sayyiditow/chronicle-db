@@ -95,8 +95,8 @@ public interface ChronicleDao<K, V> {
     /**
      * If an object needs indexes, use this to declare.
      */
-    default List<String> indexFileNames() throws IOException {
-        return Collections.emptyList();
+    default Set<String> indexFileNames() throws IOException {
+        return Collections.emptySet();
     }
 
     /**
@@ -197,7 +197,7 @@ public interface ChronicleDao<K, V> {
      * 
      * @throws IOException
      */
-    default List<String> deleteIndexes() throws IOException {
+    default Set<String> deleteIndexes() throws IOException {
         final var available = indexFileNames();
 
         available.forEach(f -> {
@@ -245,7 +245,7 @@ public interface ChronicleDao<K, V> {
      * @param field the field of the V value object
      * 
      */
-    private void initIndex(final ChronicleMap<K, V> db, final List<String> fields, final String indexDirPath) {
+    private void initIndex(final ChronicleMap<K, V> db, final Set<String> fields, final String indexDirPath) {
         CHRONICLE_UTILS.index(db, name(), fields, dataPath(), indexDirPath);
     }
 
@@ -256,7 +256,7 @@ public interface ChronicleDao<K, V> {
      * @throws IOException
      * 
      */
-    private void initIndex(final List<String> fields) throws IOException {
+    private void initIndex(final Set<String> fields) throws IOException {
         for (final String file : getDataFiles()) {
             final var db = openDb(file);
             if (db != null) {
@@ -308,7 +308,7 @@ public interface ChronicleDao<K, V> {
                 final var indexFileNames = indexFileNames();
                 if (availableIndexes.size() != indexFileNames.size()) {
                     // Find items in indexFileNames not in availableIndexes
-                    final List<String> missingIndexes = new ArrayList<>(indexFileNames);
+                    final Set<String> missingIndexes = new HashSet<>(indexFileNames);
                     missingIndexes.removeAll(availableIndexes);
 
                     if (!missingIndexes.isEmpty()) {
@@ -735,7 +735,7 @@ public interface ChronicleDao<K, V> {
      * @return true if updated else false
      * @throws IOException
      */
-    default PutStatus put(final K key, final V value, final List<String> indexFileNames)
+    default PutStatus put(final K key, final V value, final Set<String> indexFileNames)
             throws IOException {
         if (key == null) {
             return PutStatus.FAILED;
@@ -791,7 +791,7 @@ public interface ChronicleDao<K, V> {
      * @return true if updated else false
      * @throws IOException
      */
-    default PutStatus update(final K key, final V value, final List<String> indexFileNames)
+    default PutStatus update(final K key, final V value, final Set<String> indexFileNames)
             throws IOException {
         if (key == null) {
             return PutStatus.FAILED;
@@ -840,7 +840,7 @@ public interface ChronicleDao<K, V> {
      * @return true if updated else false
      * @throws IOException
      */
-    default PutStatus insert(final K key, final V value, final List<String> indexFileNames)
+    default PutStatus insert(final K key, final V value, final Set<String> indexFileNames)
             throws IOException {
         if (key == null) {
             return PutStatus.FAILED;
