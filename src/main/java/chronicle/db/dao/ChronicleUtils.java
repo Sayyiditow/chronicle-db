@@ -402,8 +402,11 @@ public final class ChronicleUtils {
         final String indexPath = dataPath + "/indexes/" + file;
 
         final V sampleValue = values.values().iterator().next();
-        final FieldData fieldData = getFieldData(sampleValue.getClass(), file);
+        final var sampleValueClass = sampleValue.getClass();
+        final FieldData fieldData = getFieldData(sampleValueClass, file);
         if (fieldData == null) {
+            Logger.warn("No field data for index [{}] and class [{}], skipping", file,
+                    sampleValueClass.getSimpleName());
             deleteFileIfExists(indexPath);
             return;
         }
