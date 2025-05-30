@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -729,5 +730,55 @@ public final class ChronicleUtils {
             count++;
         }
         return limitedMap;
+    }
+
+    /**
+     * Paginate a map using a time field field such as createdAt (must use long)
+     * @param data
+     * @param limit
+     * @param page
+     * @param orderByField
+     */
+    public Map<String, Object> setPages(final Map<String, Map<String, Object>> data, final int limit, final int page,
+            final String orderByField) {
+        if (data == null || data.isEmpty() || limit <= 0 || page < 0) {
+            return Map.of("totalPages", 0, "page", page, "data", Collections.emptyMap());
+        }
+
+        // Calculate total pages
+        final int totalPages = (int) Math.ceil((double) data.size() / limit);
+
+        // Create a PriorityQueue to get the required range of entries sorted by
+        // orderByField
+        final PriorityQueue<Map.Entry<String, Map<String, Object>>> queue = new PriorityQueue<>(
+                (e1, e2) -> {
+                    final var e1Value = e1.getValue();
+                    final var valueClass = e1Value.getClass();
+                    final var fieldData = getFieldData(valueClass, orderByField);
+                    try {
+                        final Object value1 = fieldData.getterHandle.invoke(e1Value);
+                        final Object value2 = fieldData.getterHandle.invoke(e2.getValue());
+                        return Long.compare((long) value1, (long) value2);
+                    } catch (final Throwable t) {
+                        return 0;
+                    }
+                });
+        queue.addAll(data.entrySet());
+
+        // Extract entries for the requested page
+        final Map<String, Map<String, Object>> resultData = new HashMap<>();
+        final int start = page * limit;
+        final int end = Math.min(start + limit, data.size());
+        int index = 0;
+
+        while (!queue.isEmpty() && index < end) {
+            final Map.Entry<String, Map<String, Object>> entry = queue.poll();
+            if (index >= start) {
+                resultData.put(entry.getKey(), entry.getValue());
+            }
+            index++;
+        }
+
+        return Map.of("totalPages", totalPages, "page", page, "data", resultData);
     }
 }
