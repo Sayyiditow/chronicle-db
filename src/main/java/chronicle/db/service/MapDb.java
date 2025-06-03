@@ -15,6 +15,7 @@ public final class MapDb {
 
     public static final MapDb MAP_DB = new MapDb();
     private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
+    public static final int MAP_DB_SEGMENTS = Runtime.getRuntime().availableProcessors() * 2;
 
     private static class MapEntry {
         final HTreeMap<?, ?> map;
@@ -54,6 +55,7 @@ public final class MapDb {
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable()
+                        .concurrencyScale(MAP_DB_SEGMENTS)
                         .make()
                         .hashMap("map")
                         .createOrOpen();
@@ -92,6 +94,7 @@ public final class MapDb {
         return (HTreeMap<K, V>) DBMaker.memoryDirectDB()
                 .allocateStartSize(20 * 1024 * 1024) // 20 MB initial size
                 .allocateIncrement(10 * 1024 * 1024) // Grow by 10 MB
+                .concurrencyScale(MAP_DB_SEGMENTS)
                 .closeOnJvmShutdown()
                 .make()
                 .hashMap("memory-direct")
