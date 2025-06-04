@@ -957,7 +957,9 @@ public interface ChronicleDao<K, V> {
         synchronized (lock) {
             final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
             final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
-            final var prevValues = new HashMap<K, V>(map.size());
+            final var mapSize = map.size();
+            final var prevValues = new HashMap<K, V>(mapSize);
+            var status = PutStatus.UPDATED;
 
             for (final var entry : dbFiles.entrySet()) {
                 final var file = entry.getKey();
@@ -973,15 +975,21 @@ public interface ChronicleDao<K, V> {
                 }
             }
 
-            if (prevValues.size() != map.size()) {
-                Logger.error("Update map contains {} new or missing keys, expected all existing records at [{}].",
-                        map.size() - prevValues.size(), dataPath());
-                return PutStatus.FAILED;
+            final var prevValueSize = prevValues.size();
+            if (prevValueSize != mapSize) {
+                final var mapKeySet = map.keySet();
+                final var prevValueKeySet = prevValues.keySet();
+                final var extraSize = mapKeySet.size() - prevValueKeySet.size();
+                mapKeySet.removeAll(prevValues.keySet());
+
+                Logger.error("{} extra keys found during update at [{}]. New keys: [{}].", extraSize, dataPath(),
+                        mapKeySet);
+                status = prevValueSize == 0 ? PutStatus.FAILED : PutStatus.PARTIAL;
             }
 
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
-            Logger.info("Updated {} records at [{}].", prevValues.size(), dataPath());
-            return PutStatus.UPDATED;
+            Logger.info("Updated {} records at [{}].", prevValueSize, dataPath());
+            return status;
         }
     }
 
