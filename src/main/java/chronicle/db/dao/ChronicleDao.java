@@ -382,7 +382,7 @@ public interface ChronicleDao<K, V> {
         for (final K k : keys) {
             final var file = keyMap.get(k);
             if (file != null) {
-                fileMap.computeIfAbsent(file, f -> new HashSet<>()).add(k);
+                fileMap.computeIfAbsent(file, f -> new HashSet<>(keys.size() / 5)).add(k);
             }
         }
 
@@ -400,7 +400,7 @@ public interface ChronicleDao<K, V> {
             try {
                 for (final K k : keys) {
                     if (db.containsKey(k)) {
-                        fileMap.computeIfAbsent(DATA_FILE, f -> new HashSet<>()).add(k);
+                        fileMap.computeIfAbsent(DATA_FILE, f -> new HashSet<>(keys.size())).add(k);
                     }
                 }
             } finally {
@@ -1062,7 +1062,7 @@ public interface ChronicleDao<K, V> {
      */
     private Map<K, V> search(final ChronicleMap<K, V> db, final Search search) {
         Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
-        final Map<K, V> map = new HashMap<>();
+        final Map<K, V> map = new HashMap<>(Math.min(db.size(), 1000));
 
         db.forEachEntry(entry -> {
             try {
@@ -1089,7 +1089,7 @@ public interface ChronicleDao<K, V> {
     default Map<K, V> search(final Map<K, V> db, final Search search, final int limit)
             throws Throwable {
         Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
-        final Map<K, V> map = new HashMap<>();
+        final Map<K, V> map = new HashMap<>(Math.min(db.size(), 1000));
 
         for (final var entry : db.entrySet()) {
             final K key = entry.getKey();
@@ -1110,7 +1110,7 @@ public interface ChronicleDao<K, V> {
      */
     private Map<K, V> search(final ChronicleMap<K, V> db, final Search search, final int limit) {
         Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
-        final Map<K, V> map = new HashMap<>();
+        final Map<K, V> map = new HashMap<>(Math.min(db.size(), 1000));
 
         try {
             db.forEachEntry(entry -> {
@@ -1330,15 +1330,11 @@ public interface ChronicleDao<K, V> {
         if (remaining <= 0)
             return; // Early exit if no space left
 
-        if (keys.size() <= remaining) {
-            matchingKeys.addAll(keys); // Safe to add all
-        } else {
-            // Add only up to 'remaining' keys
-            for (final K key : keys) {
-                if (matchingKeys.size() >= limit)
-                    break;
-                matchingKeys.add(key);
-            }
+        final var iterator = keys.iterator();
+        int count = 0;
+        while (iterator.hasNext() && count < remaining) {
+            matchingKeys.add(iterator.next());
+            count++;
         }
     }
 
