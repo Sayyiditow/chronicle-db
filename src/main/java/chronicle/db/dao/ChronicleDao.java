@@ -39,7 +39,6 @@ import net.openhft.chronicle.map.ChronicleMap;
 public interface ChronicleDao<K, V> {
     ConcurrentMap<String, Object> LOCKS = new ConcurrentHashMap<>();
     ConcurrentMap<String, Set<String>> DATA_FILE_CACHE = new ConcurrentHashMap<>();
-    ConcurrentMap<String, HTreeMap<?, String>> KEY_MAP_CACHE = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
             DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
             KEY_FILE = "keys";
@@ -95,7 +94,7 @@ public interface ChronicleDao<K, V> {
     /**
      * If an object needs indexes, use this to declare.
      */
-    default Set<String> indexFileNames() throws IOException {
+    default Set<String> indexFileNames() {
         return Collections.emptySet();
     }
 
@@ -128,6 +127,10 @@ public interface ChronicleDao<K, V> {
         CHRONICLE_DB.close(dataPath() + DATA_DIR + fileName);
     }
 
+    private String getKeyMapPath() {
+        return dataPath() + DATA_DIR + KEY_FILE;
+    }
+
     private void populateKeyMap(final Set<String> dataFiles, final HTreeMap<K, String> keyMap) throws IOException {
         for (final String file : dataFiles) {
             final var db = openDb(file);
@@ -138,6 +141,27 @@ public interface ChronicleDao<K, V> {
                     }
                 } finally {
                     closeDb(file);
+                }
+            }
+        }
+    }
+
+    default void rebuildKeyMap() {
+        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+        synchronized (lock) {
+            CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
+            final var dataFiles = getDataFiles();
+            if (dataFiles.size() > 1) {
+                final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+                if (keyMap != null) {
+                    try {
+                        populateKeyMap(dataFiles, keyMap);
+                    } catch (final IOException e) {
+                        // ignored
+                        Logger.warn("Failed to populate key map at [{}]: {}", getKeyMapPath(), e.getMessage());
+                    } finally {
+                        MAP_DB.close(getKeyMapPath());
+                    }
                 }
             }
         }
@@ -163,15 +187,20 @@ public interface ChronicleDao<K, V> {
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            if (!KEY_MAP_CACHE.containsKey(dataPath())) {
-                final var dataFiles = getDataFiles();
-                if (dataFiles.size() > 1) {
-                    final HTreeMap<K, String> keyMap = MAP_DB.getMemoryDirectDb();
+            final var dataFiles = getDataFiles();
+            if (dataFiles.size() > 1 && !Files.exists(Path.of(getKeyMapPath()))) {
+                final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+                if (keyMap != null) {
                     try {
-                        populateKeyMap(dataFiles, keyMap);
+                        if (keyMap.isEmpty()) {
+                            populateKeyMap(dataFiles, keyMap);
+                        }
                     } catch (final IOException e) {
+                        // ignored
+                        Logger.warn("Failed to populate key map at [{}]: {}", getKeyMapPath(), e.getMessage());
+                    } finally {
+                        MAP_DB.close(getKeyMapPath());
                     }
-                    KEY_MAP_CACHE.put(dataPath(), keyMap);
                 }
             }
         }
@@ -197,7 +226,7 @@ public interface ChronicleDao<K, V> {
      * 
      * @throws IOException
      */
-    default Set<String> deleteIndexes() throws IOException {
+    default Set<String> deleteIndexes() {
         final var available = indexFileNames();
 
         available.forEach(f -> {
@@ -361,54 +390,190 @@ public interface ChronicleDao<K, V> {
      * Get the db file for this key from cache or default file is new key
      * if cache is empty, use default file
      */
-    private String getDbFile(final K key, final HTreeMap<?, String> keyMap) {
-        if (keyMap == null) {
+    private String getDbFile(final K key, final Set<String> dbFiles) {
+        if (dbFiles.size() <= 1) {
             return DATA_FILE;
         }
 
-        final var file = keyMap.get(key);
-        if (file == null) {
-            return DATA_FILE;
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                final var file = keyMap.get(key);
+                if (file == null) {
+                    Logger.debug("Key [{}] not found across {} files at [{}].", key, dbFiles.size(), dataPath());
+                    return null;
+                }
+                return file;
+            } finally {
+                MAP_DB.close(getKeyMapPath());
+            }
         }
 
-        return file;
+        return DATA_FILE;
     }
 
     /**
      * Get a map of file and set of keys in that file from cache.
      */
-    private Map<String, Set<K>> getDbFiles(final Set<K> keys, final HTreeMap<?, String> keyMap) {
+    private Map<String, Set<K>> getDbFiles(final Set<K> keys, final Set<String> dbFiles) throws IOException {
         final var fileMap = new HashMap<String, Set<K>>();
-        for (final K k : keys) {
-            final var file = keyMap.get(k);
-            if (file != null) {
-                fileMap.computeIfAbsent(file, f -> new HashSet<>(keys.size() / 5)).add(k);
+        final var dataFileSize = dbFiles.size();
+
+        if (dataFileSize <= 1) {
+            final var db = openDb();
+
+            if (db != null) {
+                try {
+                    for (final K k : keys) {
+                        if (db.containsKey(k)) {
+                            fileMap.computeIfAbsent(DATA_FILE, f -> new HashSet<>(keys.size())).add(k);
+                        }
+                    }
+                } finally {
+                    closeDb();
+                }
+            }
+
+            return fileMap;
+        }
+
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                for (final K k : keys) {
+                    final var file = keyMap.get(k);
+                    if (file != null) {
+                        fileMap.computeIfAbsent(file, f -> new HashSet<>(keys.size() / dataFileSize)).add(k);
+                    }
+                }
+            } finally {
+                MAP_DB.close(getKeyMapPath());
             }
         }
 
         return fileMap;
     }
 
-    /**
-     * Get a map of file and set of keys in that file from DATA_FILE.
-     */
-    private Map<String, Set<K>> getDbFiles(final Set<K> keys) throws IOException {
-        final var fileMap = new HashMap<String, Set<K>>();
-        final var db = openDb();
-
-        if (db != null) {
+    private void removeFromKeyMap(final K key) {
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
             try {
-                for (final K k : keys) {
-                    if (db.containsKey(k)) {
-                        fileMap.computeIfAbsent(DATA_FILE, f -> new HashSet<>(keys.size())).add(k);
-                    }
-                }
+                keyMap.remove(key);
             } finally {
-                closeDb();
+                MAP_DB.close(getKeyMapPath());
+            }
+        }
+    }
+
+    private void removeAllFromKeyMap(final Set<K> keys) {
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                keyMap.keySet().removeAll(keys);
+            } finally {
+                MAP_DB.close(getKeyMapPath());
+            }
+        }
+    }
+
+    private void addToKeyMap(final K key, final String file) {
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                keyMap.put(key, file);
+            } finally {
+                MAP_DB.close(getKeyMapPath());
+            }
+        }
+    }
+
+    private void addToKeyMap(final Map<K, String> map) {
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                keyMap.putAll(map);
+            } finally {
+                MAP_DB.close(getKeyMapPath());
+            }
+        }
+    }
+
+    private int getKeyMapSize() {
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                return keyMap.size();
+            } finally {
+                MAP_DB.close(getKeyMapPath());
             }
         }
 
-        return fileMap;
+        return 0;
+    }
+
+    private boolean getKeyMapExists(final K key) {
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                return keyMap.containsKey(key);
+            } finally {
+                MAP_DB.close(getKeyMapPath());
+            }
+        }
+
+        return false;
+    }
+
+    private Map<K, Boolean> getKeyMapExists(final Set<K> keys) {
+        final var containsMap = new HashMap<K, Boolean>();
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                for (final K k : keys) {
+                    containsMap.put(k, keyMap.containsKey(k));
+                }
+            } finally {
+                MAP_DB.close(getKeyMapPath());
+            }
+        }
+
+        return containsMap;
+    }
+
+    private List<K> getKeyMapExistsList(final Set<K> keys) {
+        final var containsList = new ArrayList<K>();
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                for (final K k : keys) {
+                    if (keyMap.containsKey(k)) {
+                        containsList.add(k);
+                    }
+                }
+            } finally {
+                MAP_DB.close(getKeyMapPath());
+            }
+        }
+
+        return containsList;
+    }
+
+    private List<K> getKeyMapNotExistsList(final Set<K> keys) {
+        final var containsList = new ArrayList<K>();
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
+            try {
+                for (final K k : keys) {
+                    if (!keyMap.containsKey(k)) {
+                        containsList.add(k);
+                    }
+                }
+            } finally {
+                MAP_DB.close(getKeyMapPath());
+            }
+        }
+
+        return containsList;
     }
 
     /**
@@ -424,16 +589,13 @@ public interface ChronicleDao<K, V> {
         }
 
         Logger.info("Querying key [{}] at [{}].", key, dataPath());
-        final var keyMap = KEY_MAP_CACHE.get(dataPath());
-        final var file = keyMap == null ? DATA_FILE : keyMap.get(key);
-
+        final var file = getDbFile(key, getDataFiles());
         if (file == null) {
             return null;
         }
 
         V value = null;
         final var db = openDb(file);
-
         if (db != null) {
             try {
                 value = db.getUsing(key, using());
@@ -456,11 +618,12 @@ public interface ChronicleDao<K, V> {
         if (keys == null || keys.isEmpty()) {
             return Collections.emptyMap();
         }
+        System.out.println("the keys "+keys);
         Logger.info("Querying {} keys at [{}].", keys.size(), dataPath());
         final var map = new HashMap<K, V>(keys.size());
+        final var dbFiles = getDataFiles();
 
-        final var keyMap = KEY_MAP_CACHE.get(dataPath());
-        if (keyMap == null) {
+        if (dbFiles.size() <= 1) {
             final var db = openDb();
             if (db != null) {
                 try {
@@ -477,8 +640,8 @@ public interface ChronicleDao<K, V> {
             return map;
         }
 
-        final var dbFiles = getDbFiles(keys, keyMap);
-        for (final var entry : dbFiles.entrySet()) {
+        final var keyFiles = getDbFiles(keys, dbFiles);
+        for (final var entry : keyFiles.entrySet()) {
             final var file = entry.getKey();
             final var db = openDb(file);
             if (db != null) {
@@ -508,10 +671,8 @@ public interface ChronicleDao<K, V> {
         }
 
         Logger.info("Deleting key [{}] at [{}].", key, dataPath());
-        final var keyMap = KEY_MAP_CACHE.get(dataPath());
-        final var keyMapIsNull = keyMap == null;
-        final var file = keyMapIsNull ? DATA_FILE : keyMap.get(key);
-
+        final var dataFiles = getDataFiles();
+        final var file = getDbFile(key, dataFiles);
         if (file == null) {
             return false;
         }
@@ -533,8 +694,8 @@ public interface ChronicleDao<K, V> {
                 return false;
             }
 
-            if (!keyMapIsNull) {
-                keyMap.remove(key);
+            if (dataFiles.size() > 1) {
+                removeFromKeyMap(key);
             }
             final var indexFileNames = indexFileNames();
             CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value));
@@ -563,8 +724,9 @@ public interface ChronicleDao<K, V> {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var deletedMap = new HashMap<K, V>();
-            final var keyMap = KEY_MAP_CACHE.get(dataPath());
-            if (keyMap == null) {
+            final var dataFiles = getDataFiles();
+
+            if (dataFiles.size() <= 1) {
                 final var db = openDb();
                 if (db != null) {
                     try {
@@ -582,11 +744,12 @@ public interface ChronicleDao<K, V> {
                 if (deletedMap.isEmpty()) {
                     return false;
                 }
+
                 removeFromIndex(deletedMap);
                 return true;
             }
 
-            final var dbFiles = getDbFiles(keys, keyMap);
+            final var dbFiles = getDbFiles(keys, dataFiles);
             if (!dbFiles.isEmpty()) {
                 for (final var entry : dbFiles.entrySet()) {
                     final var file = entry.getKey();
@@ -594,7 +757,6 @@ public interface ChronicleDao<K, V> {
                     if (db != null) {
                         try {
                             for (final K key : entry.getValue()) {
-                                keyMap.remove(key);
                                 deletedMap.put(key, db.remove(key));
                             }
                         } finally {
@@ -607,6 +769,8 @@ public interface ChronicleDao<K, V> {
             if (deletedMap.isEmpty()) {
                 return false;
             }
+
+            removeAllFromKeyMap(deletedMap.keySet());
             removeFromIndex(deletedMap);
             return true;
         }
@@ -654,54 +818,31 @@ public interface ChronicleDao<K, V> {
     }
 
     /**
-     * Rotate files and keep the data file as latest
-     * 
-     * @throws IOException
-     */
-    private void rotateFile(final HTreeMap<K, String> keyMap) throws IOException {
-        final var currentFiles = getDataFiles();
-        final String rotatedFile = "data-" + (currentFiles.size() + 1);
-        final var currentPath = Path.of(dataPath() + DATA_DIR + DATA_FILE);
-        final var rotatedPath = Path.of(dataPath() + DATA_DIR + rotatedFile);
-        Files.move(currentPath, rotatedPath);
-
-        final var oldDb = openDb(rotatedFile);
-        if (oldDb != null) {
-            try {
-                for (final K key : oldDb.keySet()) {
-                    keyMap.put(key, rotatedFile);
-                }
-            } finally {
-                closeDb(rotatedFile);
-            }
-        }
-
-        currentFiles.add(rotatedFile);
-        DATA_FILE_CACHE.put(dataPath(), currentFiles);
-
-        Logger.info("Rotated data file at [{}] to {}.", dataPath(), rotatedFile);
-    }
-
-    /**
      * First time rotation when keyMap is null
      */
-    private HTreeMap<K, String> rotateFile() throws IOException {
+    private void rotateFile() throws IOException {
         final var currentFiles = getDataFiles();
         final String rotatedFile = "data-" + (currentFiles.size() + 1);
         final var currentPath = Path.of(dataPath() + DATA_DIR + DATA_FILE);
         final var rotatedPath = Path.of(dataPath() + DATA_DIR + rotatedFile);
         Files.move(currentPath, rotatedPath, REPLACE_EXISTING);
-        final HTreeMap<K, String> keyMap = MAP_DB.getMemoryDirectDb();
-        KEY_MAP_CACHE.put(dataPath(), keyMap);
 
-        final var oldDb = openDb(rotatedFile);
-        if (oldDb != null) {
+        final HTreeMap<K, String> keyMap = MAP_DB.open(getKeyMapPath());
+        if (keyMap != null) {
             try {
-                for (final K key : oldDb.keySet()) {
-                    keyMap.put(key, rotatedFile);
+                final var oldDb = openDb(rotatedFile);
+                if (oldDb != null) {
+                    try {
+                        for (final K key : oldDb.keySet()) {
+                            keyMap.put(key, rotatedFile);
+                        }
+                    } finally {
+                        closeDb(rotatedFile);
+                    }
                 }
+
             } finally {
-                closeDb(rotatedFile);
+                MAP_DB.close(getKeyMapPath());
             }
         }
 
@@ -709,18 +850,24 @@ public interface ChronicleDao<K, V> {
         DATA_FILE_CACHE.put(dataPath(), currentFiles);
 
         Logger.info("Rotated data file at [{}] to {}.", dataPath(), rotatedFile);
-
-        return keyMap;
     }
 
-    private ChronicleMap<K, V> checkAndRotate(ChronicleMap<K, V> db, HTreeMap<K, String> keyMap) throws IOException {
+    private ChronicleMap<K, V> checkAndRotate(ChronicleMap<K, V> db) throws IOException {
         if (db.size() >= entries()) {
             closeDb();
-            if (keyMap == null) {
-                keyMap = rotateFile();
-            } else {
-                rotateFile(keyMap);
-            }
+            rotateFile();
+            db = openDb();
+        }
+
+        return db;
+    }
+
+    private ChronicleMap<K, V> checkAndRotate(ChronicleMap<K, V> db, final Map<K, String> keyMapUpdate)
+            throws IOException {
+        if (db.size() >= entries()) {
+            closeDb();
+            rotateFile();
+            keyMapUpdate.clear();
             db = openDb();
         }
 
@@ -743,8 +890,8 @@ public interface ChronicleDao<K, V> {
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
-            final var file = getDbFile(key, keyMap);
+            final var dataFiles = getDataFiles();
+            final var file = getDbFile(key, dataFiles);
             var db = openDb(file);
             V prevValue = null;
 
@@ -752,7 +899,7 @@ public interface ChronicleDao<K, V> {
                 try {
                     // only rotate if current file is full and insert mode
                     if (DATA_FILE.equals(file) && !db.containsKey(key)) {
-                        db = checkAndRotate(db, keyMap);
+                        db = checkAndRotate(db);
                     }
                     prevValue = db.put(key, value);
                 } finally {
@@ -766,8 +913,9 @@ public interface ChronicleDao<K, V> {
                         Map.of(key, prevValue));
                 status = PutStatus.UPDATED;
             } else {
-                if (keyMap != null)
-                    keyMap.put(key, file);
+                if (dataFiles.size() > 1) {
+                    addToKeyMap(key, file);
+                }
                 CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                         Collections.emptyMap());
             }
@@ -799,7 +947,7 @@ public interface ChronicleDao<K, V> {
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var file = getDbFile(key, KEY_MAP_CACHE.get(dataPath()));
+            final var file = getDbFile(key, getDataFiles());
             var status = PutStatus.FAILED;
             V prevValue = null;
             final var db = openDb(file);
@@ -848,21 +996,27 @@ public interface ChronicleDao<K, V> {
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
+            final var dataFiles = getDataFiles();
+            final var file = getDbFile(key, dataFiles);
+            if (file != null && !DATA_FILE.equals(file)) {
+                return PutStatus.FAILED; // already exists
+            }
+
             var db = openDb();
 
             if (db != null) {
                 try {
                     // only rotate if current file is full and insert mode
-                    db = checkAndRotate(db, keyMap);
+                    db = checkAndRotate(db);
                     db.put(key, value);
                 } finally {
                     closeDb();
                 }
             }
 
-            if (keyMap != null)
-                keyMap.put(key, DATA_FILE);
+            if (dataFiles.size() > 1) {
+                addToKeyMap(key, DATA_FILE);
+            }
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap());
             Logger.info("[{}] using key [{}] at [{}].", PutStatus.INSERTED, key, dataPath());
             return PutStatus.INSERTED;
@@ -892,10 +1046,11 @@ public interface ChronicleDao<K, V> {
             final int putSize = map.size();
             final var prevValues = new HashMap<K, V>(putSize);
             final Set<K> keysToInsert = new HashSet<>(map.keySet());
+            final var keyMapUpdate = new HashMap<K, String>(putSize);
 
             // update old records first then only move to new record inserts.
-            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
-            final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
+            final var dataFiles = getDataFiles();
+            final var dbFiles = getDbFiles(keysToInsert, dataFiles);
 
             for (final var entry : dbFiles.entrySet()) {
                 final var file = entry.getKey();
@@ -903,8 +1058,11 @@ public interface ChronicleDao<K, V> {
                 if (db != null) {
                     try {
                         for (final K key : entry.getValue()) {
-                            prevValues.put(key, db.put(key, map.get(key)));
-                            keysToInsert.remove(key);
+                            final V prevValue = db.put(key, map.get(key));
+                            if (prevValue != null) { // Only track if it was an update
+                                prevValues.put(key, prevValue);
+                                keysToInsert.remove(key);
+                            }
                         }
                     } finally {
                         closeDb(file);
@@ -913,23 +1071,27 @@ public interface ChronicleDao<K, V> {
             }
 
             final var status = !prevValues.isEmpty() ? PutStatus.UPDATED : PutStatus.INSERTED;
-            if (!map.isEmpty()) {
+            if (!keysToInsert.isEmpty()) {
                 // Insert new records (only keys in keysToInsert)
                 var db = openDb();
                 if (db != null) {
                     try {
                         for (final K key : keysToInsert) {
                             final V value = map.get(key);
-                            db = checkAndRotate(db, keyMap);
+                            db = checkAndRotate(db, keyMapUpdate);
                             db.put(key, value);
-                            if (keyMap != null) {
-                                keyMap.put(key, DATA_FILE);
+                            if (dataFiles.size() > 1) {
+                                keyMapUpdate.put(key, DATA_FILE);
                             }
                         }
                     } finally {
                         closeDb();
                     }
                 }
+            }
+
+            if (!keyMapUpdate.isEmpty()) {
+                addToKeyMap(keyMapUpdate);
             }
 
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
@@ -955,8 +1117,7 @@ public interface ChronicleDao<K, V> {
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
-            final var dbFiles = keyMap == null ? getDbFiles(map.keySet()) : getDbFiles(map.keySet(), keyMap);
+            final var dbFiles = getDbFiles(map.keySet(), getDataFiles());
             final var mapSize = map.size();
             final var prevValues = new HashMap<K, V>(mapSize);
             var status = PutStatus.UPDATED;
@@ -1007,24 +1168,27 @@ public interface ChronicleDao<K, V> {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final int putSize = map.size();
-
-            // update old records first then only move to new record inserts.
-            final var keyMap = (HTreeMap<K, String>) KEY_MAP_CACHE.get(dataPath());
+            final var dataFiles = getDataFiles();
+            final var keyMapUpdate = new HashMap<K, String>();
             var db = openDb();
             if (db != null) {
                 try {
                     for (final var entry : map.entrySet()) {
                         final K key = entry.getKey();
                         final V value = entry.getValue();
-                        db = checkAndRotate(db, keyMap);
+                        db = checkAndRotate(db, keyMapUpdate);
                         db.put(key, value);
-                        if (keyMap != null) {
-                            keyMap.put(key, DATA_FILE);
+                        if (dataFiles.size() > 1) {
+                            keyMapUpdate.put(key, DATA_FILE);
                         }
                     }
                 } finally {
                     closeDb();
                 }
+            }
+
+            if (!keyMapUpdate.isEmpty()) {
+                addToKeyMap(keyMapUpdate);
             }
 
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, Collections.emptyMap());
@@ -1615,27 +1779,21 @@ public interface ChronicleDao<K, V> {
     default int size() throws IOException {
         Logger.info("Getting DB size at [{}].", dataPath());
 
-        final var keyMap = KEY_MAP_CACHE.get(dataPath());
-
-        if (keyMap != null) {
-            return keyMap.size();
+        final var dataFiles = getDataFiles();
+        if (dataFiles.size() > 1) {
+            return getKeyMapSize();
         }
 
-        int size = 0;
-        final var files = getDataFiles();
-
-        for (final var file : files) {
-            final var db = openDb(file);
-            if (db != null) {
-                try {
-                    size += db.size();
-                } finally {
-                    closeDb(file);
-                }
+        final var db = openDb();
+        if (db != null) {
+            try {
+                return db.size();
+            } finally {
+                closeDb();
             }
         }
 
-        return size;
+        return 0;
     }
 
     default void deleteDataFiles() throws IOException {
@@ -1648,10 +1806,10 @@ public interface ChronicleDao<K, V> {
 
     default boolean exists(final K key) throws IOException {
         Logger.info("Checking [{}] existence at [{}].", key, dataPath());
-        final var keyMap = KEY_MAP_CACHE.get(dataPath());
+        final var dataFiles = getDataFiles();
 
-        if (keyMap != null) {
-            return keyMap.containsKey(key);
+        if (dataFiles.size() > 1) {
+            return getKeyMapExists(key);
         }
 
         final var db = openDb();
@@ -1668,17 +1826,13 @@ public interface ChronicleDao<K, V> {
 
     default Map<K, Boolean> existsMultiple(final Set<K> keys) throws IOException {
         Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
-        final var keyMap = KEY_MAP_CACHE.get(dataPath());
-        final var containsMap = new HashMap<K, Boolean>();
+        final var dataFiles = getDataFiles();
 
-        if (keyMap != null) {
-            for (final var key : keys) {
-                containsMap.put(key, keyMap.containsKey(key));
-            }
-
-            return containsMap;
+        if (dataFiles.size() > 1) {
+            return getKeyMapExists(keys);
         }
 
+        final var containsMap = new HashMap<K, Boolean>();
         final var db = openDb();
         if (db != null) {
             try {
@@ -1698,19 +1852,13 @@ public interface ChronicleDao<K, V> {
      */
     default List<K> existsList(final Set<K> keys) throws IOException {
         Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
-        final var keyMap = KEY_MAP_CACHE.get(dataPath());
-        final var list = new ArrayList<K>(keys.size());
+        final var dataFiles = getDataFiles();
 
-        if (keyMap != null) {
-            for (final var key : keys) {
-                if (keyMap.containsKey(key)) {
-                    list.add(key);
-                }
-            }
-
-            return list;
+        if (dataFiles.size() > 1) {
+            return getKeyMapExistsList(keys);
         }
 
+        final var list = new ArrayList<K>(keys.size());
         final var db = openDb();
         if (db != null) {
             try {
@@ -1732,19 +1880,13 @@ public interface ChronicleDao<K, V> {
      */
     default List<K> notExistsList(final Set<K> keys) throws IOException {
         Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
-        final var keyMap = KEY_MAP_CACHE.get(dataPath());
-        final var list = new ArrayList<K>(keys.size());
+        final var dataFiles = getDataFiles();
 
-        if (keyMap != null) {
-            for (final var key : keys) {
-                if (!keyMap.containsKey(key)) {
-                    list.add(key);
-                }
-            }
-
-            return list;
+        if (dataFiles.size() > 1) {
+            return getKeyMapNotExistsList(keys);
         }
 
+        final var list = new ArrayList<K>(keys.size());
         final var db = openDb();
         if (db != null) {
             try {
