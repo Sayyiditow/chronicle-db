@@ -618,7 +618,7 @@ public interface ChronicleDao<K, V> {
         if (keys == null || keys.isEmpty()) {
             return Collections.emptyMap();
         }
-        System.out.println("the keys "+keys);
+        System.out.println("the keys " + keys);
         Logger.info("Querying {} keys at [{}].", keys.size(), dataPath());
         final var map = new HashMap<K, V>(keys.size());
         final var dbFiles = getDataFiles();
@@ -891,7 +891,10 @@ public interface ChronicleDao<K, V> {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var dataFiles = getDataFiles();
-            final var file = getDbFile(key, dataFiles);
+            var file = getDbFile(key, dataFiles);
+            if (file == null) {
+                file = DATA_FILE;
+            }
             var db = openDb(file);
             V prevValue = null;
 
@@ -997,7 +1000,10 @@ public interface ChronicleDao<K, V> {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var dataFiles = getDataFiles();
-            final var file = getDbFile(key, dataFiles);
+            var file = getDbFile(key, dataFiles);
+            if (file == null) {
+                file = DATA_FILE;
+            }
             if (file != null && !DATA_FILE.equals(file)) {
                 return PutStatus.FAILED; // already exists
             }
@@ -1671,6 +1677,287 @@ public interface ChronicleDao<K, V> {
         }
 
         return Collections.emptyMap();
+    }
+
+    default Map<K, V> multiSearch(final List<Search> searches) throws Throwable {
+        if (searches == null || searches.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        // Step 1: Split searches into indexed and non-indexed
+        final List<Search> indexedSearches = new ArrayList<>();
+        final List<Search> nonIndexedSearches = new ArrayList<>();
+        final Set<String> indexFileNames = indexFileNames();
+
+        for (final Search search : searches) {
+            if (indexFileNames.contains(search.field())) {
+                indexedSearches.add(search);
+            } else {
+                nonIndexedSearches.add(search);
+            }
+        }
+
+        // Step 2: Process indexed searches to get intersecting keys
+        Set<K> matchingKeys = null;
+        for (final var search : indexedSearches) {
+            final var indexFilePath = getIndexPath(search.field());
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexFilePath);
+            if (indexDb != null) {
+                try {
+                    final var keys = indexedSearch(search, indexDb);
+                    if (matchingKeys == null) {
+                        matchingKeys = new HashSet<>(keys); // Create a new set to avoid modifying the index's set
+                    } else {
+                        matchingKeys.retainAll(keys);
+                        if (matchingKeys.isEmpty()) {
+                            return Collections.emptyMap(); // Early exit if no matches
+                        }
+                    }
+                } finally {
+                    MAP_DB.close(indexFilePath);
+                }
+            }
+        }
+
+        // Step 3: Initialize db based on indexed search results
+        Map<K, V> db;
+        if (!indexedSearches.isEmpty()) {
+            // If there were indexed searches, use their results
+            if (matchingKeys == null || matchingKeys.isEmpty()) {
+                return Collections.emptyMap(); // No matches from indexed searches
+            }
+            db = get(matchingKeys);
+        } else {
+            // No indexed searches; start with an empty db (will fetch all records in
+            // non-indexed step)
+            db = null;
+        }
+
+        // Step 4: Process non-indexed searches
+        for (final var search : nonIndexedSearches) {
+            if (db == null) {
+                // First non-indexed search and no indexed searches; scan all records
+                db = new HashMap<>();
+                final var files = getDataFiles();
+                for (final String file : files) {
+                    final var dbToSearch = openDb(file);
+                    if (dbToSearch != null) {
+                        try {
+                            db.putAll(search(dbToSearch, search));
+                        } finally {
+                            closeDb(file);
+                        }
+                    }
+                }
+            } else {
+                // Reuse the filtered db for subsequent non-indexed searches
+                db = search(db, search);
+            }
+
+            if (db.isEmpty()) {
+                return Collections.emptyMap(); // Early exit if no matches
+            }
+        }
+
+        // Step 5: Return the final results
+        return db != null ? db : Collections.emptyMap();
+    }
+
+    default Map<K, V> multiSearch(final Set<K> matchingKeys, final List<Search> searches) throws Throwable {
+        if (searches == null || searches.isEmpty() || matchingKeys == null || matchingKeys.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        // Create a copy of matchingKeys to avoid modifying the input
+        final Set<K> filteredKeys = new HashSet<>(matchingKeys);
+
+        // Step 1: Split searches into indexed and non-indexed
+        final List<Search> indexedSearches = new ArrayList<>();
+        final List<Search> nonIndexedSearches = new ArrayList<>();
+        final Set<String> indexFileNames = indexFileNames();
+
+        for (final Search search : searches) {
+            if (indexFileNames.contains(search.field())) {
+                indexedSearches.add(search);
+            } else {
+                nonIndexedSearches.add(search);
+            }
+        }
+
+        // Step 2: Process indexed searches to get intersecting keys
+        for (final var search : indexedSearches) {
+            final var indexFilePath = getIndexPath(search.field());
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexFilePath);
+            if (indexDb != null) {
+                try {
+                    final var keys = indexedSearch(search, indexDb);
+                    filteredKeys.retainAll(keys);
+                    if (filteredKeys.isEmpty()) {
+                        return Collections.emptyMap(); // Early exit if no matches
+                    }
+                } finally {
+                    MAP_DB.close(indexFilePath);
+                }
+            }
+        }
+
+        // Step 3: Fetch records for the filtered keys
+        Map<K, V> db = get(filteredKeys);
+        if (db.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        // Step 4: Process non-indexed searches
+        for (final var search : nonIndexedSearches) {
+            db = search(db, search);
+            if (db.isEmpty()) {
+                return Collections.emptyMap(); // Early exit if no matches
+            }
+        }
+
+        // Step 5: Return the final results
+        return db;
+    }
+
+    default Map<K, V> multiSearch(final List<Search> searches, final int limit) throws Throwable {
+        if (searches == null || searches.isEmpty() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        // Step 1: Split searches into indexed and non-indexed
+        final List<Search> indexedSearches = new ArrayList<>();
+        final List<Search> nonIndexedSearches = new ArrayList<>();
+        final Set<String> indexFileNames = indexFileNames();
+
+        for (final Search search : searches) {
+            if (indexFileNames.contains(search.field())) {
+                indexedSearches.add(search);
+            } else {
+                nonIndexedSearches.add(search);
+            }
+        }
+
+        // Step 2: Process indexed searches to get intersecting keys
+        Set<K> matchingKeys = null;
+        for (final var search : indexedSearches) {
+            final var indexFilePath = getIndexPath(search.field());
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexFilePath);
+            if (indexDb != null) {
+                try {
+                    final var keys = indexedSearch(search, indexDb);
+                    if (matchingKeys == null) {
+                        matchingKeys = new HashSet<>(keys); // Create a new set to avoid modifying the index's set
+                    } else {
+                        matchingKeys.retainAll(keys);
+                        if (matchingKeys.isEmpty()) {
+                            return Collections.emptyMap(); // Early exit if no matches
+                        }
+                    }
+                } finally {
+                    MAP_DB.close(indexFilePath);
+                }
+            }
+        }
+
+        // Step 3: Initialize db based on indexed search results
+        Map<K, V> db;
+        if (!indexedSearches.isEmpty()) {
+            // If there were indexed searches, use their results
+            if (matchingKeys == null || matchingKeys.isEmpty()) {
+                return Collections.emptyMap(); // No matches from indexed searches
+            }
+            db = get(matchingKeys);
+        } else {
+            // No indexed searches; start with an empty db (will fetch all records in
+            // non-indexed step)
+            db = null;
+        }
+
+        // Step 4: Process non-indexed searches
+        for (final var search : nonIndexedSearches) {
+            if (db == null) {
+                // First non-indexed search and no indexed searches; scan all records
+                db = new HashMap<>();
+                final var files = getDataFiles();
+                for (final String file : files) {
+                    final var dbToSearch = openDb(file);
+                    if (dbToSearch != null) {
+                        try {
+                            db.putAll(search(dbToSearch, search));
+                        } finally {
+                            closeDb(file);
+                        }
+                    }
+                }
+            } else {
+                // Reuse the filtered db for subsequent non-indexed searches
+                db = search(db, search);
+            }
+
+            if (db.isEmpty()) {
+                return Collections.emptyMap(); // Early exit if no matches
+            }
+        }
+
+        // Step 5: Return the final results
+        return db != null ? CHRONICLE_UTILS.limitMapValues(db, limit) : Collections.emptyMap();
+    }
+
+    default Map<K, V> multiSearch(final Set<K> matchingKeys, final List<Search> searches, final int limit)
+            throws Throwable {
+        if (searches == null || searches.isEmpty() || matchingKeys == null || matchingKeys.isEmpty() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        // Create a copy of matchingKeys to avoid modifying the input
+        final Set<K> filteredKeys = new HashSet<>(matchingKeys);
+
+        // Step 1: Split searches into indexed and non-indexed
+        final List<Search> indexedSearches = new ArrayList<>();
+        final List<Search> nonIndexedSearches = new ArrayList<>();
+        final Set<String> indexFileNames = indexFileNames();
+
+        for (final Search search : searches) {
+            if (indexFileNames.contains(search.field())) {
+                indexedSearches.add(search);
+            } else {
+                nonIndexedSearches.add(search);
+            }
+        }
+
+        // Step 2: Process indexed searches to get intersecting keys
+        for (final var search : indexedSearches) {
+            final var indexFilePath = getIndexPath(search.field());
+            final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexFilePath);
+            if (indexDb != null) {
+                try {
+                    final var keys = indexedSearch(search, indexDb);
+                    filteredKeys.retainAll(keys);
+                    if (filteredKeys.isEmpty()) {
+                        return Collections.emptyMap(); // Early exit if no matches
+                    }
+                } finally {
+                    MAP_DB.close(indexFilePath);
+                }
+            }
+        }
+
+        // Step 3: Fetch records for the filtered keys
+        Map<K, V> db = get(filteredKeys);
+        if (db.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        // Step 4: Process non-indexed searches
+        for (final var search : nonIndexedSearches) {
+            db = search(db, search);
+            if (db.isEmpty()) {
+                return Collections.emptyMap(); // Early exit if no matches
+            }
+        }
+
+        // Step 5: Return the final results
+        return CHRONICLE_UTILS.limitMapValues(db, limit);
     }
 
     default Map<K, V> indexedSearch(final Search search, final int limit) throws IOException {
