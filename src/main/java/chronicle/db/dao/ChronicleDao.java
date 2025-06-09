@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.mapdb.HTreeMap;
@@ -1560,8 +1561,10 @@ public interface ChronicleDao<V> {
             case NOT_EQUAL -> {
                 final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, searchTerm);
                 addKeysUpToLimit(keysBefore, matchingKeys, limit);
-                final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, searchTerm);
-                addKeysUpToLimit(keysAfter, matchingKeys, limit);
+                if (matchingKeys.size() < limit) {
+                    final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, searchTerm);
+                    addKeysUpToLimit(keysAfter, matchingKeys, limit);
+                }
             }
             case LESS -> {
                 final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
@@ -1579,36 +1582,43 @@ public interface ChronicleDao<V> {
                 final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm);
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
-            case LIKE -> {
-                final var keys = index.parallelStream()
-                        .filter(key -> CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm))
-                        .toList();
-                addKeysUpToLimit(keys, matchingKeys, limit);
-            }
-            case NOT_LIKE -> {
-                final var keys = index.parallelStream()
-                        .filter(key -> !CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm))
-                        .toList();
-                addKeysUpToLimit(keys, matchingKeys, limit);
-            }
             case STARTS_WITH -> {
                 final var keys = index.subSet(searchTerm, searchTerm + MapDb.NON_CHAR);
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
-            case ENDS_WITH -> {
-                final var keys = index.parallelStream()
-                        .filter(key -> MAP_DB.extractIndexValue(key).endsWith(searchTerm))
-                        .toList();
-                addKeysUpToLimit(keys, matchingKeys, limit);
+            case LIKE, NOT_LIKE, ENDS_WITH -> {
+                // These still need full scan but with streaming
+                final Predicate<String> predicate = switch (searchType) {
+                    case LIKE -> key -> CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm);
+                    case NOT_LIKE ->
+                        key -> !CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm);
+                    case ENDS_WITH -> key -> MAP_DB.extractIndexValue(key).endsWith(searchTerm);
+                    default -> key -> false;
+                };
+
+                // Stream with early termination
+                final var iterator = index.iterator();
+                int count = 0;
+                while (iterator.hasNext() && count < limit) {
+                    final String key = iterator.next();
+                    if (predicate.test(key)) {
+                        matchingKeys.add(key);
+                        count++;
+                    }
+                }
             }
             case IN -> {
                 for (final var term : searchTermSet) {
+                    if (matchingKeys.size() >= limit)
+                        break;
                     final var keys = MAP_DB.getExactIndexSubset(index, term);
                     addKeysUpToLimit(keys, searchTerm, matchingKeys, limit);
                 }
             }
             case NOT_IN -> {
                 for (final var term : searchTermSet) {
+                    if (matchingKeys.size() >= limit)
+                        break;
                     final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, term);
                     addKeysUpToLimit(keysBefore, matchingKeys, limit);
                     final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, term);
@@ -1767,8 +1777,7 @@ public interface ChronicleDao<V> {
             final var indexDb = MAP_DB.openIndex(indexFilePath);
             if (indexDb != null) {
                 try {
-                    matchingKeys = indexedSearchSize == 1 ? indexedSearch(firstSearch, indexDb, limit)
-                            : indexedSearch(firstSearch, indexDb);
+                    matchingKeys = indexedSearch(firstSearch, indexDb, limit);
                 } finally {
                     MAP_DB.closeIndex(indexFilePath);
                 }
@@ -1796,8 +1805,9 @@ public interface ChronicleDao<V> {
                     }
                 }
 
+                //results already limited from frist indexed search
                 if (nonIndexedSearches.isEmpty()) {
-                    return get(CHRONICLE_UTILS.limitSetValues(matchingKeys, limit));
+                    return get(matchingKeys);
                 }
 
                 db = get(matchingKeys);
@@ -1935,6 +1945,7 @@ public interface ChronicleDao<V> {
                 }
             }
 
+            //limit at the end, as the matching keys can be initially larger than the limit
             if (nonIndexedSearches.isEmpty()) {
                 return get(CHRONICLE_UTILS.limitSetValues(matchingKeys, limit));
             }
