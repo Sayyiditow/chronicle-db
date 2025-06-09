@@ -1,5 +1,7 @@
 package chronicle.db.service;
 
+import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
+
 import java.util.NavigableSet;
 import java.util.SortedSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -23,7 +25,7 @@ public final class MapDb {
     public static final int MAP_DB_SEGMENTS = Runtime.getRuntime().availableProcessors() * 2;
     public static final String INDEX_DELIMITER = "\u0001";
     public static final String NON_CHAR = "\uFFFF";
-    public static final String ACII_0 = "\u0000";
+    public static final String ASCII_0 = "\u0000";
 
     private static class TreeEntry {
         final DB db;
@@ -213,7 +215,7 @@ public final class MapDb {
      */
     public SortedSet<String> getExactIndexSubset(final NavigableSet<String> index, final String value) {
         final String prefix = value + INDEX_DELIMITER;
-        return index.subSet(prefix + Character.MIN_VALUE, prefix + Character.MAX_VALUE);
+        return index.subSet(prefix + ASCII_0, prefix + NON_CHAR);
     }
 
     /**
@@ -235,7 +237,7 @@ public final class MapDb {
      * @return SortedSet<String>
      */
     public NavigableSet<String> getKeysAfterIndexSubset(final NavigableSet<String> index, final String value) {
-        return index.subSet(value + INDEX_DELIMITER + ACII_0, true, NON_CHAR, false);
+        return index.subSet(value + INDEX_DELIMITER + ASCII_0, true, NON_CHAR, false);
     }
 
     /**
@@ -250,6 +252,25 @@ public final class MapDb {
     }
 
     /**
+     * Checks if the index contains an entry for the given suffix that is
+     * lexicographically less than prefix + INDEX_DELIMITER + suffix.
+     *
+     * @param index  the NavigableSet containing keys in the format prefix +
+     *               INDEX_DELIMITER + suffix
+     * @param prefix the prefix to compare against (e.g., searchTerm like
+     *               "20250806")
+     * @param suffix the suffix to check (e.g., a key from matchingKeys like "123")
+     * @return true if the index contains an entry for suffix with a prefix less
+     *         than the given prefix
+     */
+    public boolean isLessThanIndexMatch(final NavigableSet<String> index, final String prefix, final String suffix) {
+        final String searchKey = prefix + INDEX_DELIMITER + suffix;
+        final String floorKey = index.floor(searchKey);
+        // Check if floorKey has the same suffix and its prefix is < searchTerm
+        return floorKey != null && floorKey.endsWith(INDEX_DELIMITER + suffix) && floorKey.compareTo(searchKey) < 0;
+    }
+
+    /**
      * Utility to extract keys less than or equal to the value.
      *
      * @param index NavigableSet containing composite keys (value\u0001key)
@@ -258,6 +279,14 @@ public final class MapDb {
      */
     public NavigableSet<String> getLessThanOrEqualIndexSubset(final NavigableSet<String> index, final String value) {
         return index.headSet(value + INDEX_DELIMITER + NON_CHAR, true);
+    }
+
+    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<String> index, final String prefix,
+            final String suffix) {
+        final String searchKey = prefix + INDEX_DELIMITER + suffix;
+        final String floorKey = index.floor(searchKey);
+        // Check if floorKey has the same suffix and its prefix is <= searchTerm
+        return floorKey != null && floorKey.endsWith(INDEX_DELIMITER + suffix) && floorKey.compareTo(searchKey) <= 0;
     }
 
     /**
@@ -271,6 +300,13 @@ public final class MapDb {
         return index.tailSet(value + INDEX_DELIMITER + NON_CHAR, false);
     }
 
+    public boolean isGreaterThanIndexMatch(final NavigableSet<String> index, final String prefix, final String suffix) {
+        final String searchKey = prefix + INDEX_DELIMITER + suffix;
+        final String ceilingKey = index.ceiling(searchKey);
+        return ceilingKey != null && ceilingKey.endsWith(INDEX_DELIMITER + suffix)
+                && ceilingKey.compareTo(searchKey) > 0;
+    }
+
     /**
      * Utility to extract keys greater than or equal to the value.
      *
@@ -279,5 +315,104 @@ public final class MapDb {
      */
     public NavigableSet<String> getGreaterThanOrEqualIndexSubset(final NavigableSet<String> index, final String value) {
         return index.tailSet(value + INDEX_DELIMITER, true);
+    }
+
+    public boolean isGreaterThanOrEqualIndexMatch(final NavigableSet<String> index, final String prefix,
+            final String suffix) {
+        final String searchKey = prefix + INDEX_DELIMITER + suffix;
+        final String ceilingKey = index.ceiling(searchKey);
+        return ceilingKey != null && ceilingKey.endsWith(INDEX_DELIMITER + suffix)
+                && ceilingKey.compareTo(searchKey) >= 0;
+    }
+
+    /**
+     * Checks if the index contains an entry for the given suffix where the prefix
+     * contains the search term (case-insensitive).
+     *
+     * @param index      the NavigableSet containing keys in the format prefix +
+     *                   INDEX_DELIMITER + suffix
+     * @param searchTerm the term to search for in the prefix
+     * @param suffix     the suffix to check (e.g., a key from matchingKeys)
+     * @return true if the index entry for the suffix has a prefix containing the
+     *         search term
+     */
+    public boolean isLikeIndexMatch(final NavigableSet<String> index, final String searchTerm, final String suffix) {
+        if (searchTerm == null || suffix == null || suffix.contains(INDEX_DELIMITER)) {
+            return false;
+        }
+        final String searchKey = MapDb.INDEX_DELIMITER + suffix; // Prefix doesn't matter for lookup
+        final String floorKey = index.floor(searchKey);
+        return floorKey != null &&
+                floorKey.endsWith(INDEX_DELIMITER + suffix) &&
+                CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(floorKey), searchTerm);
+    }
+
+    /**
+     * Checks if the index contains an entry for the given suffix where the prefix
+     * starts with the search term (case-insensitive).
+     *
+     * @param index      the NavigableSet containing keys in the format prefix +
+     *                   INDEX_DELIMITER + suffix
+     * @param searchTerm the term to check if the prefix starts with
+     * @param suffix     the suffix to check (e.g., a key from matchingKeys)
+     * @return true if the index entry for the suffix has a prefix starting with the
+     *         search term
+     */
+    public boolean isStartsWithIndexMatch(final NavigableSet<String> index, final String searchTerm,
+            final String suffix) {
+        if (searchTerm == null || suffix == null || suffix.contains(INDEX_DELIMITER)) {
+            return false;
+        }
+        final String searchKey = MapDb.INDEX_DELIMITER + suffix;
+        final String floorKey = index.floor(searchKey);
+        return floorKey != null &&
+                floorKey.endsWith(INDEX_DELIMITER + suffix)
+                && MAP_DB.extractIndexValue(floorKey).startsWith(searchTerm);
+    }
+
+    /**
+     * Checks if the index contains an entry for the given suffix where the prefix
+     * ends with the search term (case-insensitive).
+     *
+     * @param index      the NavigableSet containing keys in the format prefix +
+     *                   INDEX_DELIMITER + suffix
+     * @param searchTerm the term to check if the prefix ends with
+     * @param suffix     the suffix to check (e.g., a key from matchingKeys)
+     * @return true if the index entry for the suffix has a prefix ending with the
+     *         search term
+     */
+    public boolean isEndsWithIndexMatch(final NavigableSet<String> index, final String searchTerm,
+            final String suffix) {
+        if (searchTerm == null || suffix == null || suffix.contains(INDEX_DELIMITER)) {
+            return false;
+        }
+        final String searchKey = MapDb.INDEX_DELIMITER + suffix;
+        final String floorKey = index.floor(searchKey);
+        return floorKey != null &&
+                floorKey.endsWith(INDEX_DELIMITER + suffix)
+                && MAP_DB.extractIndexValue(floorKey).endsWith(searchTerm);
+    }
+
+    /**
+     * Checks if the index contains an entry for the given suffix where the prefix
+     * is within [lowerBound, upperBound] (inclusive).
+     *
+     * @param index      the NavigableSet containing keys in the format prefix +
+     *                   INDEX_DELIMITER + suffix
+     * @param lowerBound the lower bound of the range (inclusive)
+     * @param upperBound the upper bound of the range (inclusive)
+     * @param suffix     the suffix to check (e.g., a key from matchingKeys)
+     * @return true if the index entry for the suffix has a prefix >= lowerBound and
+     *         <= upperBound
+     */
+    public boolean isBetweenIndexMatch(final NavigableSet<String> index, final String lowerBound,
+            final String upperBound, final String suffix) {
+        final String searchKey = MapDb.INDEX_DELIMITER + suffix;
+        final String floorKey = index.floor(searchKey);
+        if (floorKey == null || !floorKey.endsWith(INDEX_DELIMITER + suffix)) {
+            return false;
+        }
+        final String prefix = MAP_DB.extractIndexValue(floorKey);
+        return prefix.compareTo(lowerBound) >= 0 && prefix.compareTo(upperBound) <= 0;
     }
 }

@@ -1454,6 +1454,98 @@ public interface ChronicleDao<V> {
         return matchingKeys;
     }
 
+    default Set<String> indexedSearch(final Search search, final NavigableSet<String> index,
+            final Set<String> matchingKeys) {
+        Logger.info("Index searching at [{}] for {}.", dataPath(), search);
+        if (index == null || index.isEmpty()) {
+            return Collections.emptySet();
+        }
+
+        final SearchType searchType = search.searchType();
+        final String searchTerm = String.valueOf(search.searchTerm());
+        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? new HashSet<>((List<String>) search.searchTerm())
+                : null;
+        final List<String> keysToRemove = new ArrayList<>();
+
+        for (final var key : matchingKeys) {
+            switch (searchType) {
+                case EQUAL -> {
+                    if (!index.contains(searchTerm + MapDb.INDEX_DELIMITER + key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case NOT_EQUAL -> {
+                    if (index.contains(searchTerm + MapDb.INDEX_DELIMITER + key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case LESS -> {
+                    if (!MAP_DB.isLessThanIndexMatch(index, searchTerm, key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case LESS_OR_EQUAL -> {
+                    if (!MAP_DB.isLessThanOrEqualIndexMatch(index, searchTerm, key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case GREATER -> {
+                    if (!MAP_DB.isGreaterThanIndexMatch(index, searchTerm, key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case GREATER_OR_EQUAL -> {
+                    if (!MAP_DB.isGreaterThanOrEqualIndexMatch(index, searchTerm, key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case LIKE -> {
+                    if (!MAP_DB.isLikeIndexMatch(index, searchTerm, key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case NOT_LIKE -> {
+                    if (MAP_DB.isLikeIndexMatch(index, searchTerm, key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case STARTS_WITH -> {
+                    if (!MAP_DB.isStartsWithIndexMatch(index, searchTerm, key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case ENDS_WITH -> {
+                    if (!MAP_DB.isEndsWithIndexMatch(index, searchTerm, key)) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case IN -> {
+                    final boolean matchesAny = searchTermSet.stream()
+                            .anyMatch(term -> index.contains(term + MapDb.INDEX_DELIMITER + key));
+                    if (!matchesAny) {
+                        keysToRemove.add(key);
+                    }
+                }
+                case NOT_IN -> {
+                    final boolean matchesAny = searchTermSet.stream()
+                            .anyMatch(term -> index.contains(term + MapDb.INDEX_DELIMITER + key));
+                    if (matchesAny) {
+                        keysToRemove.add(key);
+                    }
+                }
+                default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
+            }
+        }
+
+        if (matchingKeys.size() == keysToRemove.size()) {
+            return Collections.emptySet();
+        }
+        matchingKeys.removeAll(keysToRemove);
+
+        return matchingKeys;
+    }
+
     private void addKeysUpToLimit(final Collection<String> keys, final Set<String> matchingKeys, final int limit) {
         final int remaining = limit - matchingKeys.size();
         if (remaining <= 0)
@@ -1601,67 +1693,49 @@ public interface ChronicleDao<V> {
             }
         }
 
+        final var emptyNonIndexSearches = nonIndexedSearches.isEmpty();
+        final var indexedSearchSize = indexedSearches.size();
         Map<String, V> db = null;
         // Step 2: Process indexed searches to get intersecting keys
         if (!indexedSearches.isEmpty()) {
-            Set<String> matchingKeys = null;
-            int indexToRemove = 0;
-            // no need parallel,
-            if (indexedSearches.size() == 1) {
-                final var search = searches.get(0);
-                final var indexFilePath = getIndexPath(search.field());
-                final var indexDb = MAP_DB.openIndex(indexFilePath);
+            Set<String> matchingKeys = new HashSet<>();
+            final var firstSearch = indexedSearches.get(0);
+            final var indexFilePath = getIndexPath(firstSearch.field());
+            final var indexDb = MAP_DB.openIndex(indexFilePath);
+            if (indexDb != null) {
                 try {
-                    matchingKeys = indexedSearch(search, indexDb);
+                    matchingKeys = indexedSearch(firstSearch, indexDb);
                 } finally {
                     MAP_DB.closeIndex(indexFilePath);
                 }
-            } else {
-                final List<Set<String>> searchResults = indexedSearches.parallelStream()
-                        .map(search -> {
-                            final var indexFilePath = getIndexPath(search.field());
-                            final var indexDb = MAP_DB.openIndex(indexFilePath);
-                            try {
-                                return indexedSearch(search, indexDb);
-                            } finally {
-                                MAP_DB.closeIndex(indexFilePath);
-                            }
-                        })
-                        .collect(Collectors.toList());
-
-                if (searchResults.isEmpty()) {
-                    return Collections.emptyMap();
-                }
-
-                int minSize = Integer.MAX_VALUE;
-                for (int i = 0; i < searchResults.size(); i++) {
-                    final var set = searchResults.get(i);
-                    final var size = set.size();
-                    if (size == 0) {
-                        return Collections.emptyMap();
-                    }
-                    if (size < minSize) {
-                        minSize = size;
-                        matchingKeys = set;
-                        indexToRemove = i;
-                    }
-                }
-
-                // Perform intersection sequentially (since intersection is order-sensitive)
-                for (int i = 0; i < searchResults.size(); i++) {
-                    if (i == indexToRemove)
-                        continue;
-                    matchingKeys.retainAll(searchResults.get(i));
-                    if (matchingKeys.isEmpty()) {
-                        return Collections.emptyMap(); // Early exit
-                    }
-                }
             }
 
-            db = get(matchingKeys);
+            if (emptyNonIndexSearches && indexedSearchSize == 1) {
+                return get(matchingKeys);
+            }
 
-            if (nonIndexedSearches.isEmpty()) {
-                return db;
+            if (!matchingKeys.isEmpty()) {
+                for (int i = 1; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
+                    final Search search = indexedSearches.get(i);
+                    final var path = getIndexPath(search.field());
+                    final var indexDb2 = MAP_DB.openIndex(path);
+                    if (indexDb2 != null) {
+                        try {
+                            matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
+                        } finally {
+                            MAP_DB.closeIndex(path);
+                        }
+                    }
+
+                    if (matchingKeys.isEmpty()) {
+                        return Collections.emptyMap(); // Early exit if no matches
+                    }
+                }
+
+                db = get(matchingKeys);
+                if (nonIndexedSearches.isEmpty()) {
+                    return db;
+                }
             }
         }
 
@@ -1691,11 +1765,114 @@ public interface ChronicleDao<V> {
             }
         }
 
+        if (db == null) {
+            return Collections.emptyMap();
+        }
+
         // Step 5: Return the final results
-        return db != null ? db : Collections.emptyMap();
+        return db;
     }
 
-    default Map<String, V> multiSearch(final Set<String> matchingKeys, final List<Search> searches) throws Throwable {
+    default Map<String, V> multiSearch(final List<Search> searches, final int limit) throws Throwable {
+        if (searches == null || searches.isEmpty() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        // Step 1: Split searches into indexed and non-indexed
+        final List<Search> indexedSearches = new ArrayList<>();
+        final List<Search> nonIndexedSearches = new ArrayList<>();
+        final Set<String> indexFileNames = indexFileNames();
+        final var emptyNonIndexSearches = nonIndexedSearches.isEmpty();
+        final var indexedSearchSize = indexedSearches.size();
+
+        for (final Search search : searches) {
+            if (indexFileNames.contains(search.field())) {
+                indexedSearches.add(search);
+            } else {
+                nonIndexedSearches.add(search);
+            }
+        }
+
+        Map<String, V> db = null;
+        if (!indexedSearches.isEmpty()) {
+            Set<String> matchingKeys = new HashSet<>();
+            final var firstSearch = indexedSearches.get(0);
+            final var indexFilePath = getIndexPath(firstSearch.field());
+            final var indexDb = MAP_DB.openIndex(indexFilePath);
+            if (indexDb != null) {
+                try {
+                    matchingKeys = indexedSearchSize == 1 ? indexedSearch(firstSearch, indexDb, limit)
+                            : indexedSearch(firstSearch, indexDb);
+                } finally {
+                    MAP_DB.closeIndex(indexFilePath);
+                }
+            }
+
+            if (emptyNonIndexSearches && indexedSearchSize == 1) {
+                return get(matchingKeys);
+            }
+
+            if (!matchingKeys.isEmpty()) {
+                for (int i = 1; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
+                    final Search search = indexedSearches.get(i);
+                    final var path = getIndexPath(search.field());
+                    final var indexDb2 = MAP_DB.openIndex(path);
+                    if (indexDb2 != null) {
+                        try {
+                            matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
+                        } finally {
+                            MAP_DB.closeIndex(path);
+                        }
+                    }
+
+                    if (matchingKeys.isEmpty()) {
+                        return Collections.emptyMap(); // Early exit if no matches
+                    }
+                }
+
+                if (nonIndexedSearches.isEmpty()) {
+                    return get(CHRONICLE_UTILS.limitSetValues(matchingKeys, limit));
+                }
+
+                db = get(matchingKeys);
+            }
+        }
+
+        // Step 3: Process non-indexed searches
+        for (final var search : nonIndexedSearches) {
+            if (db == null) {
+                // First non-indexed search and no indexed searches; scan all records
+                db = new HashMap<>();
+                final var files = getDataFiles();
+                for (final String file : files) {
+                    final var dbToSearch = openDb(file);
+                    if (dbToSearch != null) {
+                        try {
+                            db.putAll(search(dbToSearch, search));
+                        } finally {
+                            closeDb(file);
+                        }
+                    }
+                }
+            } else {
+                // Reuse the filtered db for subsequent non-indexed searches
+                db = search(db, search);
+            }
+
+            if (db.isEmpty()) {
+                return Collections.emptyMap(); // Early exit if no matches
+            }
+        }
+
+        if (db == null) {
+            return Collections.emptyMap();
+        }
+
+        // Step 5: Return the final results
+        return CHRONICLE_UTILS.limitMapValues(db, limit);
+    }
+
+    default Map<String, V> multiSearch(Set<String> matchingKeys, final List<Search> searches) throws Throwable {
         if (searches == null || searches.isEmpty() || matchingKeys == null || matchingKeys.isEmpty()) {
             return Collections.emptyMap();
         }
@@ -1714,54 +1891,21 @@ public interface ChronicleDao<V> {
         }
 
         if (!indexedSearches.isEmpty()) {
-            List<Set<String>> searchResults;
-            int indexToCheck = 0;
-            // no need parallel,
-            if (indexedSearches.size() == 1) {
-                final var search = searches.get(0);
+            for (int i = 0; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
+                final Search search = indexedSearches.get(i);
                 final var indexFilePath = getIndexPath(search.field());
-                final var indexDb = MAP_DB.openIndex(indexFilePath);
-                try {
-                    searchResults = List.of(indexedSearch(search, indexDb));
-                } finally {
-                    MAP_DB.closeIndex(indexFilePath);
-                }
-            } else {
-                // Step 2: Process indexed searches to get intersecting keys
-                searchResults = indexedSearches.parallelStream()
-                        .map(search -> {
-                            final var indexFilePath = getIndexPath(search.field());
-                            final var indexDb = MAP_DB.openIndex(indexFilePath);
-                            try {
-                                return indexedSearch(search, indexDb);
-                            } finally {
-                                MAP_DB.closeIndex(indexFilePath);
-                            }
-                        })
-                        .collect(Collectors.toList());
-
-                if (searchResults.isEmpty()) {
-                    return Collections.emptyMap();
-                }
-
-                int minSize = Integer.MAX_VALUE;
-                for (int i = 0; i < searchResults.size(); i++) {
-                    final var set = searchResults.get(i);
-                    final var size = set.size();
-                    if (size == 0) {
-                        return Collections.emptyMap();
-                    }
-                    if (size < minSize) {
-                        minSize = size;
-                        indexToCheck = i;
+                final var indexDb2 = MAP_DB.openIndex(indexFilePath);
+                if (indexDb2 != null) {
+                    try {
+                        matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
+                    } finally {
+                        MAP_DB.closeIndex(indexFilePath);
                     }
                 }
-            }
 
-            // Perform intersection sequentially (since intersection is order-sensitive)
-            matchingKeys.retainAll(searchResults.get(indexToCheck));
-            if (matchingKeys.isEmpty()) {
-                return Collections.emptyMap(); // Early exit
+                if (matchingKeys.isEmpty()) {
+                    return Collections.emptyMap(); // Early exit if no matches
+                }
             }
 
             if (nonIndexedSearches.isEmpty()) {
@@ -1787,120 +1931,7 @@ public interface ChronicleDao<V> {
         return db;
     }
 
-    default Map<String, V> multiSearch(final List<Search> searches, final int limit) throws Throwable {
-        if (searches == null || searches.isEmpty() || limit <= 0) {
-            return Collections.emptyMap();
-        }
-
-        // Step 1: Split searches into indexed and non-indexed
-        final List<Search> indexedSearches = new ArrayList<>();
-        final List<Search> nonIndexedSearches = new ArrayList<>();
-        final Set<String> indexFileNames = indexFileNames();
-
-        for (final Search search : searches) {
-            if (indexFileNames.contains(search.field())) {
-                indexedSearches.add(search);
-            } else {
-                nonIndexedSearches.add(search);
-            }
-        }
-
-        Map<String, V> db = null;
-        if (!indexedSearches.isEmpty()) {
-            Set<String> matchingKeys = null;
-            int indexToRemove = 0;
-            // no need parallel,
-            if (indexedSearches.size() == 1) {
-                final var search = searches.get(0);
-                final var indexFilePath = getIndexPath(search.field());
-                final var indexDb = MAP_DB.openIndex(indexFilePath);
-                try {
-                    // limit early
-                    matchingKeys = indexedSearch(search, indexDb, limit);
-                } finally {
-                    MAP_DB.closeIndex(indexFilePath);
-                }
-            } else {
-                // Step 2: Process indexed searches to get intersecting keys
-                final List<Set<String>> searchResults = indexedSearches.parallelStream()
-                        .map(search -> {
-                            final var indexFilePath = getIndexPath(search.field());
-                            final var indexDb = MAP_DB.openIndex(indexFilePath);
-                            try {
-                                return indexedSearch(search, indexDb);
-                            } finally {
-                                MAP_DB.closeIndex(indexFilePath);
-                            }
-                        })
-                        .collect(Collectors.toList());
-
-                if (searchResults.isEmpty()) {
-                    return Collections.emptyMap();
-                }
-
-                int minSize = Integer.MAX_VALUE;
-                for (int i = 0; i < searchResults.size(); i++) {
-                    final var set = searchResults.get(i);
-                    final var size = set.size();
-                    if (size == 0) {
-                        return Collections.emptyMap();
-                    }
-                    if (size < minSize) {
-                        minSize = size;
-                        matchingKeys = set;
-                        indexToRemove = i;
-                    }
-                }
-
-                // Perform intersection sequentially (since intersection is order-sensitive)
-                for (int i = 0; i < searchResults.size(); i++) {
-                    if (i == indexToRemove)
-                        continue;
-                    matchingKeys.retainAll(searchResults.get(i));
-                    if (matchingKeys.isEmpty()) {
-                        return Collections.emptyMap(); // Early exit
-                    }
-                }
-            }
-
-            if (nonIndexedSearches.isEmpty()) {
-                return get(CHRONICLE_UTILS.limitSetValues(matchingKeys, limit));
-            }
-
-            db = get(matchingKeys);
-        }
-
-        // Step 3: Process non-indexed searches
-        for (final var search : nonIndexedSearches) {
-            if (db == null) {
-                // First non-indexed search and no indexed searches; scan all records
-                db = new HashMap<>();
-                final var files = getDataFiles();
-                for (final String file : files) {
-                    final var dbToSearch = openDb(file);
-                    if (dbToSearch != null) {
-                        try {
-                            db.putAll(search(dbToSearch, search));
-                        } finally {
-                            closeDb(file);
-                        }
-                    }
-                }
-            } else {
-                // Reuse the filtered db for subsequent non-indexed searches
-                db = search(db, search);
-            }
-
-            if (db.isEmpty()) {
-                return Collections.emptyMap(); // Early exit if no matches
-            }
-        }
-
-        // Step 5: Return the final results
-        return CHRONICLE_UTILS.limitMapValues(db, limit);
-    }
-
-    default Map<String, V> multiSearch(final Set<String> matchingKeys, final List<Search> searches, final int limit)
+    default Map<String, V> multiSearch(Set<String> matchingKeys, final List<Search> searches, final int limit)
             throws Throwable {
         if (searches == null || searches.isEmpty() || matchingKeys == null || matchingKeys.isEmpty() || limit <= 0) {
             return Collections.emptyMap();
@@ -1921,54 +1952,21 @@ public interface ChronicleDao<V> {
 
         // Step 2: Process indexed searches to get intersecting keys
         if (!indexedSearches.isEmpty()) {
-            List<Set<String>> searchResults;
-            int indexToCheck = 0;
-            // no need parallel,
-            if (indexedSearches.size() == 1) {
-                final var search = searches.get(0);
+            for (int i = 0; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
+                final Search search = indexedSearches.get(i);
                 final var indexFilePath = getIndexPath(search.field());
-                final var indexDb = MAP_DB.openIndex(indexFilePath);
-                try {
-                    // limit early
-                    searchResults = List.of(indexedSearch(search, indexDb, limit));
-                } finally {
-                    MAP_DB.closeIndex(indexFilePath);
-                }
-            } else {
-                searchResults = indexedSearches.parallelStream()
-                        .map(search -> {
-                            final var indexFilePath = getIndexPath(search.field());
-                            final var indexDb = MAP_DB.openIndex(indexFilePath);
-                            try {
-                                return indexedSearch(search, indexDb);
-                            } finally {
-                                MAP_DB.closeIndex(indexFilePath);
-                            }
-                        })
-                        .collect(Collectors.toList());
-
-                if (searchResults.isEmpty()) {
-                    return Collections.emptyMap();
-                }
-
-                int minSize = Integer.MAX_VALUE;
-                for (int i = 0; i < searchResults.size(); i++) {
-                    final var set = searchResults.get(i);
-                    final var size = set.size();
-                    if (size == 0) {
-                        return Collections.emptyMap();
-                    }
-                    if (size < minSize) {
-                        minSize = size;
-                        indexToCheck = i;
+                final var indexDb2 = MAP_DB.openIndex(indexFilePath);
+                if (indexDb2 != null) {
+                    try {
+                        matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
+                    } finally {
+                        MAP_DB.closeIndex(indexFilePath);
                     }
                 }
-            }
 
-            // Perform intersection sequentially (since intersection is order-sensitive)
-            matchingKeys.retainAll(searchResults.get(indexToCheck));
-            if (matchingKeys.isEmpty()) {
-                return Collections.emptyMap(); // Early exit
+                if (matchingKeys.isEmpty()) {
+                    return Collections.emptyMap(); // Early exit if no matches
+                }
             }
 
             if (nonIndexedSearches.isEmpty()) {
