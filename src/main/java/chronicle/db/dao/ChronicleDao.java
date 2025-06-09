@@ -1777,7 +1777,8 @@ public interface ChronicleDao<V> {
             final var indexDb = MAP_DB.openIndex(indexFilePath);
             if (indexDb != null) {
                 try {
-                    matchingKeys = indexedSearch(firstSearch, indexDb, limit);
+                    matchingKeys = indexedSearchSize == 1 ? indexedSearch(firstSearch, indexDb, limit)
+                            : indexedSearch(firstSearch, indexDb);
                 } finally {
                     MAP_DB.closeIndex(indexFilePath);
                 }
@@ -1805,9 +1806,8 @@ public interface ChronicleDao<V> {
                     }
                 }
 
-                //results already limited from frist indexed search
                 if (nonIndexedSearches.isEmpty()) {
-                    return get(matchingKeys);
+                    return get(CHRONICLE_UTILS.limitSetValues(matchingKeys, limit));
                 }
 
                 db = get(matchingKeys);
@@ -1945,7 +1945,6 @@ public interface ChronicleDao<V> {
                 }
             }
 
-            //limit at the end, as the matching keys can be initially larger than the limit
             if (nonIndexedSearches.isEmpty()) {
                 return get(CHRONICLE_UTILS.limitSetValues(matchingKeys, limit));
             }
