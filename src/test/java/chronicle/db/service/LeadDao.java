@@ -7,7 +7,7 @@ import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.dao.ChronicleDao;
 
-public class LeadDao implements ChronicleDao<String, Lead> {
+public class LeadDao implements ChronicleDao<Lead> {
     private final String dataPath;
 
     public LeadDao(final String dataPath) {

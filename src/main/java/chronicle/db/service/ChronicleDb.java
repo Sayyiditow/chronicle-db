@@ -155,11 +155,11 @@ public final class ChronicleDb {
         return (ChronicleDao) constructor.invoke(dataPath);
     }
 
-    public <K, V> Map<K, V> getMapForMultiInserts(final ChronicleDao<K, V> dao) {
-        return new HashMap<K, V>();
+    public <V> Map<String, V> getMapForMultiInserts(final ChronicleDao<V> dao) {
+        return new HashMap<String, V>();
     }
 
-    public <K, V> ConcurrentMap<K, V> getConcurrentMapForMultiInserts(final ChronicleDao<K, V> dao) {
-        return new ConcurrentHashMap<K, V>();
+    public <V> ConcurrentMap<String, V> getConcurrentMapForMultiInserts(final ChronicleDao<V> dao) {
+        return new ConcurrentHashMap<String, V>();
     }
 }

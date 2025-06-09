@@ -21,14 +21,15 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableSet;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
-import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
 
 import chronicle.db.entity.CsvObject;
@@ -129,43 +130,6 @@ public final class ChronicleUtils {
         } catch (final Exception e) {
             return null;
         }
-    }
-
-    public Set<Object> setSearchTerm(final List<Object> searchTerms, final Class<?> fieldClass) {
-        final int size = searchTerms.size();
-        final var searchTermSet = new HashSet<>(size);
-
-        for (int i = 0; i < size; i++) {
-            final var searchTerm = searchTerms.get(i);
-            if (searchTerm == null) {
-                searchTermSet.add("null"); // Explicitly setting "null" as string
-                continue;
-            }
-            // Handle enums first
-            if (searchTerm.getClass().isEnum()) {
-                searchTermSet.add(searchTerm.toString());
-                continue;
-            }
-            // Optimize for long field type conversion
-            if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
-                searchTerms.add(Long.parseLong(searchTerm.toString()));
-            }
-            // Default: Add the original value
-            searchTermSet.add(searchTerm);
-        }
-
-        return searchTermSet;
-    }
-
-    public Object setSearchTerm(final Object searchTerm, final Class<?> fieldClass) {
-        if (searchTerm == null)
-            return "null";
-        if (searchTerm.getClass().isEnum())
-            return searchTerm.toString();
-        if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
-            return Long.parseLong(searchTerm.toString());
-        }
-        return searchTerm;
     }
 
     public Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
@@ -273,7 +237,7 @@ public final class ChronicleUtils {
             return;
 
         final Map<String, FieldData> fieldMap = new HashMap<>(fields.size());
-        final Map<String, Map<Object, List<K>>> fieldIndexMap = new HashMap<>(fields.size());
+        final Map<String, NavigableSet<String>> fieldIndexMap = new HashMap<>(fields.size());
 
         final Class<?>[] valueType = new Class<?>[1];
 
@@ -299,12 +263,10 @@ public final class ChronicleUtils {
             final V value = entry.value().get();
             for (final String field : fieldMap.keySet()) {
                 final FieldData fieldData = fieldMap.get(field);
-                final Map<Object, List<K>> indexMap = fieldIndexMap.computeIfAbsent(field, k -> new HashMap<>());
+                final NavigableSet<String> indexSet = fieldIndexMap.computeIfAbsent(field, k -> new TreeSet<>());
                 try {
-                    Object currentValue = fieldData.getterHandle.invoke(value);
-                    if (fieldData.field.getType().isEnum() || currentValue == null)
-                        currentValue = Objects.toString(currentValue, "null");
-                    indexMap.computeIfAbsent(currentValue, k -> new ArrayList<>()).add(key);
+                    final Object currentValue = fieldData.getterHandle.invoke(value);
+                    indexSet.add(MAP_DB.createIndexKey(Objects.toString(currentValue, "null"), key.toString()));
                 } catch (final Throwable e) {
                     // should not happen, all fields are public
                 }
@@ -316,12 +278,12 @@ public final class ChronicleUtils {
             final String indexPath = indexDirPath + "/" + entry.getKey();
             final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
             synchronized (lock) {
-                final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexPath);
+                final var indexDb = MAP_DB.openIndex(indexPath);
                 if (indexDb != null) {
                     try {
-                        indexDb.putAll(entry.getValue());
+                        indexDb.addAll(entry.getValue());
                     } finally {
-                        MAP_DB.close(indexPath);
+                        MAP_DB.closeIndex(indexPath);
                     }
                 }
             }
@@ -340,40 +302,32 @@ public final class ChronicleUtils {
             deleteFileIfExists(indexPath);
             return;
         }
-        final boolean isEnum = fieldData.field.getType().isEnum();
 
-        final Map<Object, List<K>> updatesToRemove = new HashMap<>(values.size());
-        for (final var entry : values.entrySet()) {
+        // Collect composite keys to remove
+        final Set<String> compositeKeysToRemove = ConcurrentHashMap.newKeySet();
+        values.entrySet().parallelStream().forEach(entry -> {
             final V value = entry.getValue();
-            Object indexKey;
+            Object indexValue;
             try {
-                indexKey = fieldData.getterHandle.invoke(value);
+                indexValue = fieldData.getterHandle.invoke(value);
             } catch (final Throwable e) {
                 // should not happen as all fields are public
-                continue;
+                return;
             }
-            if (isEnum || indexKey == null)
-                indexKey = Objects.toString(indexKey, "null");
-            updatesToRemove.computeIfAbsent(indexKey, k -> new ArrayList<>()).add(entry.getKey());
-        }
+            final String compositeKey = MAP_DB.createIndexKey(Objects.toString(indexValue, "null"),
+                    entry.getKey().toString());
+            compositeKeysToRemove.add(compositeKey);
+        });
 
+        // Remove keys from index
         final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexPath);
+            final var indexDb = MAP_DB.openIndex(indexPath);
             if (indexDb != null) {
                 try {
-                    for (final var entry : updatesToRemove.entrySet()) {
-                        final List<K> currentList = indexDb.get(entry.getKey());
-                        if (currentList != null) {
-                            currentList.removeAll(entry.getValue());
-                            if (currentList.isEmpty())
-                                indexDb.remove(entry.getKey());
-                            else
-                                indexDb.put(entry.getKey(), currentList);
-                        }
-                    }
+                    indexDb.removeAll(compositeKeysToRemove);
                 } finally {
-                    MAP_DB.close(indexPath);
+                    MAP_DB.closeIndex(indexPath);
                 }
             }
         }
@@ -411,71 +365,49 @@ public final class ChronicleUtils {
             deleteFileIfExists(indexPath);
             return;
         }
-        final boolean isEnum = fieldData.field.getType().isEnum();
 
-        final Map<Object, List<K>> updatesToAdd = new HashMap<>(values.size());
-        final Map<Object, List<K>> updatesToRemove = new HashMap<>(prevValues.size());
+        final Set<String> compositeKeysToAdd = ConcurrentHashMap.newKeySet(values.size());
+        final Set<String> compositeKeysToRemove = ConcurrentHashMap.newKeySet(prevValues.size());
 
-        for (final K key : values.keySet()) {
+        values.keySet().parallelStream().forEach(key -> {
             final V newValue = values.get(key);
             final V prevValue = prevValues.get(key);
             Object newIndexKey;
             try {
                 newIndexKey = fieldData.getterHandle.invoke(newValue);
             } catch (final Throwable e) {
-                // should not happen
-                continue;
+                // should not happen as all fields are public
+                return;
             }
-            if (isEnum || newIndexKey == null)
-                newIndexKey = Objects.toString(newIndexKey, "null");
 
             if (prevValue == null) {
-                updatesToAdd.computeIfAbsent(newIndexKey, k -> new ArrayList<>()).add(key);
+                compositeKeysToAdd.add(MAP_DB.createIndexKey(Objects.toString(newIndexKey, "null"), key.toString()));
             } else {
                 Object prevIndexKey;
                 try {
                     prevIndexKey = fieldData.getterHandle.invoke(prevValue);
                 } catch (final Throwable e) {
-                    // should not happen
-                    continue;
+                    // should not happen as all fields are public
+                    return;
                 }
                 if (!Objects.equals(newIndexKey, prevIndexKey)) {
-                    if (isEnum) {
-                        prevIndexKey = String.valueOf(prevIndexKey);
-                        newIndexKey = String.valueOf(newIndexKey);
-                    }
-                    if (prevIndexKey == null)
-                        prevIndexKey = "null";
-                    if (newIndexKey == null)
-                        newIndexKey = "null";
-                    updatesToRemove.computeIfAbsent(prevIndexKey, k -> new ArrayList<>()).add(key);
-                    updatesToAdd.computeIfAbsent(newIndexKey, k -> new ArrayList<>()).add(key);
+                    compositeKeysToRemove
+                            .add(MAP_DB.createIndexKey(Objects.toString(prevIndexKey, "null"), key.toString()));
+                    compositeKeysToAdd
+                            .add(MAP_DB.createIndexKey(Objects.toString(newIndexKey, "null"), key.toString()));
                 }
             }
-        }
+        });
 
         final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
-            final HTreeMap<Object, List<K>> indexDb = MAP_DB.open(indexPath);
+            final var indexDb = MAP_DB.openIndex(indexPath);
             if (indexDb != null) {
                 try {
-                    for (final var entry : updatesToRemove.entrySet()) {
-                        final List<K> currentList = indexDb.get(entry.getKey());
-                        if (currentList != null) {
-                            currentList.removeAll(entry.getValue());
-                            if (currentList.isEmpty())
-                                indexDb.remove(entry.getKey());
-                            else
-                                indexDb.put(entry.getKey(), currentList);
-                        }
-                    }
-                    for (final var entry : updatesToAdd.entrySet()) {
-                        final List<K> currentList = indexDb.computeIfAbsent(entry.getKey(), k -> new ArrayList<>());
-                        currentList.addAll(entry.getValue());
-                        indexDb.put(entry.getKey(), currentList);
-                    }
+                    indexDb.removeAll(compositeKeysToRemove);
+                    indexDb.addAll(compositeKeysToAdd);
                 } finally {
-                    MAP_DB.close(indexPath);
+                    MAP_DB.closeIndex(indexPath);
                 }
             }
         }
@@ -513,11 +445,16 @@ public final class ChronicleUtils {
         final MethodHandle headersMethod = classData.headerHandle;
         final MethodHandle rowMethod = classData.rowHandle;
         final String[] headerList = (String[]) headersMethod.invoke(sampleValue);
-        final List<Object[]> rowList = new ArrayList<>(map.size());
-
-        for (final var entry : map.entrySet()) {
-            rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
-        }
+        // Parallel processing of rows
+        final List<Object[]> rowList = map.entrySet().parallelStream()
+                .map(entry -> {
+                    try {
+                        return (Object[]) rowMethod.invoke(entry.getValue(), entry.getKey());
+                    } catch (final Throwable e) {
+                        throw new RuntimeException("Failed to process entry: " + entry.getKey(), e);
+                    }
+                })
+                .collect(Collectors.toList());
 
         return new CsvObject(headerList, rowList);
     }
@@ -551,23 +488,30 @@ public final class ChronicleUtils {
      */
     public <K> CsvObject formatSubsetChronicleDataToCsv(final Map<K, LinkedHashMap<String, Object>> map,
             final String[] headers) {
-        final List<Object[]> rowList = new ArrayList<>(map.size()); // Pre-size list
+        final List<Object[]> rowList = Collections.synchronizedList(new ArrayList<>(map.size()));
         final String[] updatedHeaders = new String[headers.length + 1];
         updatedHeaders[0] = "ID";
         System.arraycopy(headers, 0, updatedHeaders, 1, headers.length);
 
-        for (final var entry : map.entrySet()) {
-            final K key = entry.getKey();
-            final LinkedHashMap<String, Object> valueMap = entry.getValue();
-            // Create row array: key + values
-            final Object[] obj = new Object[updatedHeaders.length]; // Size based on headers
-            obj[0] = key;
+        // Parallel processing of rows
+        map.entrySet().parallelStream()
+                .map(entry -> {
+                    final K key = entry.getKey();
+                    final LinkedHashMap<String, Object> valueMap = entry.getValue();
 
-            // Copy values directly from valueMap.values()
-            final Object[] values = valueMap.values().toArray();
-            System.arraycopy(values, 0, obj, 1, Math.min(values.length, obj.length - 1));
-            rowList.add(obj);
-        }
+                    // Create row array with exact size needed
+                    final Object[] row = new Object[updatedHeaders.length];
+                    row[0] = key;
+
+                    // Efficient value copying (no intermediate collections)
+                    int i = 1;
+                    for (final Object value : valueMap.values()) {
+                        if (i >= updatedHeaders.length)
+                            break;
+                        row[i++] = value;
+                    }
+                    return row;
+                }).forEach(rowList::add);
 
         return new CsvObject(updatedHeaders, rowList);
     }
@@ -706,30 +650,38 @@ public final class ChronicleUtils {
         return map;
     }
 
-    public <K> Class<?> getFieldClass(final Map<Object, List<K>> index) {
-        Class<?> fieldClass = null;
-        for (final Object key : index.keySet()) {
-            if (key != null) {
-                fieldClass = key.getClass();
-                break;
-            }
+    public <K, V> Map<K, V> limitMapValues(final Map<K, V> sourceData, final int limit) {
+        if (sourceData.size() <= limit) {
+            return sourceData;
         }
 
-        return fieldClass;
-    }
-
-    public <K, V> Map<K, V> limitMapValues(final Map<K, V> sourceData, final int limit) {
-        final int maxEntries = (int) limit;
         final var limitedMap = new HashMap<K, V>();
         int count = 0;
         for (final var entry : sourceData.entrySet()) {
-            if (count >= maxEntries) {
+            if (count >= limit) {
                 break;
             }
             limitedMap.put(entry.getKey(), entry.getValue());
             count++;
         }
         return limitedMap;
+    }
+
+    public <K> Set<K> limitSetValues(final Set<K> sourceData, final int limit) {
+        if (sourceData.size() <= limit) {
+            return sourceData;
+        }
+
+        final var limitedSet = new HashSet<K>();
+        int count = 0;
+        for (final var key : sourceData) {
+            if (count >= limit) {
+                break;
+            }
+            limitedSet.add(key);
+            count++;
+        }
+        return limitedSet;
     }
 
     /**
