@@ -1758,7 +1758,6 @@ public interface ChronicleDao<V> {
         final List<Search> indexedSearches = new ArrayList<>();
         final List<Search> nonIndexedSearches = new ArrayList<>();
         final Set<String> indexFileNames = indexFileNames();
-        final var emptyNonIndexSearches = nonIndexedSearches.isEmpty();
         final var indexedSearchSize = indexedSearches.size();
 
         for (final Search search : searches) {
@@ -1784,7 +1783,12 @@ public interface ChronicleDao<V> {
                 }
             }
 
-            if (emptyNonIndexSearches && indexedSearchSize == 1) {
+            // Early return if first indexed search yields no results
+            if (matchingKeys.isEmpty()) {
+                return Collections.emptyMap();
+            }
+
+            if (nonIndexedSearches.isEmpty() && indexedSearchSize == 1) {
                 return get(matchingKeys);
             }
 
