@@ -1384,6 +1384,7 @@ public interface ChronicleDao<V> {
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
                 ? new HashSet<>((List<String>) search.searchTerm())
                 : null;
+        final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<String>) search.searchTerm() : null;
 
         switch (searchType) {
             case EQUAL -> {
@@ -1448,6 +1449,12 @@ public interface ChronicleDao<V> {
                     populateMatchingKeys(keysAfter, matchingKeys);
                 }
             }
+            case BETWEEN -> {
+                final String lowerBound = searchTermBetween.get(0) + MapDb.INDEX_DELIMITER + "\u0000";
+                final String upperBound = searchTermBetween.get(1) + MapDb.INDEX_DELIMITER + MapDb.NON_CHAR;
+                final var keys = index.subSet(lowerBound, true, upperBound, true);
+                populateMatchingKeys(keys, matchingKeys);
+            }
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
         }
 
@@ -1466,75 +1473,34 @@ public interface ChronicleDao<V> {
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
                 ? new HashSet<>((List<String>) search.searchTerm())
                 : null;
-        final List<String> keysToRemove = new ArrayList<>();
+        final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<String>) search.searchTerm() : null;
 
+        final List<String> keysToRemove = new ArrayList<>();
         for (final var key : matchingKeys) {
-            switch (searchType) {
-                case EQUAL -> {
-                    if (!index.contains(searchTerm + MapDb.INDEX_DELIMITER + key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case NOT_EQUAL -> {
-                    if (index.contains(searchTerm + MapDb.INDEX_DELIMITER + key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case LESS -> {
-                    if (!MAP_DB.isLessThanIndexMatch(index, searchTerm, key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case LESS_OR_EQUAL -> {
-                    if (!MAP_DB.isLessThanOrEqualIndexMatch(index, searchTerm, key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case GREATER -> {
-                    if (!MAP_DB.isGreaterThanIndexMatch(index, searchTerm, key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case GREATER_OR_EQUAL -> {
-                    if (!MAP_DB.isGreaterThanOrEqualIndexMatch(index, searchTerm, key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case LIKE -> {
-                    if (!MAP_DB.isLikeIndexMatch(index, searchTerm, key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case NOT_LIKE -> {
-                    if (MAP_DB.isLikeIndexMatch(index, searchTerm, key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case STARTS_WITH -> {
-                    if (!MAP_DB.isStartsWithIndexMatch(index, searchTerm, key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case ENDS_WITH -> {
-                    if (!MAP_DB.isEndsWithIndexMatch(index, searchTerm, key)) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case IN -> {
-                    final boolean matchesAny = searchTermSet.stream()
-                            .anyMatch(term -> index.contains(term + MapDb.INDEX_DELIMITER + key));
-                    if (!matchesAny) {
-                        keysToRemove.add(key);
-                    }
-                }
-                case NOT_IN -> {
-                    final boolean matchesAny = searchTermSet.stream()
-                            .anyMatch(term -> index.contains(term + MapDb.INDEX_DELIMITER + key));
-                    if (matchesAny) {
-                        keysToRemove.add(key);
-                    }
-                }
+            if (key == null || key.contains(MapDb.INDEX_DELIMITER)) {
+                keysToRemove.add(key);
+                continue;
+            }
+            final boolean removeKey = switch (searchType) {
+                case EQUAL -> !index.contains(searchTerm + MapDb.INDEX_DELIMITER + key);
+                case NOT_EQUAL -> index.contains(searchTerm + MapDb.INDEX_DELIMITER + key);
+                case LESS -> !MAP_DB.isLessThanIndexMatch(index, searchTerm, key);
+                case LESS_OR_EQUAL -> !MAP_DB.isLessThanOrEqualIndexMatch(index, searchTerm, key);
+                case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, searchTerm, key);
+                case GREATER_OR_EQUAL -> !MAP_DB.isGreaterThanOrEqualIndexMatch(index, searchTerm, key);
+                case LIKE -> !MAP_DB.isLikeIndexMatch(index, searchTerm, key);
+                case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, searchTerm, key);
+                case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, searchTerm, key);
+                case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, searchTerm, key);
+                case IN -> searchTermSet.stream().noneMatch(term -> index.contains(term + MapDb.INDEX_DELIMITER + key));
+                case NOT_IN ->
+                    searchTermSet.stream().anyMatch(term -> index.contains(term + MapDb.INDEX_DELIMITER + key));
+                case BETWEEN ->
+                    !MAP_DB.isBetweenIndexMatch(index, searchTermBetween.get(0), searchTermBetween.get(1), key);
                 default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
+            };
+            if (removeKey) {
+                keysToRemove.add(key);
             }
         }
 

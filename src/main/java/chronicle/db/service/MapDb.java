@@ -407,12 +407,10 @@ public final class MapDb {
      */
     public boolean isBetweenIndexMatch(final NavigableSet<String> index, final String lowerBound,
             final String upperBound, final String suffix) {
-        final String searchKey = MapDb.INDEX_DELIMITER + suffix;
-        final String floorKey = index.floor(searchKey);
-        if (floorKey == null || !floorKey.endsWith(INDEX_DELIMITER + suffix)) {
-            return false;
-        }
-        final String prefix = MAP_DB.extractIndexValue(floorKey);
-        return prefix.compareTo(lowerBound) >= 0 && prefix.compareTo(upperBound) <= 0;
+        final String lowerKey = lowerBound + MapDb.INDEX_DELIMITER + suffix;
+        final String upperKey = upperBound + MapDb.INDEX_DELIMITER + suffix;
+        final String ceilingKey = index.ceiling(lowerKey);
+        return ceilingKey != null && ceilingKey.compareTo(upperKey) <= 0 &&
+                ceilingKey.endsWith(MapDb.INDEX_DELIMITER + suffix);
     }
 }
