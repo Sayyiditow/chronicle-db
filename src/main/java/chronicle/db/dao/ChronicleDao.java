@@ -1844,12 +1844,7 @@ public interface ChronicleDao<V> {
             }
         }
 
-        if (db == null) {
-            return Collections.emptyMap();
-        }
-
-        // Step 5: Return the final results
-        return CHRONICLE_UTILS.limitMapValues(db, limit);
+        return db != null ? CHRONICLE_UTILS.limitMapValues(db, limit) : Collections.emptyMap();
     }
 
     default Map<String, V> multiSearch(Set<String> matchingKeys, final List<Search> searches) throws Throwable {
