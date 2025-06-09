@@ -27,4 +27,8 @@ public record Search(String field, SearchType searchType, Object searchTerm) {
         this.searchType = searchType;
         this.searchTerm = searchTerm;
     }
+
+    public Search withSearchTerm(final Object searchTerm) {
+        return new Search(this.field, this.searchType, searchTerm);
+    }
 }
