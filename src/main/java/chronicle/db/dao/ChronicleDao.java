@@ -1669,8 +1669,6 @@ public interface ChronicleDao<V> {
             }
         }
 
-        final var emptyNonIndexSearches = nonIndexedSearches.isEmpty();
-        final var indexedSearchSize = indexedSearches.size();
         Map<String, V> db = null;
         // Step 2: Process indexed searches to get intersecting keys
         if (!indexedSearches.isEmpty()) {
@@ -1686,7 +1684,11 @@ public interface ChronicleDao<V> {
                 }
             }
 
-            if (emptyNonIndexSearches && indexedSearchSize == 1) {
+            if (matchingKeys.isEmpty()) {
+                return Collections.emptyMap(); // Early exit if no matches
+            }
+
+            if (nonIndexedSearches.isEmpty() && indexedSearches.size() == 1) {
                 return get(matchingKeys);
             }
 
