@@ -23,7 +23,7 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
-    public static final int CHRONICLE_SEGMENTS = Runtime.getRuntime().availableProcessors() * 2;
+    public static final int CHRONICLE_SEGMENTS = 8;
     private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
 

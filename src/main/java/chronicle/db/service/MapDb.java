@@ -22,7 +22,7 @@ public final class MapDb {
     public static final MapDb MAP_DB = new MapDb();
     private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, TreeEntry> treeCache = new ConcurrentHashMap<>();
-    public static final int MAP_DB_SEGMENTS = Runtime.getRuntime().availableProcessors() * 2;
+    public static final int MAP_DB_SEGMENTS = 8;
     public static final String INDEX_DELIMITER = "\u0001";
     public static final String NON_CHAR = "\uFFFF";
     public static final String ASCII_0 = "\u0000";
