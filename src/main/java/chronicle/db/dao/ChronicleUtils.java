@@ -304,20 +304,18 @@ public final class ChronicleUtils {
         }
 
         // Collect composite keys to remove
-        final Set<String> compositeKeysToRemove = ConcurrentHashMap.newKeySet();
-        values.entrySet().parallelStream().forEach(entry -> {
+        final Set<String> compositeKeysToRemove = new HashSet<>(values.size());
+        for (final var entry : values.entrySet()) {
             final V value = entry.getValue();
-            Object indexValue;
             try {
-                indexValue = fieldData.getterHandle.invoke(value);
+                final Object indexValue = fieldData.getterHandle.invoke(value);
+                final String compositeKey = MAP_DB.createIndexKey(Objects.toString(indexValue, "null"),
+                        entry.getKey().toString());
+                compositeKeysToRemove.add(compositeKey);
             } catch (final Throwable e) {
-                // should not happen as all fields are public
-                return;
+                // should not happen
             }
-            final String compositeKey = MAP_DB.createIndexKey(Objects.toString(indexValue, "null"),
-                    entry.getKey().toString());
-            compositeKeysToRemove.add(compositeKey);
-        });
+        }
 
         // Remove keys from index
         final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
@@ -366,38 +364,29 @@ public final class ChronicleUtils {
             return;
         }
 
-        final Set<String> compositeKeysToAdd = ConcurrentHashMap.newKeySet(values.size());
-        final Set<String> compositeKeysToRemove = ConcurrentHashMap.newKeySet(prevValues.size());
-
-        values.keySet().parallelStream().forEach(key -> {
+        final Set<String> compositeKeysToAdd = new HashSet<>(values.size());
+        final Set<String> compositeKeysToRemove = new HashSet<>(prevValues.size());
+        for (final var key : values.keySet()) {
             final V newValue = values.get(key);
             final V prevValue = prevValues.get(key);
-            Object newIndexKey;
             try {
-                newIndexKey = fieldData.getterHandle.invoke(newValue);
-            } catch (final Throwable e) {
-                // should not happen as all fields are public
-                return;
-            }
-
-            if (prevValue == null) {
-                compositeKeysToAdd.add(MAP_DB.createIndexKey(Objects.toString(newIndexKey, "null"), key.toString()));
-            } else {
-                Object prevIndexKey;
-                try {
-                    prevIndexKey = fieldData.getterHandle.invoke(prevValue);
-                } catch (final Throwable e) {
-                    // should not happen as all fields are public
-                    return;
-                }
-                if (!Objects.equals(newIndexKey, prevIndexKey)) {
-                    compositeKeysToRemove
-                            .add(MAP_DB.createIndexKey(Objects.toString(prevIndexKey, "null"), key.toString()));
+                final Object newIndexKey = fieldData.getterHandle.invoke(newValue);
+                if (prevValue == null) {
                     compositeKeysToAdd
                             .add(MAP_DB.createIndexKey(Objects.toString(newIndexKey, "null"), key.toString()));
+                } else {
+                    final Object prevIndexKey = fieldData.getterHandle.invoke(prevValue);
+                    if (!Objects.equals(newIndexKey, prevIndexKey)) {
+                        compositeKeysToRemove
+                                .add(MAP_DB.createIndexKey(Objects.toString(prevIndexKey, "null"), key.toString()));
+                        compositeKeysToAdd
+                                .add(MAP_DB.createIndexKey(Objects.toString(newIndexKey, "null"), key.toString()));
+                    }
                 }
+            } catch (final Throwable e) {
+                // should not happen as all fields are public
             }
-        });
+        }
 
         final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
         synchronized (lock) {
@@ -445,16 +434,11 @@ public final class ChronicleUtils {
         final MethodHandle headersMethod = classData.headerHandle;
         final MethodHandle rowMethod = classData.rowHandle;
         final String[] headerList = (String[]) headersMethod.invoke(sampleValue);
-        // Parallel processing of rows
-        final List<Object[]> rowList = map.entrySet().parallelStream()
-                .map(entry -> {
-                    try {
-                        return (Object[]) rowMethod.invoke(entry.getValue(), entry.getKey());
-                    } catch (final Throwable e) {
-                        throw new RuntimeException("Failed to process entry: " + entry.getKey(), e);
-                    }
-                })
-                .collect(Collectors.toList());
+        final List<Object[]> rowList = new ArrayList<>(1000);
+
+        for (final var entry : map.entrySet()) {
+            rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
+        }
 
         return new CsvObject(headerList, rowList);
     }
@@ -493,25 +477,23 @@ public final class ChronicleUtils {
         updatedHeaders[0] = "ID";
         System.arraycopy(headers, 0, updatedHeaders, 1, headers.length);
 
-        // Parallel processing of rows
-        map.entrySet().parallelStream()
-                .map(entry -> {
-                    final K key = entry.getKey();
-                    final LinkedHashMap<String, Object> valueMap = entry.getValue();
+        for (final var entry : map.entrySet()) {
+            final K key = entry.getKey();
+            final LinkedHashMap<String, Object> valueMap = entry.getValue();
 
-                    // Create row array with exact size needed
-                    final Object[] row = new Object[updatedHeaders.length];
-                    row[0] = key;
+            // Create row array with exact size needed
+            final Object[] row = new Object[updatedHeaders.length];
+            row[0] = key;
 
-                    // Efficient value copying (no intermediate collections)
-                    int i = 1;
-                    for (final Object value : valueMap.values()) {
-                        if (i >= updatedHeaders.length)
-                            break;
-                        row[i++] = value;
-                    }
-                    return row;
-                }).forEach(rowList::add);
+            // Efficient value copying (no intermediate collections)
+            int i = 1;
+            for (final Object value : valueMap.values()) {
+                if (i >= updatedHeaders.length)
+                    break;
+                row[i++] = value;
+            }
+            rowList.add(row);
+        }
 
         return new CsvObject(updatedHeaders, rowList);
     }
