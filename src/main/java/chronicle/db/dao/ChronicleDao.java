@@ -1475,8 +1475,8 @@ public interface ChronicleDao<V> {
                 ? new HashSet<>((List<String>) search.searchTerm())
                 : null;
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<String>) search.searchTerm() : null;
+        final Set<String> results = new HashSet<>(matchingKeys.size());
 
-        final List<String> keysToRemove = new ArrayList<>();
         for (final var key : matchingKeys) {
             final boolean removeKey = switch (searchType) {
                 case EQUAL -> !index.contains(searchTerm + MapDb.INDEX_DELIMITER + key);
@@ -1496,17 +1496,12 @@ public interface ChronicleDao<V> {
                     !MAP_DB.isBetweenIndexMatch(index, searchTermBetween.get(0), searchTermBetween.get(1), key);
                 default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
             };
-            if (removeKey) {
-                keysToRemove.add(key);
+            if (!removeKey) {
+                results.add(key);
             }
         }
 
-        if (matchingKeys.size() == keysToRemove.size()) {
-            return Collections.emptySet();
-        }
-        matchingKeys.removeAll(keysToRemove);
-
-        return matchingKeys;
+        return results;
     }
 
     private void addKeysUpToLimit(final Collection<String> keys, final Set<String> matchingKeys, final int limit) {
@@ -1640,10 +1635,10 @@ public interface ChronicleDao<V> {
                 ? new HashSet<>((List<String>) search.searchTerm())
                 : null;
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<String>) search.searchTerm() : null;
+        final Set<String> results = new HashSet<>(limit);
 
-        final List<String> keysToRemove = new ArrayList<>();
         for (final var key : matchingKeys) {
-            if (matchingKeys.size() >= limit) {
+            if (results.size() == limit) {
                 break;
             }
             final boolean removeKey = switch (searchType) {
@@ -1664,17 +1659,12 @@ public interface ChronicleDao<V> {
                     !MAP_DB.isBetweenIndexMatch(index, searchTermBetween.get(0), searchTermBetween.get(1), key);
                 default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
             };
-            if (removeKey) {
-                keysToRemove.add(key);
+            if (!removeKey) {
+                results.add(key);
             }
         }
 
-        if (matchingKeys.size() == keysToRemove.size()) {
-            return Collections.emptySet();
-        }
-        matchingKeys.removeAll(keysToRemove);
-
-        return matchingKeys;
+        return results;
     }
 
     default Map<String, V> indexedSearch(final Search search) throws IOException {
@@ -1718,7 +1708,6 @@ public interface ChronicleDao<V> {
         Map<String, V> db = null;
         // Step 2: Process indexed searches to get intersecting keys
         if (!indexedSearches.isEmpty()) {
-            Search.sortSearchesByTypePriority(indexedSearches);
             Set<String> matchingKeys = new HashSet<>();
             final var firstSearch = indexedSearches.get(0);
             final var indexFilePath = getIndexPath(firstSearch.field());
@@ -1764,7 +1753,6 @@ public interface ChronicleDao<V> {
             }
         }
 
-        Search.sortSearchesByTypePriority(nonIndexedSearches);
         // Step 3: Process non-indexed searches
         for (final var search : nonIndexedSearches) {
             if (db == null) {
@@ -1808,7 +1796,6 @@ public interface ChronicleDao<V> {
         final List<Search> indexedSearches = new ArrayList<>();
         final List<Search> nonIndexedSearches = new ArrayList<>();
         final Set<String> indexFileNames = indexFileNames();
-        final var indexedSearchSize = indexedSearches.size();
 
         for (final Search search : searches) {
             if (indexFileNames.contains(search.field())) {
@@ -1818,17 +1805,21 @@ public interface ChronicleDao<V> {
             }
         }
 
+        final var indexedSearchSize = indexedSearches.size();
+        final var nonIndexedSearchesEmpty = nonIndexedSearches.isEmpty();
+
         Map<String, V> db = null;
-        if (!indexedSearches.isEmpty()) {
-            Search.sortSearchesByTypePriority(indexedSearches);
+        if (indexedSearchSize != 0) {
             Set<String> matchingKeys = new HashSet<>();
             final var firstSearch = indexedSearches.get(0);
             final var indexFilePath = getIndexPath(firstSearch.field());
             final var indexDb = MAP_DB.openIndex(indexFilePath);
             if (indexDb != null) {
                 try {
-                    matchingKeys = indexedSearchSize == 1 ? indexedSearch(firstSearch, indexDb, limit)
-                            : indexedSearch(firstSearch, indexDb);
+                    if (nonIndexedSearchesEmpty && indexedSearchSize == 1) {
+                        return get(indexedSearch(firstSearch, indexDb, limit));
+                    }
+                    matchingKeys = indexedSearch(firstSearch, indexDb);
                 } finally {
                     MAP_DB.closeIndex(indexFilePath);
                 }
@@ -1839,22 +1830,20 @@ public interface ChronicleDao<V> {
                 return Collections.emptyMap();
             }
 
-            if (nonIndexedSearches.isEmpty() && indexedSearchSize == 1) {
-                return get(matchingKeys);
-            }
-
             if (!matchingKeys.isEmpty()) {
-                for (int i = 1; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
+                for (int i = 1; i < indexedSearchSize && !matchingKeys.isEmpty(); i++) {
                     final Search search = indexedSearches.get(i);
                     final var path = getIndexPath(search.field());
                     final var indexDb2 = MAP_DB.openIndex(path);
-                    final boolean isLastIndexedSearch = (i == indexedSearches.size() - 1)
-                            && nonIndexedSearches.isEmpty();
+                    final boolean isLastIndexedSearch = (i == indexedSearchSize - 1)
+                            && nonIndexedSearchesEmpty;
 
                     if (indexDb2 != null) {
                         try {
-                            matchingKeys = isLastIndexedSearch ? indexedSearch(search, indexDb2, matchingKeys, limit)
-                                    : indexedSearch(search, indexDb2, matchingKeys);
+                            if (isLastIndexedSearch) {
+                                return get(indexedSearch(search, indexDb2, matchingKeys, limit));
+                            }
+                            matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
                         } finally {
                             MAP_DB.closeIndex(path);
                         }
@@ -1865,15 +1854,13 @@ public interface ChronicleDao<V> {
                     }
                 }
 
-                if (nonIndexedSearches.isEmpty()) {
-                    return get(matchingKeys);
-                }
-
                 db = get(matchingKeys);
+                if (db.isEmpty()) {
+                    return Collections.emptyMap();
+                }
             }
         }
 
-        Search.sortSearchesByTypePriority(nonIndexedSearches);
         // Step 3: Process non-indexed searches
         for (final var search : nonIndexedSearches) {
             if (db == null) {
@@ -1922,7 +1909,6 @@ public interface ChronicleDao<V> {
         }
 
         if (!indexedSearches.isEmpty()) {
-            Search.sortSearchesByTypePriority(indexedSearches);
             for (int i = 0; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
                 final Search search = indexedSearches.get(i);
                 final var indexFilePath = getIndexPath(search.field());
@@ -1952,7 +1938,6 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Search.sortSearchesByTypePriority(nonIndexedSearches);
         // Step 4: Process non-indexed searches
         for (final var search : nonIndexedSearches) {
             db = search(db, search);
@@ -1984,20 +1969,24 @@ public interface ChronicleDao<V> {
             }
         }
 
+        final var indexedSearchSize = indexedSearches.size();
+        final var nonIndexedSearchesEmpty = nonIndexedSearches.isEmpty();
+
         // Step 2: Process indexed searches to get intersecting keys
-        if (!indexedSearches.isEmpty()) {
-            Search.sortSearchesByTypePriority(indexedSearches);
-            for (int i = 0; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
+        if (indexedSearchSize != 0) {
+            for (int i = 0; i < indexedSearchSize && !matchingKeys.isEmpty(); i++) {
                 final Search search = indexedSearches.get(i);
                 final var indexFilePath = getIndexPath(search.field());
                 final var indexDb2 = MAP_DB.openIndex(indexFilePath);
-                final boolean isLastIndexedSearch = (i == indexedSearches.size() - 1)
-                        && nonIndexedSearches.isEmpty();
+                final boolean isLastIndexedSearch = (i == indexedSearchSize - 1)
+                        && nonIndexedSearchesEmpty;
 
                 if (indexDb2 != null) {
                     try {
-                        matchingKeys = isLastIndexedSearch ? indexedSearch(search, indexDb2, matchingKeys, limit)
-                                : indexedSearch(search, indexDb2, matchingKeys);
+                        if (isLastIndexedSearch) {
+                            return get(indexedSearch(search, indexDb2, matchingKeys, limit));
+                        }
+                        matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
                     } finally {
                         MAP_DB.closeIndex(indexFilePath);
                     }
@@ -2007,10 +1996,6 @@ public interface ChronicleDao<V> {
                     return Collections.emptyMap(); // Early exit if no matches
                 }
             }
-
-            if (nonIndexedSearches.isEmpty()) {
-                return get(matchingKeys);
-            }
         }
 
         // Step 3: Fetch records for the filtered keys
@@ -2019,7 +2004,6 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Search.sortSearchesByTypePriority(nonIndexedSearches);
         // Step 4: Process non-indexed searches
         for (final var search : nonIndexedSearches) {
             db = search(db, search);
