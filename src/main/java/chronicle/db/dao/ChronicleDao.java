@@ -1451,7 +1451,7 @@ public interface ChronicleDao<V> {
                 }
             }
             case BETWEEN -> {
-                final String lowerBound = searchTermBetween.get(0) + MapDb.INDEX_DELIMITER + "\u0000";
+                final String lowerBound = searchTermBetween.get(0) + MapDb.INDEX_DELIMITER + MapDb.ASCII_0;
                 final String upperBound = searchTermBetween.get(1) + MapDb.INDEX_DELIMITER + MapDb.NON_CHAR;
                 final var keys = index.subSet(lowerBound, true, upperBound, true);
                 populateMatchingKeys(keys, matchingKeys);

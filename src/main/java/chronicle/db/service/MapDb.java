@@ -252,25 +252,6 @@ public final class MapDb {
     }
 
     /**
-     * Checks if the index contains an entry for the given suffix that is
-     * lexicographically less than prefix + INDEX_DELIMITER + suffix.
-     *
-     * @param index  the NavigableSet containing keys in the format prefix +
-     *               INDEX_DELIMITER + suffix
-     * @param prefix the prefix to compare against (e.g., searchTerm like
-     *               "20250806")
-     * @param suffix the suffix to check (e.g., a key from matchingKeys like "123")
-     * @return true if the index contains an entry for suffix with a prefix less
-     *         than the given prefix
-     */
-    public boolean isLessThanIndexMatch(final NavigableSet<String> index, final String prefix, final String suffix) {
-        final String searchKey = prefix + INDEX_DELIMITER + suffix;
-        final String floorKey = index.floor(searchKey);
-        // Check if floorKey has the same suffix and its prefix is < searchTerm
-        return floorKey != null && floorKey.endsWith(INDEX_DELIMITER + suffix) && floorKey.compareTo(searchKey) < 0;
-    }
-
-    /**
      * Utility to extract keys less than or equal to the value.
      *
      * @param index NavigableSet containing composite keys (value\u0001key)
@@ -279,14 +260,6 @@ public final class MapDb {
      */
     public NavigableSet<String> getLessThanOrEqualIndexSubset(final NavigableSet<String> index, final String value) {
         return index.headSet(value + INDEX_DELIMITER + NON_CHAR, true);
-    }
-
-    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<String> index, final String prefix,
-            final String suffix) {
-        final String searchKey = prefix + INDEX_DELIMITER + suffix;
-        final String floorKey = index.floor(searchKey);
-        // Check if floorKey has the same suffix and its prefix is <= searchTerm
-        return floorKey != null && floorKey.endsWith(INDEX_DELIMITER + suffix) && floorKey.compareTo(searchKey) <= 0;
     }
 
     /**
@@ -300,13 +273,6 @@ public final class MapDb {
         return index.tailSet(value + INDEX_DELIMITER + NON_CHAR, false);
     }
 
-    public boolean isGreaterThanIndexMatch(final NavigableSet<String> index, final String prefix, final String suffix) {
-        final String searchKey = prefix + INDEX_DELIMITER + suffix;
-        final String ceilingKey = index.ceiling(searchKey);
-        return ceilingKey != null && ceilingKey.endsWith(INDEX_DELIMITER + suffix)
-                && ceilingKey.compareTo(searchKey) > 0;
-    }
-
     /**
      * Utility to extract keys greater than or equal to the value.
      *
@@ -317,12 +283,67 @@ public final class MapDb {
         return index.tailSet(value + INDEX_DELIMITER, true);
     }
 
+    /**
+     * Checks if the index contains an entry for the given suffix that is
+     * lexicographically less than prefix + INDEX_DELIMITER + suffix.
+     *
+     * @return true if the index contains an entry for suffix with a prefix less
+     *         than the given prefix
+     */
+    public boolean isLessThanIndexMatch(final NavigableSet<String> index, final String prefix, final String suffix) {
+        // Define range for all entries with the suffix
+        final String lowerKey = MapDb.INDEX_DELIMITER + suffix;
+        final String upperKey = prefix + MapDb.INDEX_DELIMITER + suffix;
+        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, false);
+        // Check if any entry exists with the suffix
+        for (final String key : subset) {
+            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<String> index, final String prefix,
+            final String suffix) {
+        // Define range for all entries with the suffix
+        final String lowerKey = MapDb.INDEX_DELIMITER + suffix;
+        final String upperKey = prefix + MapDb.INDEX_DELIMITER + suffix;
+        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, true);
+        // Check if any entry exists with the suffix
+        for (final String key : subset) {
+            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isGreaterThanIndexMatch(final NavigableSet<String> index, final String prefix, final String suffix) {
+        final String lowerKey = prefix + MapDb.INDEX_DELIMITER + suffix;
+        final String upperKey = MapDb.NON_CHAR + MapDb.INDEX_DELIMITER;
+        final NavigableSet<String> subset = index.subSet(lowerKey, false, upperKey, false);
+        // Check if any entry exists with the suffix
+        for (final String key : subset) {
+            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean isGreaterThanOrEqualIndexMatch(final NavigableSet<String> index, final String prefix,
             final String suffix) {
-        final String searchKey = prefix + INDEX_DELIMITER + suffix;
-        final String ceilingKey = index.ceiling(searchKey);
-        return ceilingKey != null && ceilingKey.endsWith(INDEX_DELIMITER + suffix)
-                && ceilingKey.compareTo(searchKey) >= 0;
+        final String lowerKey = prefix + MapDb.INDEX_DELIMITER + suffix;
+        final String upperKey = MapDb.NON_CHAR + MapDb.INDEX_DELIMITER;
+        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, false);
+        // Check if any entry exists with the suffix
+        for (final String key : subset) {
+            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -337,14 +358,17 @@ public final class MapDb {
      *         search term
      */
     public boolean isLikeIndexMatch(final NavigableSet<String> index, final String searchTerm, final String suffix) {
-        if (searchTerm == null || suffix == null || suffix.contains(INDEX_DELIMITER)) {
-            return false;
+        final String lowerKey = MapDb.INDEX_DELIMITER + suffix;
+        final String upperKey = MapDb.NON_CHAR + MapDb.INDEX_DELIMITER + suffix;
+        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, false);
+        // Check if any entry's prefix contains searchTerm (case-insensitive)
+        for (final String key : subset) {
+            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix) &&
+                    CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm)) {
+                return true;
+            }
         }
-        final String searchKey = MapDb.INDEX_DELIMITER + suffix; // Prefix doesn't matter for lookup
-        final String floorKey = index.floor(searchKey);
-        return floorKey != null &&
-                floorKey.endsWith(INDEX_DELIMITER + suffix) &&
-                CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(floorKey), searchTerm);
+        return false;
     }
 
     /**
@@ -360,14 +384,15 @@ public final class MapDb {
      */
     public boolean isStartsWithIndexMatch(final NavigableSet<String> index, final String searchTerm,
             final String suffix) {
-        if (searchTerm == null || suffix == null || suffix.contains(INDEX_DELIMITER)) {
-            return false;
+        final String lowerKey = searchTerm + MapDb.INDEX_DELIMITER + suffix;
+        final String upperKey = searchTerm + MapDb.NON_CHAR + MapDb.INDEX_DELIMITER + suffix;
+        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, false);
+        for (final String key : subset) {
+            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
+                return true;
+            }
         }
-        final String searchKey = MapDb.INDEX_DELIMITER + suffix;
-        final String floorKey = index.floor(searchKey);
-        return floorKey != null &&
-                floorKey.endsWith(INDEX_DELIMITER + suffix)
-                && MAP_DB.extractIndexValue(floorKey).startsWith(searchTerm);
+        return false;
     }
 
     /**
@@ -383,14 +408,14 @@ public final class MapDb {
      */
     public boolean isEndsWithIndexMatch(final NavigableSet<String> index, final String searchTerm,
             final String suffix) {
-        if (searchTerm == null || suffix == null || suffix.contains(INDEX_DELIMITER)) {
+        // Find the first possible entry for the suffix
+        final String searchKey = MapDb.INDEX_DELIMITER + suffix;
+        final String ceilingKey = index.ceiling(searchKey);
+        if (ceilingKey == null || !ceilingKey.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
             return false;
         }
-        final String searchKey = MapDb.INDEX_DELIMITER + suffix;
-        final String floorKey = index.floor(searchKey);
-        return floorKey != null &&
-                floorKey.endsWith(INDEX_DELIMITER + suffix)
-                && MAP_DB.extractIndexValue(floorKey).endsWith(searchTerm);
+        // Check if the prefix ends with searchTerm
+        return MAP_DB.extractIndexValue(ceilingKey).endsWith(searchTerm);
     }
 
     /**
@@ -409,8 +434,12 @@ public final class MapDb {
             final String upperBound, final String suffix) {
         final String lowerKey = lowerBound + MapDb.INDEX_DELIMITER + suffix;
         final String upperKey = upperBound + MapDb.INDEX_DELIMITER + suffix;
-        final String ceilingKey = index.ceiling(lowerKey);
-        return ceilingKey != null && ceilingKey.compareTo(upperKey) <= 0 &&
-                ceilingKey.endsWith(MapDb.INDEX_DELIMITER + suffix);
+        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, true);
+        for (final String key : subset) {
+            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
