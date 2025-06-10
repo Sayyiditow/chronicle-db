@@ -47,6 +47,7 @@ public interface ChronicleDao<V> {
             DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
             KEY_FILE = "keys";
     String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
+    ThreadLocal<HashSet<String>> MATCHING_KEYS = ThreadLocal.withInitial(() -> new HashSet<>(1000));
 
     /**
      * Name of db for logging purposes
@@ -136,22 +137,16 @@ public interface ChronicleDao<V> {
     }
 
     private void populateKeyMap(final Set<String> dataFiles, final HTreeMap<String, String> keyMap) throws IOException {
-        dataFiles.parallelStream().forEach(file -> {
-            try {
-                final var db = openDb(file);
-                if (db != null) {
-                    try {
-                        db.forEachEntry(entry -> {
-                            keyMap.put(entry.key().get(), file);
-                        });
-                    } finally {
-                        closeDb(file);
-                    }
+        for (final String file : dataFiles) {
+            final var db = openDb(file);
+            if (db != null) {
+                try {
+                    db.forEachEntry(entry -> keyMap.put(entry.key().get(), file));
+                } finally {
+                    closeDb(file);
                 }
-            } catch (final IOException e) {
-                // ignored
             }
-        });
+        }
     }
 
     default void rebuildKeyMap() {
@@ -1379,7 +1374,8 @@ public interface ChronicleDao<V> {
             return Collections.emptySet();
         }
 
-        final Set<String> matchingKeys = new HashSet<>(1000);
+        final Set<String> matchingKeys = MATCHING_KEYS.get();
+        matchingKeys.clear();
         final SearchType searchType = search.searchType();
         final String searchTerm = String.valueOf(search.searchTerm());
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
@@ -1537,7 +1533,8 @@ public interface ChronicleDao<V> {
             return Collections.emptySet();
         }
 
-        final Set<String> matchingKeys = new HashSet<>(1000);
+        final Set<String> matchingKeys = MATCHING_KEYS.get();
+        matchingKeys.clear();
         final SearchType searchType = search.searchType();
         final String searchTerm = String.valueOf(search.searchTerm());
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
@@ -1669,7 +1666,8 @@ public interface ChronicleDao<V> {
 
     default Map<String, V> indexedSearch(final Search search) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
-        Set<String> matchingKeys = new HashSet<String>();
+        Set<String> matchingKeys = MATCHING_KEYS.get();
+        matchingKeys.clear();
 
         final var indexDb = MAP_DB.openIndex(indexFilePath);
         if (indexDb != null) {
@@ -1708,7 +1706,8 @@ public interface ChronicleDao<V> {
         Map<String, V> db = null;
         // Step 2: Process indexed searches to get intersecting keys
         if (!indexedSearches.isEmpty()) {
-            Set<String> matchingKeys = new HashSet<>();
+            Set<String> matchingKeys = MATCHING_KEYS.get();
+            matchingKeys.clear();
             final var firstSearch = indexedSearches.get(0);
             final var indexFilePath = getIndexPath(firstSearch.field());
             final var indexDb = MAP_DB.openIndex(indexFilePath);
@@ -1810,7 +1809,8 @@ public interface ChronicleDao<V> {
 
         Map<String, V> db = null;
         if (indexedSearchSize != 0) {
-            Set<String> matchingKeys = new HashSet<>();
+            Set<String> matchingKeys = MATCHING_KEYS.get();
+            matchingKeys.clear();
             final var firstSearch = indexedSearches.get(0);
             final var indexFilePath = getIndexPath(firstSearch.field());
             final var indexDb = MAP_DB.openIndex(indexFilePath);
@@ -2047,7 +2047,8 @@ public interface ChronicleDao<V> {
         }
 
         final var indexFilePath = getIndexPath(search.field());
-        Set<String> matchingKeys = new HashSet<>();
+        Set<String> matchingKeys = MATCHING_KEYS.get();
+        matchingKeys.clear();
         final Map<String, V> results = new HashMap<>();
 
         final var indexDb = MAP_DB.openIndex(indexFilePath);
@@ -2075,7 +2076,8 @@ public interface ChronicleDao<V> {
         }
 
         final var indexFilePath = getIndexPath(search.field());
-        Set<String> matchingKeys = new HashSet<>(limit);
+        Set<String> matchingKeys = MATCHING_KEYS.get();
+        matchingKeys.clear();
         final Map<String, V> results = new HashMap<>(limit);
 
         final var indexDb = MAP_DB.openIndex(indexFilePath);

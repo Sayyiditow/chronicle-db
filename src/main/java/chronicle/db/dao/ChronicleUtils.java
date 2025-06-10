@@ -10,7 +10,6 @@ import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -21,11 +20,9 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NavigableSet;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
@@ -115,9 +112,10 @@ public final class ChronicleUtils {
     }
 
     public int compare(final Object obj1, final Object obj2) {
-        final BigDecimal decimal1 = new BigDecimal(String.valueOf(obj1));
-        final BigDecimal decimal2 = new BigDecimal(String.valueOf(obj2));
-        return decimal1.compareTo(decimal2);
+        if (obj1 instanceof final Number n1 && obj2 instanceof final Number n2) {
+            return Double.compare(n1.doubleValue(), n2.doubleValue());
+        }
+        return String.valueOf(obj1).compareTo(String.valueOf(obj2));
     }
 
     public boolean containsIgnoreCase(final Object str, final Object searchTerm) {
@@ -132,28 +130,21 @@ public final class ChronicleUtils {
         }
     }
 
+    private static final ThreadLocal<HashSet<Object>> SEARCH_TERM_SET = ThreadLocal
+            .withInitial(() -> new HashSet<>(16));
+
     public Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
-        final int size = searchTerms.size();
-        final var searchTermSet = new HashSet<>(size);
-
-        for (int i = 0; i < searchTerms.size(); i++) {
-            final var searchTerm = searchTerms.get(i);
-
-            if (fieldClass.isEnum() && (searchTerm instanceof String)) {
+        final HashSet<Object> searchTermSet = SEARCH_TERM_SET.get();
+        searchTermSet.clear();
+        for (final Object searchTerm : searchTerms) {
+            if (fieldClass.isEnum() && searchTerm instanceof String) {
                 searchTermSet.add(toEnum(fieldClass, searchTerm));
-                continue;
-            }
-
-            if (fieldClass == long.class
-                    && (searchTerm instanceof String || searchTerm instanceof Integer)) {
+            } else if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
                 searchTermSet.add(Long.parseLong(searchTerm.toString()));
-                continue;
+            } else {
+                searchTermSet.add(searchTerm);
             }
-
-            // Default: Add the original value
-            searchTermSet.add(searchTerm);
         }
-
         return searchTermSet;
     }
 
@@ -237,11 +228,7 @@ public final class ChronicleUtils {
             return;
 
         final Map<String, FieldData> fieldMap = new HashMap<>(fields.size());
-        final Map<String, NavigableSet<String>> fieldIndexMap = new HashMap<>(fields.size());
-
         final Class<?>[] valueType = new Class<?>[1];
-
-        // fastest way to get first value class
         try {
             db.forEachEntry(e -> {
                 if (valueType[0] == null && e.value() != null) {
@@ -249,7 +236,7 @@ public final class ChronicleUtils {
                     throw new RuntimeException("Breaking forEachEntry.");
                 }
             });
-        } catch (final RuntimeException e) {// ignored
+        } catch (final RuntimeException e) {
         }
 
         for (final String field : fields) {
@@ -258,30 +245,23 @@ public final class ChronicleUtils {
                 fieldMap.put(field, fieldGetterHandle);
         }
 
-        db.forEachEntry(entry -> {
-            final K key = entry.key().get();
-            final V value = entry.value().get();
-            for (final String field : fieldMap.keySet()) {
-                final FieldData fieldData = fieldMap.get(field);
-                final NavigableSet<String> indexSet = fieldIndexMap.computeIfAbsent(field, k -> new TreeSet<>());
-                try {
-                    final Object currentValue = fieldData.getterHandle.invoke(value);
-                    indexSet.add(MAP_DB.createIndexKey(Objects.toString(currentValue, "null"), key.toString()));
-                } catch (final Throwable e) {
-                    // should not happen, all fields are public
-                }
-            }
-        });
-
-        // Write to disk in parallel
-        fieldIndexMap.entrySet().parallelStream().forEach(entry -> {
-            final String indexPath = indexDirPath + "/" + entry.getKey();
+        fieldMap.keySet().parallelStream().forEach(field -> {
+            final String indexPath = indexDirPath + "/" + field;
             final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
             synchronized (lock) {
                 final var indexDb = MAP_DB.openIndex(indexPath);
                 if (indexDb != null) {
                     try {
-                        indexDb.addAll(entry.getValue());
+                        db.forEachEntry(entry -> {
+                            final K key = entry.key().get();
+                            final V value = entry.value().get();
+                            try {
+                                final Object currentValue = fieldMap.get(field).getterHandle.invoke(value);
+                                indexDb.add(
+                                        MAP_DB.createIndexKey(Objects.toString(currentValue, "null"), key.toString()));
+                            } catch (final Throwable e) {
+                            }
+                        });
                     } finally {
                         MAP_DB.closeIndex(indexPath);
                     }

@@ -82,7 +82,7 @@ public final class MapDb {
                         .make()
                         .hashMap("map")
                         .keySerializer(new SerializerCompressionWrapper<>(Serializer.STRING))
-                        .valueSerializer(new SerializerCompressionWrapper<>(Serializer.STRING))
+                        .valueSerializer(new SerializerCompressionWrapper<>(Serializer.STRING_INTERN))
                         .createOrOpen();
                 return new MapEntry((HTreeMap<String, String>) map);
             } catch (final Exception e) {
@@ -144,7 +144,7 @@ public final class MapDb {
                         .concurrencyScale(MAP_DB_SEGMENTS)
                         .make();
                 final var tree = db.treeSet("index")
-                        .serializer(new SerializerCompressionWrapper<>(Serializer.STRING))
+                        .serializer(new SerializerCompressionWrapper<>(Serializer.STRING_INTERN))
                         .createOrOpen();
                 return new TreeEntry(db, tree);
             } catch (final Exception e) {
