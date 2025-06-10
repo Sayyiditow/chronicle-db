@@ -434,7 +434,7 @@ public final class ChronicleUtils {
         final MethodHandle headersMethod = classData.headerHandle;
         final MethodHandle rowMethod = classData.rowHandle;
         final String[] headerList = (String[]) headersMethod.invoke(sampleValue);
-        final List<Object[]> rowList = new ArrayList<>(1000);
+        final List<Object[]> rowList = new ArrayList<>(map.size());
 
         for (final var entry : map.entrySet()) {
             rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));

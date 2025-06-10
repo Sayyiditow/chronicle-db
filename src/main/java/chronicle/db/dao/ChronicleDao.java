@@ -2125,11 +2125,11 @@ public interface ChronicleDao<V> {
      */
     default Map<String, LinkedHashMap<String, Object>> subsetOfValues(final Map<String, V> initialMap,
             final String[] fields) {
-        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>();
+        final var map = new HashMap<String, LinkedHashMap<String, Object>>(initialMap.size());
 
-        initialMap.entrySet().parallelStream().forEach(entry -> {
+        for (final var entry : initialMap.entrySet()) {
             CHRONICLE_UTILS.subsetOfValues(fields, entry, map, name());
-        });
+        }
 
         return map;
     }
