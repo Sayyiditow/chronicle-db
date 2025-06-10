@@ -1478,10 +1478,6 @@ public interface ChronicleDao<V> {
 
         final List<String> keysToRemove = new ArrayList<>();
         for (final var key : matchingKeys) {
-            if (key == null || key.contains(MapDb.INDEX_DELIMITER)) {
-                keysToRemove.add(key);
-                continue;
-            }
             final boolean removeKey = switch (searchType) {
                 case EQUAL -> !index.contains(searchTerm + MapDb.INDEX_DELIMITER + key);
                 case NOT_EQUAL -> index.contains(searchTerm + MapDb.INDEX_DELIMITER + key);
@@ -1627,6 +1623,56 @@ public interface ChronicleDao<V> {
             }
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
         }
+
+        return matchingKeys;
+    }
+
+    default Set<String> indexedSearch(final Search search, final NavigableSet<String> index,
+            final Set<String> matchingKeys, final int limit) {
+        Logger.info("Index searching at [{}] for {}.", dataPath(), search);
+        if (index == null || index.isEmpty()) {
+            return Collections.emptySet();
+        }
+
+        final SearchType searchType = search.searchType();
+        final String searchTerm = String.valueOf(search.searchTerm());
+        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? new HashSet<>((List<String>) search.searchTerm())
+                : null;
+        final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<String>) search.searchTerm() : null;
+
+        final List<String> keysToRemove = new ArrayList<>();
+        for (final var key : matchingKeys) {
+            if (matchingKeys.size() >= limit) {
+                break;
+            }
+            final boolean removeKey = switch (searchType) {
+                case EQUAL -> !index.contains(searchTerm + MapDb.INDEX_DELIMITER + key);
+                case NOT_EQUAL -> index.contains(searchTerm + MapDb.INDEX_DELIMITER + key);
+                case LESS -> !MAP_DB.isLessThanIndexMatch(index, searchTerm, key);
+                case LESS_OR_EQUAL -> !MAP_DB.isLessThanOrEqualIndexMatch(index, searchTerm, key);
+                case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, searchTerm, key);
+                case GREATER_OR_EQUAL -> !MAP_DB.isGreaterThanOrEqualIndexMatch(index, searchTerm, key);
+                case LIKE -> !MAP_DB.isLikeIndexMatch(index, searchTerm, key);
+                case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, searchTerm, key);
+                case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, searchTerm, key);
+                case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, searchTerm, key);
+                case IN -> searchTermSet.stream().noneMatch(term -> index.contains(term + MapDb.INDEX_DELIMITER + key));
+                case NOT_IN ->
+                    searchTermSet.stream().anyMatch(term -> index.contains(term + MapDb.INDEX_DELIMITER + key));
+                case BETWEEN ->
+                    !MAP_DB.isBetweenIndexMatch(index, searchTermBetween.get(0), searchTermBetween.get(1), key);
+                default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
+            };
+            if (removeKey) {
+                keysToRemove.add(key);
+            }
+        }
+
+        if (matchingKeys.size() == keysToRemove.size()) {
+            return Collections.emptySet();
+        }
+        matchingKeys.removeAll(keysToRemove);
 
         return matchingKeys;
     }
@@ -1802,9 +1848,13 @@ public interface ChronicleDao<V> {
                     final Search search = indexedSearches.get(i);
                     final var path = getIndexPath(search.field());
                     final var indexDb2 = MAP_DB.openIndex(path);
+                    final boolean isLastIndexedSearch = (i == indexedSearches.size() - 1)
+                            && nonIndexedSearches.isEmpty();
+
                     if (indexDb2 != null) {
                         try {
-                            matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
+                            matchingKeys = isLastIndexedSearch ? indexedSearch(search, indexDb2, matchingKeys, limit)
+                                    : indexedSearch(search, indexDb2, matchingKeys);
                         } finally {
                             MAP_DB.closeIndex(path);
                         }
@@ -1816,7 +1866,7 @@ public interface ChronicleDao<V> {
                 }
 
                 if (nonIndexedSearches.isEmpty()) {
-                    return get(CHRONICLE_UTILS.limitSetValues(matchingKeys, limit));
+                    return get(matchingKeys);
                 }
 
                 db = get(matchingKeys);
@@ -1877,6 +1927,7 @@ public interface ChronicleDao<V> {
                 final Search search = indexedSearches.get(i);
                 final var indexFilePath = getIndexPath(search.field());
                 final var indexDb2 = MAP_DB.openIndex(indexFilePath);
+
                 if (indexDb2 != null) {
                     try {
                         matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
@@ -1940,9 +1991,13 @@ public interface ChronicleDao<V> {
                 final Search search = indexedSearches.get(i);
                 final var indexFilePath = getIndexPath(search.field());
                 final var indexDb2 = MAP_DB.openIndex(indexFilePath);
+                final boolean isLastIndexedSearch = (i == indexedSearches.size() - 1)
+                        && nonIndexedSearches.isEmpty();
+
                 if (indexDb2 != null) {
                     try {
-                        matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
+                        matchingKeys = isLastIndexedSearch ? indexedSearch(search, indexDb2, matchingKeys, limit)
+                                : indexedSearch(search, indexDb2, matchingKeys);
                     } finally {
                         MAP_DB.closeIndex(indexFilePath);
                     }
@@ -1954,7 +2009,7 @@ public interface ChronicleDao<V> {
             }
 
             if (nonIndexedSearches.isEmpty()) {
-                return get(CHRONICLE_UTILS.limitSetValues(matchingKeys, limit));
+                return get(matchingKeys);
             }
         }
 
