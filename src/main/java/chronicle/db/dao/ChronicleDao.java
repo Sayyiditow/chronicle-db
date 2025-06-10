@@ -1672,6 +1672,7 @@ public interface ChronicleDao<V> {
         Map<String, V> db = null;
         // Step 2: Process indexed searches to get intersecting keys
         if (!indexedSearches.isEmpty()) {
+            Search.sortSearchesByTypePriority(indexedSearches);
             Set<String> matchingKeys = new HashSet<>();
             final var firstSearch = indexedSearches.get(0);
             final var indexFilePath = getIndexPath(firstSearch.field());
@@ -1717,6 +1718,7 @@ public interface ChronicleDao<V> {
             }
         }
 
+        Search.sortSearchesByTypePriority(nonIndexedSearches);
         // Step 3: Process non-indexed searches
         for (final var search : nonIndexedSearches) {
             if (db == null) {
@@ -1772,6 +1774,7 @@ public interface ChronicleDao<V> {
 
         Map<String, V> db = null;
         if (!indexedSearches.isEmpty()) {
+            Search.sortSearchesByTypePriority(indexedSearches);
             Set<String> matchingKeys = new HashSet<>();
             final var firstSearch = indexedSearches.get(0);
             final var indexFilePath = getIndexPath(firstSearch.field());
@@ -1820,6 +1823,7 @@ public interface ChronicleDao<V> {
             }
         }
 
+        Search.sortSearchesByTypePriority(nonIndexedSearches);
         // Step 3: Process non-indexed searches
         for (final var search : nonIndexedSearches) {
             if (db == null) {
@@ -1868,6 +1872,7 @@ public interface ChronicleDao<V> {
         }
 
         if (!indexedSearches.isEmpty()) {
+            Search.sortSearchesByTypePriority(indexedSearches);
             for (int i = 0; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
                 final Search search = indexedSearches.get(i);
                 final var indexFilePath = getIndexPath(search.field());
@@ -1896,6 +1901,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
+        Search.sortSearchesByTypePriority(nonIndexedSearches);
         // Step 4: Process non-indexed searches
         for (final var search : nonIndexedSearches) {
             db = search(db, search);
@@ -1929,6 +1935,7 @@ public interface ChronicleDao<V> {
 
         // Step 2: Process indexed searches to get intersecting keys
         if (!indexedSearches.isEmpty()) {
+            Search.sortSearchesByTypePriority(indexedSearches);
             for (int i = 0; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
                 final Search search = indexedSearches.get(i);
                 final var indexFilePath = getIndexPath(search.field());
@@ -1957,6 +1964,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
+        Search.sortSearchesByTypePriority(nonIndexedSearches);
         // Step 4: Process non-indexed searches
         for (final var search : nonIndexedSearches) {
             db = search(db, search);
