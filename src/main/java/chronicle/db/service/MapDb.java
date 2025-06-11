@@ -12,7 +12,6 @@ import org.mapdb.DB;
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
-import org.mapdb.serializer.SerializerCompressionWrapper;
 import org.tinylog.Logger;
 
 public final class MapDb {
@@ -81,8 +80,8 @@ public final class MapDb {
                         .concurrencyScale(MAP_DB_SEGMENTS)
                         .make()
                         .hashMap("map")
-                        .keySerializer(new SerializerCompressionWrapper<>(Serializer.STRING))
-                        .valueSerializer(new SerializerCompressionWrapper<>(Serializer.STRING_INTERN))
+                        .keySerializer(Serializer.STRING)
+                        .valueSerializer(Serializer.STRING_INTERN)
                         .createOrOpen();
                 return new MapEntry((HTreeMap<String, String>) map);
             } catch (final Exception e) {
@@ -144,7 +143,7 @@ public final class MapDb {
                         .concurrencyScale(MAP_DB_SEGMENTS)
                         .make();
                 final var tree = db.treeSet("index")
-                        .serializer(new SerializerCompressionWrapper<>(Serializer.STRING_INTERN))
+                        .serializer(Serializer.STRING_INTERN)
                         .createOrOpen();
                 return new TreeEntry(db, tree);
             } catch (final Exception e) {
@@ -432,14 +431,9 @@ public final class MapDb {
      */
     public boolean isBetweenIndexMatch(final NavigableSet<String> index, final Object lowerBound,
             final Object upperBound, final String suffix) {
-        final String lowerKey = lowerBound + MapDb.INDEX_DELIMITER + suffix;
-        final String upperKey = upperBound + MapDb.INDEX_DELIMITER + suffix;
+        final String lowerKey = String.valueOf(lowerBound) + MapDb.INDEX_DELIMITER + suffix;
+        final String upperKey = String.valueOf(upperBound) + MapDb.INDEX_DELIMITER + suffix;
         final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, true);
-        for (final String key : subset) {
-            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
-                return true;
-            }
-        }
-        return false;
+        return !subset.isEmpty(); // Rely on subSet bounds
     }
 }
