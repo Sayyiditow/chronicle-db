@@ -430,8 +430,8 @@ public final class MapDb {
      * @return true if the index entry for the suffix has a prefix >= lowerBound and
      *         <= upperBound
      */
-    public boolean isBetweenIndexMatch(final NavigableSet<String> index, final String lowerBound,
-            final String upperBound, final String suffix) {
+    public boolean isBetweenIndexMatch(final NavigableSet<String> index, final Object lowerBound,
+            final Object upperBound, final String suffix) {
         final String lowerKey = lowerBound + MapDb.INDEX_DELIMITER + suffix;
         final String upperKey = upperBound + MapDb.INDEX_DELIMITER + suffix;
         final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, true);
