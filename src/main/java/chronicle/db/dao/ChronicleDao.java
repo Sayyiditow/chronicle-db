@@ -109,26 +109,26 @@ public interface ChronicleDao<V> {
      * @return ChronicleMap<String, V>
      * @throws IOException
      */
-    private ChronicleMap<String, V> openDb() throws IOException {
+    default ChronicleMap<String, V> openDb() throws IOException {
         return CHRONICLE_DB.open(name(), entries(), averageKey(), averageValue(), dataPath() + DATA_DIR + DATA_FILE,
                 bloatFactor());
     }
 
-    private ChronicleMap<String, V> openDb(final String fileName) throws IOException {
+    default ChronicleMap<String, V> openDb(final String fileName) throws IOException {
         return CHRONICLE_DB.open(name(), entries(), averageKey(), averageValue(), dataPath() + DATA_DIR + fileName,
                 bloatFactor());
     }
 
-    private ChronicleMap<String, V> openDb(final String fileName, final long entries) throws IOException {
+    default ChronicleMap<String, V> openDb(final String fileName, final long entries) throws IOException {
         return CHRONICLE_DB.open(name(), entries, averageKey(), averageValue(), dataPath() + DATA_DIR + fileName,
                 bloatFactor());
     }
 
-    private void closeDb() {
+    default void closeDb() {
         CHRONICLE_DB.close(dataPath() + DATA_DIR + DATA_FILE);
     }
 
-    private void closeDb(final String fileName) {
+    default void closeDb(final String fileName) {
         CHRONICLE_DB.close(dataPath() + DATA_DIR + fileName);
     }
 
@@ -252,7 +252,7 @@ public interface ChronicleDao<V> {
     /**
      * Cache to store data file names
      */
-    private Set<String> getDataFiles() {
+    default Set<String> getDataFiles() {
         return DATA_FILE_CACHE.computeIfAbsent(dataPath(), k -> {
             try (final var stream = Files.list(Path.of(dataPath() + DATA_DIR))) {
                 final var dataFiles = stream.map(Path::getFileName).map(Path::toString)

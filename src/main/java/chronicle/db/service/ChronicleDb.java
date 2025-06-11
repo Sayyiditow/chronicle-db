@@ -156,10 +156,10 @@ public final class ChronicleDb {
     }
 
     public <V> Map<String, V> getMapForMultiInserts(final ChronicleDao<V> dao) {
-        return new HashMap<String, V>();
+        return new HashMap<String, V>(1000);
     }
 
     public <V> ConcurrentMap<String, V> getConcurrentMapForMultiInserts(final ChronicleDao<V> dao) {
-        return new ConcurrentHashMap<String, V>();
+        return new ConcurrentHashMap<String, V>(1000);
     }
 }
