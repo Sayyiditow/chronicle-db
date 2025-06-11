@@ -136,16 +136,21 @@ public final class ChronicleUtils {
     public Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
         final HashSet<Object> searchTermSet = SEARCH_TERM_SET.get();
         searchTermSet.clear();
-        for (final Object searchTerm : searchTerms) {
-            if (fieldClass.isEnum() && searchTerm instanceof String) {
-                searchTermSet.add(toEnum(fieldClass, searchTerm));
-            } else if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
-                searchTermSet.add(Long.parseLong(searchTerm.toString()));
-            } else {
-                searchTermSet.add(searchTerm);
+        try {
+            for (final Object searchTerm : searchTerms) {
+                if (fieldClass.isEnum() && searchTerm instanceof String) {
+                    searchTermSet.add(toEnum(fieldClass, searchTerm));
+                } else if (fieldClass == long.class
+                        && (searchTerm instanceof String || searchTerm instanceof Integer)) {
+                    searchTermSet.add(Long.parseLong(searchTerm.toString()));
+                } else {
+                    searchTermSet.add(searchTerm);
+                }
             }
+            return searchTermSet;
+        } finally {
+            SEARCH_TERM_SET.remove();
         }
-        return searchTermSet;
     }
 
     public Object setSearchTermNonIndexed(final Object searchTerm, final Class<?> fieldClass) {

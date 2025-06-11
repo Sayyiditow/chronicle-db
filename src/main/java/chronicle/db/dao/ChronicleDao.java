@@ -20,7 +20,6 @@ import java.util.NavigableSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -1217,22 +1216,17 @@ public interface ChronicleDao<V> {
      * @param db     the map
      * @param search object search
      * @return a map of the fitting values
+     * @throws Throwable
      */
-    default Map<String, V> search(final Map<String, V> db, final Search search) {
+    default Map<String, V> search(final Map<String, V> db, final Search search) throws Throwable {
         Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
-        final Map<String, V> map = new ConcurrentHashMap<>(Math.min(db.size(), 1000));
+        final Map<String, V> map = new HashMap<>(Math.min(db.size(), 1000));
 
-        db.entrySet().parallelStream()
-                .filter(entry -> {
-                    try {
-                        return CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue());
-                    } catch (final Throwable e) {
-                        Logger.error("Search failed on [{}]. {}", entry.getKey(), search);
-                        Logger.error(e);
-                        return false;
-                    }
-                })
-                .forEach(entry -> map.put(entry.getKey(), db.get(entry.getKey())));
+        for (final var entry : db.entrySet()) {
+            if (CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue())) {
+                map.put(entry.getKey(), db.get(entry.getKey()));
+            }
+        }
 
         return map;
     }
@@ -1265,31 +1259,22 @@ public interface ChronicleDao<V> {
      * 
      * @param search object search
      * @return a map of the fitting values
+     * @throws Throwable
      */
-    default Map<String, V> search(final Map<String, V> db, final Search search, final int limit) {
+    default Map<String, V> search(final Map<String, V> db, final Search search, final int limit) throws Throwable {
         Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
-        final Map<String, V> map = new ConcurrentHashMap<>(Math.min(db.size(), 1000));
-        final AtomicInteger counter = new AtomicInteger(0);
+        final Map<String, V> map = new HashMap<>(Math.min(db.size(), 1000));
 
-        db.entrySet().parallelStream()
-                .filter(entry -> {
-                    try {
-                        return CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue());
-                    } catch (final Throwable e) {
-                        Logger.error("Search failed on [{}]. {}", entry.getKey(), search);
-                        Logger.error(e);
-                        return false;
-                    }
-                })
-                .forEach(entry -> {
-                    if (counter.get() < limit) {
-                        if (counter.incrementAndGet() <= limit) {
-                            map.put(entry.getKey(), entry.getValue());
-                        }
-                    }
-                });
+        for (final var entry : db.entrySet()) {
+            if (CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue())) {
+                map.put(entry.getKey(), entry.getValue());
+            }
+            if (map.size() >= limit) {
+                break;
+            }
+        }
 
-        return CHRONICLE_UTILS.limitMapValues(map, limit);
+        return map;
     }
 
     /**
@@ -1326,7 +1311,7 @@ public interface ChronicleDao<V> {
      * @return a map of the fitting values
      * @throws IOException
      */
-    default Map<String, V> search(final Search search, final int limit) throws IOException {
+    default Map<String, V> search(final Search search, final int limit) throws Throwable {
         Logger.info("Searching DB at [{}] for {} with limit {}.", dataPath(), search, limit);
         final Map<String, V> results = new HashMap<>();
         final var files = getDataFiles();
