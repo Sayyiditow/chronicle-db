@@ -288,17 +288,21 @@ public interface ChronicleDao<V> {
      */
     private void initIndex(final Set<String> fields) throws IOException {
         getDataFiles().parallelStream().forEach(file -> {
-            try {
-                final var db = openDb(file);
-                if (db != null) {
-                    try {
-                        initIndex(db, fields, dataPath() + INDEX_DIR);
-                    } finally {
-                        closeDb(file);
+            final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+            synchronized (lock) {
+                try {
+                    final var db = openDb(file);
+
+                    if (db != null) {
+                        try {
+                            initIndex(db, fields, dataPath() + INDEX_DIR);
+                        } finally {
+                            closeDb(file);
+                        }
                     }
+                } catch (final IOException e) {
+                    // ignored
                 }
-            } catch (final IOException e) {
-                // ignored
             }
         });
     }
