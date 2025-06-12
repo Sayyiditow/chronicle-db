@@ -46,7 +46,6 @@ public interface ChronicleDao<V> {
             DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
             KEY_FILE = "keys";
     String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
-    ThreadLocal<HashSet<String>> MATCHING_KEYS = ThreadLocal.withInitial(() -> new HashSet<>(1000));
 
     /**
      * Name of db for logging purposes
@@ -895,15 +894,17 @@ public interface ChronicleDao<V> {
         }
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+        V prevValue = null;
+        Set<String> dataFiles;
+        var file = DATA_FILE;
         synchronized (lock) {
-            final var dataFiles = getDataFiles();
-            var file = getDbFile(key, dataFiles);
+            dataFiles = getDataFiles();
+            file = getDbFile(key, dataFiles);
             if (file == null) {
                 file = DATA_FILE;
             }
-            var db = openDb(file);
-            V prevValue = null;
 
+            var db = openDb(file);
             if (db != null) {
                 try {
                     // only rotate if current file is full and insert mode
@@ -915,22 +916,22 @@ public interface ChronicleDao<V> {
                     closeDb(file);
                 }
             }
-
-            var status = PutStatus.INSERTED;
-            if (prevValue != null) {
-                CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                        Map.of(key, prevValue));
-                status = PutStatus.UPDATED;
-            } else {
-                if (dataFiles.size() > 1) {
-                    addToKeyMap(key, file);
-                }
-                CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                        Collections.emptyMap());
-            }
-            Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
-            return status;
         }
+
+        var status = PutStatus.INSERTED;
+        if (prevValue != null) {
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
+                    Map.of(key, prevValue));
+            status = PutStatus.UPDATED;
+        } else {
+            if (dataFiles.size() > 1) {
+                addToKeyMap(key, file);
+            }
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
+                    Collections.emptyMap());
+        }
+        Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
+        return status;
     }
 
     /**
@@ -954,11 +955,11 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
+        V prevValue = null;
+        var status = PutStatus.FAILED;
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var file = getDbFile(key, getDataFiles());
-            var status = PutStatus.FAILED;
-            V prevValue = null;
             final var db = openDb(file);
 
             if (db != null) {
@@ -971,15 +972,15 @@ public interface ChronicleDao<V> {
                     closeDb(file);
                 }
             }
-
-            if (status == PutStatus.UPDATED) {
-                CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                        Map.of(key, prevValue));
-            }
-            Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
-
-            return status;
         }
+
+        if (status == PutStatus.UPDATED) {
+            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
+                    Map.of(key, prevValue));
+        }
+        Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
+
+        return status;
     }
 
     /**
@@ -1003,10 +1004,12 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
+        Set<String> dataFiles;
+        var file = DATA_FILE;
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var dataFiles = getDataFiles();
-            var file = getDbFile(key, dataFiles);
+            dataFiles = getDataFiles();
+            file = getDbFile(key, dataFiles);
             if (file == null) {
                 file = DATA_FILE;
             }
@@ -1015,7 +1018,6 @@ public interface ChronicleDao<V> {
             }
 
             var db = openDb();
-
             if (db != null) {
                 try {
                     // only rotate if current file is full and insert mode
@@ -1025,14 +1027,14 @@ public interface ChronicleDao<V> {
                     closeDb();
                 }
             }
-
-            if (dataFiles.size() > 1) {
-                addToKeyMap(key, DATA_FILE);
-            }
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap());
-            Logger.info("[{}] using key [{}] at [{}].", PutStatus.INSERTED, key, dataPath());
-            return PutStatus.INSERTED;
         }
+
+        if (dataFiles.size() > 1) {
+            addToKeyMap(key, DATA_FILE);
+        }
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap());
+        Logger.info("[{}] using key [{}] at [{}].", PutStatus.INSERTED, key, dataPath());
+        return PutStatus.INSERTED;
     }
 
     /**
@@ -1053,13 +1055,14 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
+        final int putSize = map.size();
+        final var prevValues = new HashMap<String, V>(putSize);
+        final Set<String> keysToInsert = new HashSet<>(map.keySet());
+        final var keyMapUpdate = new HashMap<String, String>(putSize);
+        var status = PutStatus.INSERTED;
+
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final int putSize = map.size();
-            final var prevValues = new HashMap<String, V>(putSize);
-            final Set<String> keysToInsert = new HashSet<>(map.keySet());
-            final var keyMapUpdate = new HashMap<String, String>(putSize);
-
             // update old records first then only move to new record inserts.
             final var dataFiles = getDataFiles();
             final var dbFiles = getDbFiles(keysToInsert, dataFiles);
@@ -1082,7 +1085,9 @@ public interface ChronicleDao<V> {
                 }
             }
 
-            final var status = !prevValues.isEmpty() ? PutStatus.UPDATED : PutStatus.INSERTED;
+            if (!prevValues.isEmpty()) {
+                status = PutStatus.UPDATED;
+            }
             if (!keysToInsert.isEmpty()) {
                 // Insert new records (only keys in keysToInsert)
                 var db = openDb();
@@ -1101,16 +1106,16 @@ public interface ChronicleDao<V> {
                     }
                 }
             }
-
-            if (!keyMapUpdate.isEmpty()) {
-                addToKeyMap(keyMapUpdate);
-            }
-
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
-            Logger.info("Put {} records at [{}].", putSize, dataPath());
-
-            return status;
         }
+
+        if (!keyMapUpdate.isEmpty()) {
+            addToKeyMap(keyMapUpdate);
+        }
+
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+        Logger.info("Put {} records at [{}].", putSize, dataPath());
+
+        return status;
     }
 
     /**
@@ -1127,12 +1132,12 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
+        var status = PutStatus.UPDATED;
+        final var mapSize = map.size();
+        final var prevValues = new HashMap<String, V>(mapSize);
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var dbFiles = getDbFiles(map.keySet(), getDataFiles());
-            final var mapSize = map.size();
-            final var prevValues = new HashMap<String, V>(mapSize);
-            var status = PutStatus.UPDATED;
 
             for (final var entry : dbFiles.entrySet()) {
                 final var file = entry.getKey();
@@ -1147,23 +1152,22 @@ public interface ChronicleDao<V> {
                     }
                 }
             }
-
-            final var prevValueSize = prevValues.size();
-            if (prevValueSize != mapSize) {
-                final var mapKeySet = map.keySet();
-                final var prevValueKeySet = prevValues.keySet();
-                final var extraSize = mapKeySet.size() - prevValueKeySet.size();
-                mapKeySet.removeAll(prevValues.keySet());
-
-                Logger.error("{} extra keys found during update at [{}]. New keys: [{}].", extraSize, dataPath(),
-                        mapKeySet);
-                status = prevValueSize == 0 ? PutStatus.FAILED : PutStatus.PARTIAL;
-            }
-
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
-            Logger.info("Updated {} records at [{}].", prevValueSize, dataPath());
-            return status;
         }
+        final var prevValueSize = prevValues.size();
+        if (prevValueSize != mapSize) {
+            final var mapKeySet = map.keySet();
+            final var prevValueKeySet = prevValues.keySet();
+            final var extraSize = mapKeySet.size() - prevValueKeySet.size();
+            mapKeySet.removeAll(prevValues.keySet());
+
+            Logger.error("{} extra keys found during update at [{}]. New keys: [{}].", extraSize, dataPath(),
+                    mapKeySet);
+            status = prevValueSize == 0 ? PutStatus.FAILED : PutStatus.PARTIAL;
+        }
+
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+        Logger.info("Updated {} records at [{}].", prevValueSize, dataPath());
+        return status;
     }
 
     /**
@@ -1177,11 +1181,12 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
+        final int putSize = map.size();
+        final var keyMapUpdate = new HashMap<String, String>();
+
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final int putSize = map.size();
             final var dataFiles = getDataFiles();
-            final var keyMapUpdate = new HashMap<String, String>();
             var db = openDb();
             if (db != null) {
                 try {
@@ -1198,16 +1203,16 @@ public interface ChronicleDao<V> {
                     closeDb();
                 }
             }
-
-            if (!keyMapUpdate.isEmpty()) {
-                addToKeyMap(keyMapUpdate);
-            }
-
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, Collections.emptyMap());
-            Logger.info("Inserted {} records at [{}].", putSize, dataPath());
-
-            return PutStatus.INSERTED;
         }
+
+        if (!keyMapUpdate.isEmpty()) {
+            addToKeyMap(keyMapUpdate);
+        }
+
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, Collections.emptyMap());
+        Logger.info("Inserted {} records at [{}].", putSize, dataPath());
+
+        return PutStatus.INSERTED;
     }
 
     /**
@@ -1357,94 +1362,88 @@ public interface ChronicleDao<V> {
             return Collections.emptySet();
         }
 
-        final Set<String> matchingKeys = MATCHING_KEYS.get();
-        matchingKeys.clear();
-        try {
-            final SearchType searchType = search.searchType();
-            final String searchTerm = String.valueOf(search.searchTerm());
-            final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                    ? new HashSet<>((List<String>) search.searchTerm())
-                    : null;
-            final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
+        final Set<String> matchingKeys = new HashSet<>(1000);
+        final SearchType searchType = search.searchType();
+        final String searchTerm = String.valueOf(search.searchTerm());
+        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? new HashSet<>((List<String>) search.searchTerm())
+                : null;
+        final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
-            switch (searchType) {
-                case EQUAL -> {
-                    final var keys = MAP_DB.getExactIndexSubset(index, searchTerm);
-                    populateMatchingKeys(keys, matchingKeys, searchTerm);
+        switch (searchType) {
+            case EQUAL -> {
+                final var keys = MAP_DB.getExactIndexSubset(index, searchTerm);
+                populateMatchingKeys(keys, matchingKeys, searchTerm);
+            }
+            case NOT_EQUAL -> {
+                final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, searchTerm);
+                populateMatchingKeys(keysBefore, matchingKeys);
+                final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, searchTerm);
+                populateMatchingKeys(keysAfter, matchingKeys);
+            }
+            case LESS -> {
+                final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            case LESS_OR_EQUAL -> {
+                final var keys = MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm);
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            case GREATER -> {
+                final var keys = MAP_DB.getGreaterThanIndexSubset(index, searchTerm);
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            case GREATER_OR_EQUAL -> {
+                final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm);
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            case LIKE -> {
+                final var keys = index.stream()
+                        .filter(key -> CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key),
+                                searchTerm))
+                        .toList();
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            case NOT_LIKE -> {
+                final var keys = index.stream()
+                        .filter(key -> !CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key),
+                                searchTerm))
+                        .toList();
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            case STARTS_WITH -> {
+                final var keys = index.subSet(searchTerm, searchTerm + MapDb.NON_CHAR);
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            case ENDS_WITH -> {
+                final var keys = index.stream()
+                        .filter(key -> MAP_DB.extractIndexValue(key).endsWith(searchTerm))
+                        .toList();
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            case IN -> {
+                for (final var term : searchTermSet) {
+                    final var keys = MAP_DB.getExactIndexSubset(index, term);
+                    populateMatchingKeys(keys, matchingKeys, term);
                 }
-                case NOT_EQUAL -> {
-                    final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, searchTerm);
+            }
+            case NOT_IN -> {
+                for (final var term : searchTermSet) {
+                    final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, term);
                     populateMatchingKeys(keysBefore, matchingKeys);
-                    final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, searchTerm);
+                    final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, term);
                     populateMatchingKeys(keysAfter, matchingKeys);
                 }
-                case LESS -> {
-                    final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                case LESS_OR_EQUAL -> {
-                    final var keys = MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm);
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                case GREATER -> {
-                    final var keys = MAP_DB.getGreaterThanIndexSubset(index, searchTerm);
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                case GREATER_OR_EQUAL -> {
-                    final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm);
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                case LIKE -> {
-                    final var keys = index.stream()
-                            .filter(key -> CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key),
-                                    searchTerm))
-                            .toList();
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                case NOT_LIKE -> {
-                    final var keys = index.stream()
-                            .filter(key -> !CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key),
-                                    searchTerm))
-                            .toList();
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                case STARTS_WITH -> {
-                    final var keys = index.subSet(searchTerm, searchTerm + MapDb.NON_CHAR);
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                case ENDS_WITH -> {
-                    final var keys = index.stream()
-                            .filter(key -> MAP_DB.extractIndexValue(key).endsWith(searchTerm))
-                            .toList();
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                case IN -> {
-                    for (final var term : searchTermSet) {
-                        final var keys = MAP_DB.getExactIndexSubset(index, term);
-                        populateMatchingKeys(keys, matchingKeys, term);
-                    }
-                }
-                case NOT_IN -> {
-                    for (final var term : searchTermSet) {
-                        final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, term);
-                        populateMatchingKeys(keysBefore, matchingKeys);
-                        final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, term);
-                        populateMatchingKeys(keysAfter, matchingKeys);
-                    }
-                }
-                case BETWEEN -> {
-                    final String lowerBound = searchTermBetween.get(0) + MapDb.INDEX_DELIMITER + MapDb.ASCII_0;
-                    final String upperBound = searchTermBetween.get(1) + MapDb.INDEX_DELIMITER + MapDb.NON_CHAR;
-                    final var keys = index.subSet(lowerBound, true, upperBound, true);
-                    populateMatchingKeys(keys, matchingKeys);
-                }
-                default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
             }
-            return matchingKeys;
-        } finally {
-            MATCHING_KEYS.remove();
+            case BETWEEN -> {
+                final String lowerBound = searchTermBetween.get(0) + MapDb.INDEX_DELIMITER + MapDb.ASCII_0;
+                final String upperBound = searchTermBetween.get(1) + MapDb.INDEX_DELIMITER + MapDb.NON_CHAR;
+                final var keys = index.subSet(lowerBound, true, upperBound, true);
+                populateMatchingKeys(keys, matchingKeys);
+            }
+            default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
         }
-
+        return matchingKeys;
     }
 
     default Set<String> indexedSearch(final Search search, final NavigableSet<String> index,
@@ -1522,94 +1521,89 @@ public interface ChronicleDao<V> {
             return Collections.emptySet();
         }
 
-        final Set<String> matchingKeys = MATCHING_KEYS.get();
-        matchingKeys.clear();
-        try {
-            final SearchType searchType = search.searchType();
-            final String searchTerm = String.valueOf(search.searchTerm());
-            final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                    ? new HashSet<>((List<String>) search.searchTerm())
-                    : null;
+        final Set<String> matchingKeys = new HashSet<>(1000);
+        final SearchType searchType = search.searchType();
+        final String searchTerm = String.valueOf(search.searchTerm());
+        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? new HashSet<>((List<String>) search.searchTerm())
+                : null;
 
-            switch (searchType) {
-                case EQUAL -> {
-                    final var keys = MAP_DB.getExactIndexSubset(index, searchTerm);
+        switch (searchType) {
+            case EQUAL -> {
+                final var keys = MAP_DB.getExactIndexSubset(index, searchTerm);
+                addKeysUpToLimit(keys, searchTerm, matchingKeys, limit);
+            }
+            case NOT_EQUAL -> {
+                final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, searchTerm);
+                addKeysUpToLimit(keysBefore, matchingKeys, limit);
+                if (matchingKeys.size() < limit) {
+                    final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, searchTerm);
+                    addKeysUpToLimit(keysAfter, matchingKeys, limit);
+                }
+            }
+            case LESS -> {
+                final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
+                addKeysUpToLimit(keys, matchingKeys, limit);
+            }
+            case LESS_OR_EQUAL -> {
+                final var keys = MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm);
+                addKeysUpToLimit(keys, matchingKeys, limit);
+            }
+            case GREATER -> {
+                final var keys = MAP_DB.getGreaterThanIndexSubset(index, searchTerm);
+                addKeysUpToLimit(keys, matchingKeys, limit);
+            }
+            case GREATER_OR_EQUAL -> {
+                final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm);
+                addKeysUpToLimit(keys, matchingKeys, limit);
+            }
+            case STARTS_WITH -> {
+                final var keys = index.subSet(searchTerm, searchTerm + MapDb.NON_CHAR);
+                addKeysUpToLimit(keys, matchingKeys, limit);
+            }
+            case LIKE, NOT_LIKE, ENDS_WITH -> {
+                // These still need full scan but with streaming
+                final Predicate<String> predicate = switch (searchType) {
+                    case LIKE ->
+                        key -> CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm);
+                    case NOT_LIKE ->
+                        key -> !CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm);
+                    case ENDS_WITH -> key -> MAP_DB.extractIndexValue(key).endsWith(searchTerm);
+                    default -> key -> false;
+                };
+
+                // Stream with early termination
+                final var iterator = index.iterator();
+                int count = 0;
+                while (iterator.hasNext() && count < limit) {
+                    final String key = iterator.next();
+                    if (predicate.test(key)) {
+                        matchingKeys.add(key);
+                        count++;
+                    }
+                }
+            }
+            case IN -> {
+                for (final var term : searchTermSet) {
+                    if (matchingKeys.size() >= limit)
+                        break;
+                    final var keys = MAP_DB.getExactIndexSubset(index, term);
                     addKeysUpToLimit(keys, searchTerm, matchingKeys, limit);
                 }
-                case NOT_EQUAL -> {
-                    final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, searchTerm);
-                    addKeysUpToLimit(keysBefore, matchingKeys, limit);
-                    if (matchingKeys.size() < limit) {
-                        final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, searchTerm);
-                        addKeysUpToLimit(keysAfter, matchingKeys, limit);
-                    }
-                }
-                case LESS -> {
-                    final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
-                    addKeysUpToLimit(keys, matchingKeys, limit);
-                }
-                case LESS_OR_EQUAL -> {
-                    final var keys = MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm);
-                    addKeysUpToLimit(keys, matchingKeys, limit);
-                }
-                case GREATER -> {
-                    final var keys = MAP_DB.getGreaterThanIndexSubset(index, searchTerm);
-                    addKeysUpToLimit(keys, matchingKeys, limit);
-                }
-                case GREATER_OR_EQUAL -> {
-                    final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm);
-                    addKeysUpToLimit(keys, matchingKeys, limit);
-                }
-                case STARTS_WITH -> {
-                    final var keys = index.subSet(searchTerm, searchTerm + MapDb.NON_CHAR);
-                    addKeysUpToLimit(keys, matchingKeys, limit);
-                }
-                case LIKE, NOT_LIKE, ENDS_WITH -> {
-                    // These still need full scan but with streaming
-                    final Predicate<String> predicate = switch (searchType) {
-                        case LIKE ->
-                            key -> CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm);
-                        case NOT_LIKE ->
-                            key -> !CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm);
-                        case ENDS_WITH -> key -> MAP_DB.extractIndexValue(key).endsWith(searchTerm);
-                        default -> key -> false;
-                    };
-
-                    // Stream with early termination
-                    final var iterator = index.iterator();
-                    int count = 0;
-                    while (iterator.hasNext() && count < limit) {
-                        final String key = iterator.next();
-                        if (predicate.test(key)) {
-                            matchingKeys.add(key);
-                            count++;
-                        }
-                    }
-                }
-                case IN -> {
-                    for (final var term : searchTermSet) {
-                        if (matchingKeys.size() >= limit)
-                            break;
-                        final var keys = MAP_DB.getExactIndexSubset(index, term);
-                        addKeysUpToLimit(keys, searchTerm, matchingKeys, limit);
-                    }
-                }
-                case NOT_IN -> {
-                    for (final var term : searchTermSet) {
-                        if (matchingKeys.size() >= limit)
-                            break;
-                        final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, term);
-                        addKeysUpToLimit(keysBefore, matchingKeys, limit);
-                        final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, term);
-                        addKeysUpToLimit(keysAfter, matchingKeys, limit);
-                    }
-                }
-                default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
             }
-            return matchingKeys;
-        } finally {
-            MATCHING_KEYS.remove();
+            case NOT_IN -> {
+                for (final var term : searchTermSet) {
+                    if (matchingKeys.size() >= limit)
+                        break;
+                    final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, term);
+                    addKeysUpToLimit(keysBefore, matchingKeys, limit);
+                    final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, term);
+                    addKeysUpToLimit(keysAfter, matchingKeys, limit);
+                }
+            }
+            default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
         }
+        return matchingKeys;
     }
 
     default Set<String> indexedSearch(final Search search, final NavigableSet<String> index,
@@ -1659,27 +1653,22 @@ public interface ChronicleDao<V> {
 
     default Map<String, V> indexedSearch(final Search search) throws IOException {
         final var indexFilePath = getIndexPath(search.field());
-        Set<String> matchingKeys = MATCHING_KEYS.get();
-        matchingKeys.clear();
+        Set<String> matchingKeys = new HashSet<>(1000);
 
-        try {
-            final var indexDb = MAP_DB.openIndex(indexFilePath);
-            if (indexDb != null) {
-                try {
-                    matchingKeys = indexedSearch(search, indexDb);
-                } finally {
-                    MAP_DB.closeIndex(indexFilePath);
-                }
+        final var indexDb = MAP_DB.openIndex(indexFilePath);
+        if (indexDb != null) {
+            try {
+                matchingKeys = indexedSearch(search, indexDb);
+            } finally {
+                MAP_DB.closeIndex(indexFilePath);
             }
-
-            if (!matchingKeys.isEmpty()) {
-                return get(matchingKeys);
-            }
-
-            return Collections.emptyMap();
-        } finally {
-            MATCHING_KEYS.remove();
         }
+
+        if (!matchingKeys.isEmpty()) {
+            return get(matchingKeys);
+        }
+
+        return Collections.emptyMap();
     }
 
     default Map<String, V> multiSearch(final List<Search> searches) throws Throwable {
@@ -1703,55 +1692,49 @@ public interface ChronicleDao<V> {
         Map<String, V> db = null;
         // Step 2: Process indexed searches to get intersecting keys
         if (!indexedSearches.isEmpty()) {
-            Set<String> matchingKeys = MATCHING_KEYS.get();
-            matchingKeys.clear();
-            try {
-                final var firstSearch = indexedSearches.get(0);
-                final var indexFilePath = getIndexPath(firstSearch.field());
-                final var indexDb = MAP_DB.openIndex(indexFilePath);
-                if (indexDb != null) {
-                    try {
-                        matchingKeys = indexedSearch(firstSearch, indexDb);
-                    } finally {
-                        MAP_DB.closeIndex(indexFilePath);
-                    }
+            Set<String> matchingKeys = new HashSet<>(1000);
+            final var firstSearch = indexedSearches.get(0);
+            final var indexFilePath = getIndexPath(firstSearch.field());
+            final var indexDb = MAP_DB.openIndex(indexFilePath);
+            if (indexDb != null) {
+                try {
+                    matchingKeys = indexedSearch(firstSearch, indexDb);
+                } finally {
+                    MAP_DB.closeIndex(indexFilePath);
                 }
-
-                if (matchingKeys.isEmpty()) {
-                    return Collections.emptyMap(); // Early exit if no matches
-                }
-
-                if (nonIndexedSearches.isEmpty() && indexedSearches.size() == 1) {
-                    return get(matchingKeys);
-                }
-
-                if (!matchingKeys.isEmpty()) {
-                    for (int i = 1; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
-                        final Search search = indexedSearches.get(i);
-                        final var path = getIndexPath(search.field());
-                        final var indexDb2 = MAP_DB.openIndex(path);
-                        if (indexDb2 != null) {
-                            try {
-                                matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
-                            } finally {
-                                MAP_DB.closeIndex(path);
-                            }
-                        }
-
-                        if (matchingKeys.isEmpty()) {
-                            return Collections.emptyMap(); // Early exit if no matches
-                        }
-                    }
-
-                    db = get(matchingKeys);
-                    if (nonIndexedSearches.isEmpty()) {
-                        return db;
-                    }
-                }
-            } finally {
-                MATCHING_KEYS.remove();
             }
 
+            if (matchingKeys.isEmpty()) {
+                return Collections.emptyMap(); // Early exit if no matches
+            }
+
+            if (nonIndexedSearches.isEmpty() && indexedSearches.size() == 1) {
+                return get(matchingKeys);
+            }
+
+            if (!matchingKeys.isEmpty()) {
+                for (int i = 1; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
+                    final Search search = indexedSearches.get(i);
+                    final var path = getIndexPath(search.field());
+                    final var indexDb2 = MAP_DB.openIndex(path);
+                    if (indexDb2 != null) {
+                        try {
+                            matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
+                        } finally {
+                            MAP_DB.closeIndex(path);
+                        }
+                    }
+
+                    if (matchingKeys.isEmpty()) {
+                        return Collections.emptyMap(); // Early exit if no matches
+                    }
+                }
+
+                db = get(matchingKeys);
+                if (nonIndexedSearches.isEmpty()) {
+                    return db;
+                }
+            }
         }
 
         // Step 3: Process non-indexed searches
@@ -1811,59 +1794,54 @@ public interface ChronicleDao<V> {
 
         Map<String, V> db = null;
         if (indexedSearchSize != 0) {
-            Set<String> matchingKeys = MATCHING_KEYS.get();
-            matchingKeys.clear();
-            try {
-                final var firstSearch = indexedSearches.get(0);
-                final var indexFilePath = getIndexPath(firstSearch.field());
-                final var indexDb = MAP_DB.openIndex(indexFilePath);
-                if (indexDb != null) {
-                    try {
-                        if (nonIndexedSearchesEmpty && indexedSearchSize == 1) {
-                            return get(indexedSearch(firstSearch, indexDb, limit));
+            Set<String> matchingKeys = new HashSet<>(1000);
+            final var firstSearch = indexedSearches.get(0);
+            final var indexFilePath = getIndexPath(firstSearch.field());
+            final var indexDb = MAP_DB.openIndex(indexFilePath);
+            if (indexDb != null) {
+                try {
+                    if (nonIndexedSearchesEmpty && indexedSearchSize == 1) {
+                        return get(indexedSearch(firstSearch, indexDb, limit));
+                    }
+                    matchingKeys = indexedSearch(firstSearch, indexDb);
+                } finally {
+                    MAP_DB.closeIndex(indexFilePath);
+                }
+            }
+
+            // Early return if first indexed search yields no results
+            if (matchingKeys.isEmpty()) {
+                return Collections.emptyMap();
+            }
+
+            if (!matchingKeys.isEmpty()) {
+                for (int i = 1; i < indexedSearchSize && !matchingKeys.isEmpty(); i++) {
+                    final Search search = indexedSearches.get(i);
+                    final var path = getIndexPath(search.field());
+                    final var indexDb2 = MAP_DB.openIndex(path);
+                    final boolean isLastIndexedSearch = (i == indexedSearchSize - 1)
+                            && nonIndexedSearchesEmpty;
+
+                    if (indexDb2 != null) {
+                        try {
+                            if (isLastIndexedSearch) {
+                                return get(indexedSearch(search, indexDb2, matchingKeys, limit));
+                            }
+                            matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
+                        } finally {
+                            MAP_DB.closeIndex(path);
                         }
-                        matchingKeys = indexedSearch(firstSearch, indexDb);
-                    } finally {
-                        MAP_DB.closeIndex(indexFilePath);
+                    }
+
+                    if (matchingKeys.isEmpty()) {
+                        return Collections.emptyMap(); // Early exit if no matches
                     }
                 }
 
-                // Early return if first indexed search yields no results
-                if (matchingKeys.isEmpty()) {
+                db = get(matchingKeys);
+                if (db.isEmpty()) {
                     return Collections.emptyMap();
                 }
-
-                if (!matchingKeys.isEmpty()) {
-                    for (int i = 1; i < indexedSearchSize && !matchingKeys.isEmpty(); i++) {
-                        final Search search = indexedSearches.get(i);
-                        final var path = getIndexPath(search.field());
-                        final var indexDb2 = MAP_DB.openIndex(path);
-                        final boolean isLastIndexedSearch = (i == indexedSearchSize - 1)
-                                && nonIndexedSearchesEmpty;
-
-                        if (indexDb2 != null) {
-                            try {
-                                if (isLastIndexedSearch) {
-                                    return get(indexedSearch(search, indexDb2, matchingKeys, limit));
-                                }
-                                matchingKeys = indexedSearch(search, indexDb2, matchingKeys);
-                            } finally {
-                                MAP_DB.closeIndex(path);
-                            }
-                        }
-
-                        if (matchingKeys.isEmpty()) {
-                            return Collections.emptyMap(); // Early exit if no matches
-                        }
-                    }
-
-                    db = get(matchingKeys);
-                    if (db.isEmpty()) {
-                        return Collections.emptyMap();
-                    }
-                }
-            } finally {
-                MATCHING_KEYS.remove();
             }
         }
 
@@ -2053,31 +2031,26 @@ public interface ChronicleDao<V> {
         }
 
         final var indexFilePath = getIndexPath(search.field());
-        Set<String> matchingKeys = MATCHING_KEYS.get();
-        matchingKeys.clear();
-        try {
-            final Map<String, V> results = new HashMap<>();
+        Set<String> matchingKeys = new HashSet<>(1000);
+        final Map<String, V> results = new HashMap<>();
 
-            final var indexDb = MAP_DB.openIndex(indexFilePath);
-            if (indexDb != null) {
-                try {
-                    matchingKeys = indexedSearch(search, indexDb);
-                } finally {
-                    MAP_DB.closeIndex(indexFilePath);
-                }
+        final var indexDb = MAP_DB.openIndex(indexFilePath);
+        if (indexDb != null) {
+            try {
+                matchingKeys = indexedSearch(search, indexDb);
+            } finally {
+                MAP_DB.closeIndex(indexFilePath);
             }
-
-            for (final String key : matchingKeys) {
-                final V value = db.get(key);
-                if (value != null) {
-                    results.put(key, value);
-                }
-            }
-
-            return results;
-        } finally {
-            MATCHING_KEYS.remove();
         }
+
+        for (final String key : matchingKeys) {
+            final V value = db.get(key);
+            if (value != null) {
+                results.put(key, value);
+            }
+        }
+
+        return results;
     }
 
     default Map<String, V> indexedSearch(final Map<String, V> db, final Search search, final int limit) {
@@ -2086,33 +2059,28 @@ public interface ChronicleDao<V> {
         }
 
         final var indexFilePath = getIndexPath(search.field());
-        Set<String> matchingKeys = MATCHING_KEYS.get();
-        matchingKeys.clear();
-        try {
-            final Map<String, V> results = new HashMap<>(limit);
+        Set<String> matchingKeys = new HashSet<>(1000);
+        final Map<String, V> results = new HashMap<>(limit);
 
-            final var indexDb = MAP_DB.openIndex(indexFilePath);
-            if (indexDb != null) {
-                try {
-                    matchingKeys = indexedSearch(search, indexDb);
-                } finally {
-                    MAP_DB.closeIndex(indexFilePath);
-                }
+        final var indexDb = MAP_DB.openIndex(indexFilePath);
+        if (indexDb != null) {
+            try {
+                matchingKeys = indexedSearch(search, indexDb);
+            } finally {
+                MAP_DB.closeIndex(indexFilePath);
             }
-
-            matchingKeys = CHRONICLE_UTILS.limitSetValues(matchingKeys, limit);
-
-            for (final String key : matchingKeys) {
-                final V value = db.get(key);
-                if (value != null) {
-                    results.put(key, value);
-                }
-            }
-
-            return results;
-        } finally {
-            MATCHING_KEYS.remove();
         }
+
+        matchingKeys = CHRONICLE_UTILS.limitSetValues(matchingKeys, limit);
+
+        for (final String key : matchingKeys) {
+            final V value = db.get(key);
+            if (value != null) {
+                results.put(key, value);
+            }
+        }
+
+        return results;
     }
 
     /**

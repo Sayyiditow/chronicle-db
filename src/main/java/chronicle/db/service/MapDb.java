@@ -81,7 +81,7 @@ public final class MapDb {
                         .make()
                         .hashMap("map")
                         .keySerializer(Serializer.STRING)
-                        .valueSerializer(Serializer.STRING_INTERN)
+                        .valueSerializer(Serializer.STRING)
                         .createOrOpen();
                 return new MapEntry((HTreeMap<String, String>) map);
             } catch (final Exception e) {
@@ -143,7 +143,7 @@ public final class MapDb {
                         .concurrencyScale(MAP_DB_SEGMENTS)
                         .make();
                 final var tree = db.treeSet("index")
-                        .serializer(Serializer.STRING_INTERN)
+                        .serializer(Serializer.STRING)
                         .createOrOpen();
                 return new TreeEntry(db, tree);
             } catch (final Exception e) {
@@ -184,7 +184,9 @@ public final class MapDb {
      * @return composite key (e.g., "NEW\u0001123")
      */
     public String createIndexKey(final String value, final String key) {
-        return (value + INDEX_DELIMITER + key).intern();
+        final String safeValue = value.replace(INDEX_DELIMITER, "").replace(NON_CHAR, "");
+        final String safeKey = key.replace(INDEX_DELIMITER, "").replace(NON_CHAR, "");
+        return safeValue + INDEX_DELIMITER + safeKey;
     }
 
     /**
