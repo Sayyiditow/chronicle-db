@@ -259,44 +259,74 @@ public final class ChronicleUtils {
                 }
             }
 
-            // Step 2: Process each field and batch inserts
+            // Step 2: Process all fields in a single pass and batch inserts
+            Logger.info("Building indexes for fields: {} at: [{}]", fieldMap.keySet(), indexDirPath);
+            final Map<String, Set<byte[]>> fieldBatches = new HashMap<>();
+            final AtomicInteger recordCount = new AtomicInteger(0);
+
+            // Initialize batches for each field
             for (final String field : fieldMap.keySet()) {
                 final String indexPath = indexDirPath + "/" + field;
-                final var indexDb = openIndexes.get(indexPath);
-                if (indexDb != null) {
-                    Logger.info("Building index for field: [{}] at: [{}]", field, indexPath);
-                    final Set<byte[]> batch = new HashSet<>(BATCH_SIZE);
-                    final AtomicInteger recordCount = new AtomicInteger(0);
-
-                    // Iterate over db entries
-                    db.forEachEntry(entry -> {
-                        final K key = entry.key().get();
-                        final V value = entry.value().get();
-                        try {
-                            final Object currentValue = fieldMap.get(field).getterHandle.invoke(value);
-                            batch.add(MAP_DB.createIndexKey(Objects.toString(currentValue, ""), key.toString()));
-                            recordCount.set(recordCount.get() + 1);
-
-                            // Insert batch when it reaches BATCH_SIZE or at the end
-                            if (batch.size() >= BATCH_SIZE) {
-                                Logger.debug("Inserting batch of [{}] keys for field: [{}]", batch.size(), field);
-                                indexDb.addAll(batch);
-                                batch.clear(); // Reset batch
-                            }
-                        } catch (final Throwable e) {
-                            Logger.error("Error processing field [{}] for key [{}]", field, key);
-                            Logger.error(e);
-                        }
-                    });
-
-                    // Insert any remaining keys
-                    if (!batch.isEmpty()) {
-                        Logger.debug("Inserting final batch of [{}] keys for field: [{}]", batch.size(), field);
-                        indexDb.addAll(batch);
-                    }
-                    Logger.info("Indexed [{}] records for field: [{}]", recordCount, field);
+                if (openIndexes.containsKey(indexPath)) {
+                    fieldBatches.put(field, new HashSet<>(BATCH_SIZE));
+                } else {
+                    Logger.error("Skipping field [{}] due to missing index at [{}]", field, indexPath);
                 }
             }
+
+            // Iterate over db entries once
+            db.forEachEntry(entry -> {
+                final K key = entry.key().get();
+                final V value = entry.value().get();
+                try {
+                    // Extract values for all fields
+                    for (final Map.Entry<String, FieldData> fieldEntry : fieldMap.entrySet()) {
+                        final String field = fieldEntry.getKey();
+                        final Set<byte[]> batch = fieldBatches.get(field);
+                        if (batch != null) {
+                            final Object currentValue = fieldEntry.getValue().getterHandle.invoke(value);
+                            batch.add(MAP_DB.createIndexKey(currentValue, key.toString()));
+                        }
+                    }
+                    recordCount.incrementAndGet();
+
+                    // Insert batches when any field reaches BATCH_SIZE
+                    final boolean anyBatchFull = fieldBatches.values().stream()
+                            .anyMatch(batch -> batch.size() >= BATCH_SIZE);
+                    if (anyBatchFull) {
+                        for (final Map.Entry<String, Set<byte[]>> batchEntry : fieldBatches.entrySet()) {
+                            final String field = batchEntry.getKey();
+                            final Set<byte[]> batch = batchEntry.getValue();
+                            if (!batch.isEmpty()) {
+                                Logger.debug("Inserting batch of [{}] keys for field: [{}]", batch.size(), field);
+                                final NavigableSet<byte[]> indexDb = openIndexes.get(indexDirPath + "/" + field);
+                                if (indexDb != null) {
+                                    indexDb.addAll(batch);
+                                }
+                                batch.clear();
+                            }
+                        }
+                    }
+                } catch (final Throwable e) {
+                    Logger.error("Error processing key [{}] for fields", key, e);
+                }
+            });
+
+            // Insert any remaining keys
+            for (final Map.Entry<String, Set<byte[]>> batchEntry : fieldBatches.entrySet()) {
+                final String field = batchEntry.getKey();
+                final Set<byte[]> batch = batchEntry.getValue();
+                if (!batch.isEmpty()) {
+                    Logger.debug("Inserting final batch of [{}] keys for field: [{}]", batch.size(), field);
+                    final NavigableSet<byte[]> indexDb = openIndexes.get(indexDirPath + "/" + field);
+                    if (indexDb != null) {
+                        indexDb.addAll(batch);
+                    }
+                }
+            }
+
+            Logger.info("Indexed [{}] records for fields: {}", recordCount.get(), fieldMap.keySet());
+
         } finally {
             // Step 3: Close all indexes
             openIndexes.forEach((indexPath, indexDb) -> {
@@ -353,7 +383,7 @@ public final class ChronicleUtils {
                     try {
                         final Object indexValue = fieldData.getterHandle.invoke(value);
                         compositeKeysToRemove
-                                .add(MAP_DB.createIndexKey(Objects.toString(indexValue, ""), key.toString()));
+                                .add(MAP_DB.createIndexKey(indexValue, key.toString()));
                     } catch (final Throwable e) {
                         Logger.error("Error processing file {} for key {}: {}", file, key, e);
                     }
@@ -432,14 +462,14 @@ public final class ChronicleUtils {
                         final Object newIndexKey = fieldData.getterHandle.invoke(newValue);
                         if (prevValue == null) {
                             compositeKeysToAdd
-                                    .add(MAP_DB.createIndexKey(Objects.toString(newIndexKey, ""), key.toString()));
+                                    .add(MAP_DB.createIndexKey(newIndexKey, key.toString()));
                         } else {
                             final Object prevIndexKey = fieldData.getterHandle.invoke(prevValue);
                             if (!Objects.equals(newIndexKey, prevIndexKey)) {
                                 compositeKeysToRemove.add(
-                                        MAP_DB.createIndexKey(Objects.toString(prevIndexKey, ""), key.toString()));
+                                        MAP_DB.createIndexKey(prevIndexKey, key.toString()));
                                 compositeKeysToAdd
-                                        .add(MAP_DB.createIndexKey(Objects.toString(newIndexKey, ""), key.toString()));
+                                        .add(MAP_DB.createIndexKey(newIndexKey, key.toString()));
                             }
                         }
 

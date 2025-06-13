@@ -6,6 +6,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.NavigableSet;
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 
 import org.mapdb.DB;
+import org.mapdb.DBException;
 import org.mapdb.DBMaker;
 import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
@@ -154,6 +156,9 @@ public final class MapDb {
                         .serializer(Serializer.BYTE_ARRAY)
                         .createOrOpen();
                 return new TreeEntry(db, tree);
+            } catch (final DBException.DataCorruption e) {
+                CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
+                return null;
             } catch (final Exception e) {
                 Logger.error("Index DB initialization failed for [{}]. {}", filePath, e);
                 return null;
@@ -184,15 +189,15 @@ public final class MapDb {
         });
     }
 
-    private String sanitize(final String input) {
+    private String sanitize(final Object input) {
         if (input == null)
             return "null";
-        if (input.indexOf(SEP) == -1)
-            return input;
-        return input.replace((char) SEP, ' ');
+        if (input.toString().indexOf(SEP) == -1)
+            return input.toString();
+        return input.toString().replace((char) SEP, ' ');
     }
 
-    public byte[] createIndexKey(final String fieldValue, final String primaryKey) {
+    public byte[] createIndexKey(final Object fieldValue, final String primaryKey) {
         final byte[] fieldBytes = sanitize(fieldValue).getBytes(StandardCharsets.UTF_8);
         final byte[] keyBytes = sanitize(primaryKey).getBytes(StandardCharsets.UTF_8);
         final ByteBuffer buf = ByteBuffer.allocate(fieldBytes.length + 1 + keyBytes.length);
@@ -320,7 +325,19 @@ public final class MapDb {
         return index.subSet(lowerKey, true, upperKey, false);
     }
 
-    public NavigableSet<byte[]> getBetweenIndexSubset(final NavigableSet<byte[]> index,
+    public static final Comparator<byte[]> LEXICOGRAPHIC_BYTE_COMPARATOR = (a, b) -> {
+        final int len = Math.min(a.length, b.length);
+        for (int i = 0; i < len; i++) {
+            final int va = a[i] & 0xFF; // convert to unsigned
+            final int vb = b[i] & 0xFF;
+            if (va != vb) {
+                return va - vb;
+            }
+        }
+        return a.length - b.length;
+    };
+
+    public Set<byte[]> getBetweenIndexSubset(final NavigableSet<byte[]> index,
             final String lowerBound, final String upperBound) {
         // Use createPrefixKey for bounds
         final byte[] lowerKey = createIndexKey(lowerBound, "");
@@ -515,6 +532,6 @@ public final class MapDb {
         final byte[] lowerKey = createIndexKey(lowerBound, key);
         final byte[] upperKey = createIndexKey(upperBound, key);
 
-        return index.subSet(lowerKey, true, upperKey, true).isEmpty();
+        return !index.subSet(lowerKey, true, upperKey, true).isEmpty();
     }
 }

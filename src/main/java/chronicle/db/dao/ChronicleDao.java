@@ -686,7 +686,6 @@ public interface ChronicleDao<V> {
         }
 
         final var keyLock = LOCKS.computeIfAbsent(dataPath() + key, k -> new Object());
-
         V value = null;
         synchronized (keyLock) {
             final var db = openDb(file);
@@ -697,18 +696,18 @@ public interface ChronicleDao<V> {
                     closeDb(file);
                 }
             }
-
-            if (value == null) {
-                return false;
-            }
-
-            if (dataFiles.size() > 1) {
-                removeFromKeyMap(key);
-            }
-            final var indexFileNames = indexFileNames();
-            CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value));
-            return true;
         }
+
+        if (value == null) {
+            return false;
+        }
+        if (dataFiles.size() > 1) {
+            removeFromKeyMap(key);
+        }
+
+        final var indexFileNames = indexFileNames();
+        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value));
+        return true;
     }
 
     private void removeFromIndex(final Map<String, V> deletedMap) throws IOException {
@@ -728,13 +727,14 @@ public interface ChronicleDao<V> {
             return false;
         }
 
-        Logger.info("Deleting {} keys at [{}].", keys.size(), dataPath());
-        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
-            final var deletedMap = new HashMap<String, V>();
-            final var dataFiles = getDataFiles();
 
-            if (dataFiles.size() <= 1) {
+        final var dataFiles = getDataFiles();
+        final var deletedMap = new HashMap<String, V>();
+        Logger.info("Deleting {} keys at [{}].", keys.size(), dataPath());
+        
+        if (dataFiles.size() <= 1) {
+            final Object lock = LOCKS.computeIfAbsent(dataPath() + DATA_FILE, k -> new Object());
+            synchronized (lock) {
                 final var db = openDb();
                 if (db != null) {
                     try {
@@ -748,40 +748,46 @@ public interface ChronicleDao<V> {
                         closeDb();
                     }
                 }
-
-                if (deletedMap.isEmpty()) {
-                    return false;
-                }
-
-                removeFromIndex(deletedMap);
-                return true;
-            }
-
-            final var dbFiles = getDbFiles(keys, dataFiles);
-            if (!dbFiles.isEmpty()) {
-                for (final var entry : dbFiles.entrySet()) {
-                    final var file = entry.getKey();
-                    final var db = openDb(file);
-                    if (db != null) {
-                        try {
-                            for (final String key : entry.getValue()) {
-                                deletedMap.put(key, db.remove(key));
-                            }
-                        } finally {
-                            closeDb(file);
-                        }
-                    }
-                }
             }
 
             if (deletedMap.isEmpty()) {
                 return false;
             }
 
-            removeAllFromKeyMap(deletedMap.keySet());
             removeFromIndex(deletedMap);
             return true;
         }
+
+        final var dbFiles = getDbFiles(keys, dataFiles);
+        // Multi-file case
+        if (dbFiles.isEmpty()) {
+            return false;
+        }
+
+        for (final var entry : dbFiles.entrySet()) {
+            final var file = entry.getKey();
+            final Object lock = LOCKS.computeIfAbsent(dataPath() + file, k -> new Object());
+            synchronized (lock) {
+                final var db = openDb(file);
+                if (db != null) {
+                    try {
+                        for (final String key : entry.getValue()) {
+                            deletedMap.put(key, db.remove(key));
+                        }
+                    } finally {
+                        closeDb(file);
+                    }
+                }
+            }
+        }
+
+        if (deletedMap.isEmpty()) {
+            return false;
+        }
+
+        removeAllFromKeyMap(deletedMap.keySet());
+        removeFromIndex(deletedMap);
+        return true;
     }
 
     default void resizeDb(final long newSize) throws IOException {
