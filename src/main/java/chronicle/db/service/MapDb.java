@@ -186,7 +186,7 @@ public final class MapDb {
 
     private String sanitize(final String input) {
         if (input == null)
-            return "";
+            return "null";
         if (input.indexOf(SEP) == -1)
             return input;
         return input.replace((char) SEP, ' ');
