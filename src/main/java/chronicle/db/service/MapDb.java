@@ -2,11 +2,19 @@ package chronicle.db.service;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
 import java.util.NavigableSet;
-import java.util.SortedSet;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.stream.Collectors;
 
 import org.mapdb.DB;
 import org.mapdb.DBMaker;
@@ -22,16 +30,16 @@ public final class MapDb {
     private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, TreeEntry> treeCache = new ConcurrentHashMap<>();
     public static final int MAP_DB_SEGMENTS = 8;
-    public static final String INDEX_DELIMITER = "\u0001";
+    public static final byte SEP = 0x1F;
     public static final String NON_CHAR = "\uFFFF";
     public static final String ASCII_0 = "\u0000";
 
     private static class TreeEntry {
         final DB db;
-        final NavigableSet<String> index;
+        final NavigableSet<byte[]> index;
         final LongAdder refCount;
 
-        TreeEntry(final DB db, final NavigableSet<String> index) {
+        TreeEntry(final DB db, final NavigableSet<byte[]> index) {
             this.db = db;
             this.index = index;
             this.refCount = new LongAdder();
@@ -122,7 +130,7 @@ public final class MapDb {
      * @param filePath filepath to create
      * @return NavigableSet or null, if null do not run close()
      */
-    public NavigableSet<String> openIndex(final String filePath) {
+    public NavigableSet<byte[]> openIndex(final String filePath) {
         final var entry = treeCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 // Increment reference count for existing entry
@@ -143,7 +151,7 @@ public final class MapDb {
                         .concurrencyScale(MAP_DB_SEGMENTS)
                         .make();
                 final var tree = db.treeSet("index")
-                        .serializer(Serializer.STRING)
+                        .serializer(Serializer.BYTE_ARRAY)
                         .createOrOpen();
                 return new TreeEntry(db, tree);
             } catch (final Exception e) {
@@ -176,266 +184,337 @@ public final class MapDb {
         });
     }
 
-    /**
-     * Utility to create a composite key using INDEX_DELIMITER.
-     *
-     * @param value the value part (e.g., "NEW")
-     * @param key   the key part (e.g., "123")
-     * @return composite key (e.g., "NEW\u0001123")
-     */
-    public String createIndexKey(final String value, final String key) {
-        final String safeValue = value.replace(INDEX_DELIMITER, "").replace(NON_CHAR, "");
-        final String safeKey = key.replace(INDEX_DELIMITER, "").replace(NON_CHAR, "");
-        return safeValue + INDEX_DELIMITER + safeKey;
+    private String sanitize(final String input) {
+        if (input == null)
+            return "";
+        if (input.indexOf(SEP) == -1)
+            return input;
+        return input.replace((char) SEP, ' ');
     }
 
-    /**
-     * Utility to extract the key part from a composite key.
-     *
-     * @param compositeKey the composite key (e.g., "NEW\u0001123")
-     * @return the key part (e.g., "123")
-     */
-    public String extractIndexKey(final String indexKey, final String value) {
-        return indexKey.substring(value.length() + INDEX_DELIMITER.length());
+    public byte[] createIndexKey(final String fieldValue, final String primaryKey) {
+        final byte[] fieldBytes = sanitize(fieldValue).getBytes(StandardCharsets.UTF_8);
+        final byte[] keyBytes = sanitize(primaryKey).getBytes(StandardCharsets.UTF_8);
+        final ByteBuffer buf = ByteBuffer.allocate(fieldBytes.length + 1 + keyBytes.length);
+        buf.put(fieldBytes).put(SEP).put(keyBytes);
+        return buf.array();
     }
 
-    public String extractIndexKey(final String indexKey) {
-        return indexKey.substring(indexKey.indexOf(INDEX_DELIMITER) + INDEX_DELIMITER.length());
-    }
-
-    public String extractIndexValue(final String indexKey) {
-        return indexKey.substring(0, indexKey.indexOf(INDEX_DELIMITER));
-    }
-
-    /**
-     * Utility to extract the SortedSet using a value.
-     *
-     * @param index
-     * @param value
-     * @return SortedSet<String>
-     */
-    public SortedSet<String> getExactIndexSubset(final NavigableSet<String> index, final String value) {
-        final String prefix = value + INDEX_DELIMITER;
-        return index.subSet(prefix + ASCII_0, prefix + NON_CHAR);
-    }
-
-    /**
-     * Utility to extract the SortedSet using a value.
-     *
-     * @param index
-     * @param value
-     * @return SortedSet<String>
-     */
-    public NavigableSet<String> getKeysBeforeIndexSubset(final NavigableSet<String> index, final String value) {
-        return index.subSet("", false, value + INDEX_DELIMITER, false);
-    }
-
-    /**
-     * Utility to extract the SortedSet using a value.
-     *
-     * @param index
-     * @param value
-     * @return SortedSet<String>
-     */
-    public NavigableSet<String> getKeysAfterIndexSubset(final NavigableSet<String> index, final String value) {
-        return index.subSet(value + INDEX_DELIMITER + ASCII_0, true, NON_CHAR, false);
-    }
-
-    /**
-     * Utility to extract keys less than the value.
-     *
-     * @param index NavigableSet containing composite keys (value\u0001key)
-     * @param value The value to compare against
-     * @return SortedSet of keys < value
-     */
-    public NavigableSet<String> getLessThanIndexSubset(final NavigableSet<String> index, final String value) {
-        return index.headSet(value + INDEX_DELIMITER, false);
-    }
-
-    /**
-     * Utility to extract keys less than or equal to the value.
-     *
-     * @param index NavigableSet containing composite keys (value\u0001key)
-     * @param value The value to compare against
-     * @return SortedSet of keys <= value
-     */
-    public NavigableSet<String> getLessThanOrEqualIndexSubset(final NavigableSet<String> index, final String value) {
-        return index.headSet(value + INDEX_DELIMITER + NON_CHAR, true);
-    }
-
-    /**
-     * Utility to extract keys greater than the value.
-     *
-     * @param index NavigableSet containing composite keys (value\u0001key)
-     * @param value The value to compare against
-     * @return SortedSet of keys > value
-     */
-    public NavigableSet<String> getGreaterThanIndexSubset(final NavigableSet<String> index, final String value) {
-        return index.tailSet(value + INDEX_DELIMITER + NON_CHAR, false);
-    }
-
-    /**
-     * Utility to extract keys greater than or equal to the value.
-     *
-     * @param index NavigableSet containing composite keys (value\u0001key)
-     * @return SortedSet of keys >= value
-     */
-    public NavigableSet<String> getGreaterThanOrEqualIndexSubset(final NavigableSet<String> index, final String value) {
-        return index.tailSet(value + INDEX_DELIMITER, true);
-    }
-
-    /**
-     * Checks if the index contains an entry for the given suffix that is
-     * lexicographically less than prefix + INDEX_DELIMITER + suffix.
-     *
-     * @return true if the index contains an entry for suffix with a prefix less
-     *         than the given prefix
-     */
-    public boolean isLessThanIndexMatch(final NavigableSet<String> index, final String prefix, final String suffix) {
-        // Define range for all entries with the suffix
-        final String lowerKey = MapDb.INDEX_DELIMITER + suffix;
-        final String upperKey = prefix + MapDb.INDEX_DELIMITER + suffix;
-        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, false);
-        // Check if any entry exists with the suffix
-        for (final String key : subset) {
-            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
-                return true;
+    public String[] decodeKey(final byte[] keyBytes) {
+        int sepIndex = -1;
+        for (int i = 0; i < keyBytes.length; i++) {
+            if (keyBytes[i] == SEP) {
+                sepIndex = i;
+                break;
             }
         }
-        return false;
+        if (sepIndex == -1) {
+            throw new IllegalArgumentException("Separator byte not found in key");
+        }
+
+        final String field = new String(keyBytes, 0, sepIndex, StandardCharsets.UTF_8);
+        final String primaryKey = new String(keyBytes, sepIndex + 1, keyBytes.length - sepIndex - 1,
+                StandardCharsets.UTF_8);
+
+        return new String[] { field, primaryKey };
     }
 
-    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<String> index, final String prefix,
-            final String suffix) {
-        // Define range for all entries with the suffix
-        final String lowerKey = MapDb.INDEX_DELIMITER + suffix;
-        final String upperKey = prefix + MapDb.INDEX_DELIMITER + suffix;
-        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, true);
-        // Check if any entry exists with the suffix
-        for (final String key : subset) {
-            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
-                return true;
+    public String extractIndexKey(final byte[] indexKey) {
+        final int sepIndex = findSeparator(indexKey);
+        return new String(indexKey, sepIndex + 1, indexKey.length - sepIndex - 1, StandardCharsets.UTF_8);
+    }
+
+    public String extractIndexValue(final byte[] indexKey) {
+        final int sepIndex = findSeparator(indexKey);
+        return new String(indexKey, 0, sepIndex, StandardCharsets.UTF_8);
+    }
+
+    private String extractKey(final byte[] composite) {
+        int delimPos = -1;
+        for (int i = 0; i < composite.length; i++) {
+            if (composite[i] == (byte) 0xFF) {
+                delimPos = i;
+                break;
             }
         }
-        return false;
+        if (delimPos == -1 || delimPos == composite.length - 1) {
+            return ""; // No key portion exists
+        }
+        return new String(composite, delimPos + 1, composite.length - delimPos - 1,
+                StandardCharsets.UTF_8);
     }
 
-    public boolean isGreaterThanIndexMatch(final NavigableSet<String> index, final String prefix, final String suffix) {
-        final String lowerKey = prefix + MapDb.INDEX_DELIMITER + suffix;
-        final String upperKey = MapDb.NON_CHAR + MapDb.INDEX_DELIMITER;
-        final NavigableSet<String> subset = index.subSet(lowerKey, false, upperKey, false);
-        // Check if any entry exists with the suffix
-        for (final String key : subset) {
-            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
-                return true;
+    private int findDelimiter(final byte[] bytes) {
+        for (int i = 0; i < bytes.length; i++) {
+            if (bytes[i] == (byte) 0xFF)
+                return i;
+        }
+        return -1;
+    }
+
+    private int findSeparator(final byte[] data) {
+        for (int i = 0; i < data.length; i++) {
+            if (data[i] == SEP)
+                return i;
+        }
+        throw new IllegalArgumentException("Separator byte not found in key");
+    }
+
+    public NavigableSet<byte[]> getExactIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] fieldBytes = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] lowerKey = ByteBuffer.allocate(fieldBytes.length + 1)
+                .put(fieldBytes)
+                .put(SEP) // Your separator byte, e.g. (byte) 0x1F
+                .array();
+
+        // To get the upper bound, append one more byte to ensure we include all
+        // primaries
+        final byte[] upperKey = ByteBuffer.allocate(fieldBytes.length + 2)
+                .put(fieldBytes)
+                .put(SEP)
+                .put((byte) 0xFF)
+                .array();
+
+        return index.subSet(lowerKey, true, upperKey, false);
+    }
+
+    public NavigableSet<byte[]> getKeysBeforeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] upperKey = createIndexKey(searchTerm, "");
+        final byte[] lowerKey = new byte[] { 0 }; // Minimal key
+
+        return index.subSet(lowerKey, true, upperKey, false);
+    }
+
+    public NavigableSet<byte[]> getKeysAfterIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = createIndexKey(searchTerm, NON_CHAR);
+        final byte[] upperKey = new byte[] { (byte) 0xFF, (byte) 0xFF }; // NON_CHAR
+
+        return index.subSet(lowerKey, false, upperKey, false);
+    }
+
+    public NavigableSet<byte[]> getLessThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] upperKey = createIndexKey(searchTerm, "");
+        return index.headSet(upperKey, false);
+    }
+
+    public NavigableSet<byte[]> getLessThanOrEqualIndexSubset(final NavigableSet<byte[]> index,
+            final String searchTerm) {
+        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
+        return index.headSet(upperKey, true);
+    }
+
+    public NavigableSet<byte[]> getGreaterThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = createIndexKey(searchTerm, NON_CHAR);
+        return index.tailSet(lowerKey, false);
+    }
+
+    public NavigableSet<byte[]> getGreaterThanOrEqualIndexSubset(final NavigableSet<byte[]> index,
+            final String searchTerm) {
+        final byte[] lowerKey = createIndexKey(searchTerm, "");
+        return index.tailSet(lowerKey, true);
+    }
+
+    public NavigableSet<byte[]> getStartsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] upperKey = (searchTerm + NON_CHAR).getBytes(StandardCharsets.UTF_8);
+        return index.subSet(lowerKey, true, upperKey, false);
+    }
+
+    public NavigableSet<byte[]> getBetweenIndexSubset(final NavigableSet<byte[]> index,
+            final String lowerBound, final String upperBound) {
+        // Use createPrefixKey for bounds
+        final byte[] lowerKey = createIndexKey(lowerBound, "");
+        final byte[] upperKey = createIndexKey(upperBound, NON_CHAR);
+
+        return index.subSet(lowerKey, true, upperKey, true);
+    }
+
+    public Set<byte[]> getLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final Set<byte[]> result = new HashSet<>();
+
+        // Iterate all keys (LIKE requires full scan)
+        for (final byte[] key : index) {
+            final String[] decoded = decodeKey(key);
+            final String fieldValue = decoded[0];
+
+            if (fieldValue != null && CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
+                result.add(key);
             }
         }
-        return false;
+
+        return result;
     }
 
-    public boolean isGreaterThanOrEqualIndexMatch(final NavigableSet<String> index, final String prefix,
-            final String suffix) {
-        final String lowerKey = prefix + MapDb.INDEX_DELIMITER + suffix;
-        final String upperKey = MapDb.NON_CHAR + MapDb.INDEX_DELIMITER;
-        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, false);
-        // Check if any entry exists with the suffix
-        for (final String key : subset) {
-            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
-                return true;
+    public Set<byte[]> getNotLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final Set<byte[]> result = new HashSet<>();
+
+        // Iterate all keys (LIKE requires full scan)
+        for (final byte[] key : index) {
+            final String[] decoded = decodeKey(key);
+            final String fieldValue = decoded[0];
+
+            if (fieldValue != null && !CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
+                result.add(key);
             }
         }
-        return false;
+
+        return result;
     }
 
-    /**
-     * Checks if the index contains an entry for the given suffix where the prefix
-     * contains the search term (case-insensitive).
-     *
-     * @param index      the NavigableSet containing keys in the format prefix +
-     *                   INDEX_DELIMITER + suffix
-     * @param searchTerm the term to search for in the prefix
-     * @param suffix     the suffix to check (e.g., a key from matchingKeys)
-     * @return true if the index entry for the suffix has a prefix containing the
-     *         search term
-     */
-    public boolean isLikeIndexMatch(final NavigableSet<String> index, final String searchTerm, final String suffix) {
-        final String lowerKey = MapDb.INDEX_DELIMITER + suffix;
-        final String upperKey = MapDb.NON_CHAR + MapDb.INDEX_DELIMITER + suffix;
-        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, false);
-        // Check if any entry's prefix contains searchTerm (case-insensitive)
-        for (final String key : subset) {
-            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix) &&
-                    CHRONICLE_UTILS.containsIgnoreCase(MAP_DB.extractIndexValue(key), searchTerm)) {
-                return true;
+    public Set<byte[]> getNotInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms) {
+        final Set<byte[]> result = new HashSet<>();
+        final List<String> sortedTerms = new ArrayList<>(searchTerms);
+        sortedTerms.sort(String::compareTo);
+
+        final byte[] lowerKey = new byte[] { 0 }; // Minimal key
+        final byte[] upperKey = new byte[] { (byte) 0xFF, (byte) 0xFF }; // NON_CHAR
+        String lastTerm = null;
+
+        for (final String term : sortedTerms) {
+            final byte[] termKey = createIndexKey(term, "");
+
+            if (lastTerm == null) {
+                final NavigableSet<byte[]> before = index.subSet(lowerKey, true, termKey, false);
+                result.addAll(before);
+            } else {
+                final byte[] lastTermKey = createIndexKey(lastTerm, NON_CHAR);
+                final NavigableSet<byte[]> between = index.subSet(lastTermKey, false, termKey, false);
+                result.addAll(between);
             }
+            lastTerm = term;
         }
-        return false;
+
+        if (!sortedTerms.isEmpty()) {
+            final byte[] lastTermKey = createIndexKey(lastTerm, NON_CHAR);
+            final NavigableSet<byte[]> after = index.subSet(lastTermKey, false, upperKey, false);
+            result.addAll(after);
+        } else {
+            result.addAll(index);
+        }
+
+        return result;
     }
 
-    /**
-     * Checks if the index contains an entry for the given suffix where the prefix
-     * starts with the search term (case-insensitive).
-     *
-     * @param index      the NavigableSet containing keys in the format prefix +
-     *                   INDEX_DELIMITER + suffix
-     * @param searchTerm the term to check if the prefix starts with
-     * @param suffix     the suffix to check (e.g., a key from matchingKeys)
-     * @return true if the index entry for the suffix has a prefix starting with the
-     *         search term
-     */
-    public boolean isStartsWithIndexMatch(final NavigableSet<String> index, final String searchTerm,
-            final String suffix) {
-        final String lowerKey = searchTerm + MapDb.INDEX_DELIMITER + suffix;
-        final String upperKey = searchTerm + MapDb.NON_CHAR + MapDb.INDEX_DELIMITER + suffix;
-        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, false);
-        for (final String key : subset) {
-            if (key.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
-                return true;
-            }
-        }
-        return false;
+    public Set<byte[]> getEndsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final var suffix = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] lowerBound = new byte[suffix.length + 1]; // +1 for delimiter
+        System.arraycopy(suffix, 0, lowerBound, 0, suffix.length);
+        lowerBound[suffix.length] = (byte) 0xFF; // delimiter
+
+        // 2. Create the maximal possible key ending with the suffix
+        final byte[] upperBound = Arrays.copyOf(lowerBound, lowerBound.length);
+        // Increment the last byte before delimiter
+        upperBound[suffix.length - 1]++;
+
+        // 3. Find all keys where value ends with suffix
+        return index.subSet(lowerBound, true, upperBound, false)
+                .stream()
+                .filter(bytes -> {
+                    // Verify the suffix actually appears before delimiter
+                    final int delimPos = findDelimiter(bytes);
+                    if (delimPos == -1)
+                        return false;
+                    return endsWith(bytes, suffix, delimPos);
+                })
+                .collect(Collectors.toCollection(TreeSet::new));
     }
 
-    /**
-     * Checks if the index contains an entry for the given suffix where the prefix
-     * ends with the search term (case-insensitive).
-     *
-     * @param index      the NavigableSet containing keys in the format prefix +
-     *                   INDEX_DELIMITER + suffix
-     * @param searchTerm the term to check if the prefix ends with
-     * @param suffix     the suffix to check (e.g., a key from matchingKeys)
-     * @return true if the index entry for the suffix has a prefix ending with the
-     *         search term
-     */
-    public boolean isEndsWithIndexMatch(final NavigableSet<String> index, final String searchTerm,
-            final String suffix) {
-        // Find the first possible entry for the suffix
-        final String searchKey = MapDb.INDEX_DELIMITER + suffix;
-        final String ceilingKey = index.ceiling(searchKey);
-        if (ceilingKey == null || !ceilingKey.endsWith(MapDb.INDEX_DELIMITER + suffix)) {
+    private boolean endsWith(final byte[] bytes, final byte[] suffix, final int delimPos) {
+        if (delimPos < suffix.length)
             return false;
+        for (int i = 0; i < suffix.length; i++) {
+            if (bytes[delimPos - suffix.length + i] != suffix[i]) {
+                return false;
+            }
         }
-        // Check if the prefix ends with searchTerm
-        return MAP_DB.extractIndexValue(ceilingKey).endsWith(searchTerm);
+        return true;
     }
 
-    /**
-     * Checks if the index contains an entry for the given suffix where the prefix
-     * is within [lowerBound, upperBound] (inclusive).
-     *
-     * @param index      the NavigableSet containing keys in the format prefix +
-     *                   INDEX_DELIMITER + suffix
-     * @param lowerBound the lower bound of the range (inclusive)
-     * @param upperBound the upper bound of the range (inclusive)
-     * @param suffix     the suffix to check (e.g., a key from matchingKeys)
-     * @return true if the index entry for the suffix has a prefix >= lowerBound and
-     *         <= upperBound
-     */
-    public boolean isBetweenIndexMatch(final NavigableSet<String> index, final Object lowerBound,
-            final Object upperBound, final String suffix) {
-        final String lowerKey = String.valueOf(lowerBound) + MapDb.INDEX_DELIMITER + suffix;
-        final String upperKey = String.valueOf(upperBound) + MapDb.INDEX_DELIMITER + suffix;
-        final NavigableSet<String> subset = index.subSet(lowerKey, true, upperKey, true);
-        return !subset.isEmpty(); // Rely on subSet bounds
+    public boolean isLessThanIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
+        final byte[] lowerKey = createIndexKey("", key);
+        final byte[] upperKey = createIndexKey(searchTerm, key);
+
+        return !index.subSet(lowerKey, true, upperKey, false).isEmpty();
+    }
+
+    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<byte[]> index,
+            final String searchTerm, final String key) {
+        final byte[] lowerKey = createIndexKey("", key);
+        final byte[] upperKey = createIndexKey(searchTerm, key);
+
+        return !index.subSet(lowerKey, true, upperKey, true).isEmpty();
+    }
+
+    public boolean isGreaterThanIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
+            final String key) {
+        final byte[] lowerKey = createIndexKey(searchTerm, key);
+        final byte[] upperKey = createIndexKey(NON_CHAR, key);
+
+        return !index.subSet(lowerKey, false, upperKey, true).isEmpty();
+    }
+
+    public boolean isGreaterThanOrEqualIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
+            final String key) {
+        final byte[] lowerKey = createIndexKey(searchTerm, key);
+        // Upper bound: maximal fieldValue + SEP + primaryKey
+        final byte[] upperKey = createIndexKey(NON_CHAR, key);
+
+        // 4. Compare with target key
+        return !index.subSet(lowerKey, true, upperKey, true).isEmpty();
+    }
+
+    public boolean isLikeIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
+        // Optimized for cases where searchTerm appears early in keys
+        for (final byte[] composite : index) {
+            final String foundKey = extractKey(composite);
+            if (foundKey.contains(searchTerm)) {
+                return foundKey.equals(key);
+            }
+        }
+        return false;
+    }
+
+    public boolean isStartsWithIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
+        final byte[] lowerKey = createIndexKey(searchTerm, key);
+        final byte[] upperKey = createIndexKey(searchTerm + NON_CHAR, key);
+        return !index.subSet(lowerKey, true, upperKey, false).isEmpty();
+    }
+
+    public boolean isEndsWithIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
+            final String primaryKey) {
+        final String searchTermLower = searchTerm.toLowerCase();
+        final byte[] searchTermBytes = searchTermLower.getBytes(StandardCharsets.UTF_8);
+        final byte[] primaryKeyBytes = primaryKey.getBytes(StandardCharsets.UTF_8);
+        final byte[] sep = new byte[] { SEP }; // 0x1F
+
+        // Lower bound: 0x00 + searchTerm + SEP + primaryKey
+        final ByteBuffer lowerBuf = ByteBuffer.allocate(1 + searchTermBytes.length + 1 + primaryKeyBytes.length);
+        lowerBuf.put((byte) 0x00).put(searchTermBytes).put(sep).put(primaryKeyBytes);
+        final byte[] lowerKey = lowerBuf.array();
+
+        // Upper bound: 0xFF + searchTerm + SEP + primaryKey
+        final ByteBuffer upperBuf = ByteBuffer.allocate(1 + searchTermBytes.length + 1 + primaryKeyBytes.length);
+        upperBuf.put((byte) 0xFF).put(searchTermBytes).put(sep).put(primaryKeyBytes);
+        final byte[] upperKey = upperBuf.array();
+
+        final NavigableSet<byte[]> subset = index.subSet(lowerKey, true, upperKey, true);
+        boolean match = false;
+
+        for (final byte[] key : subset) {
+            final String[] parts = decodeKey(key);
+            if (parts[1].equals(primaryKey) && parts[0].toLowerCase().endsWith(searchTermLower)) {
+                match = true;
+            }
+        }
+
+        return match;
+    }
+
+    public boolean isBetweenIndexMatch(final NavigableSet<byte[]> index, final String lowerBound,
+            final String upperBound, final String key) {
+        final byte[] lowerKey = createIndexKey(lowerBound, key);
+        final byte[] upperKey = createIndexKey(upperBound, key);
+
+        return index.subSet(lowerKey, true, upperKey, true).isEmpty();
     }
 }
