@@ -1345,14 +1345,10 @@ public interface ChronicleDao<V> {
         return results;
     }
 
-    private void populateMatchingKeys(final Collection<byte[]> keys, final Set<String> set, final String searchTerm) {
+    private void populateMatchingKeys(final Collection<byte[]> keys, final Set<String> set) {
         for (final byte[] indexKey : keys) {
             set.add(MAP_DB.decodeKey(indexKey)[1]);
         }
-    }
-
-    private void populateMatchingKeys(final Collection<byte[]> keys, final Set<String> set) {
-        keys.stream().map(key -> MAP_DB.decodeKey(key)[1]).forEach(set::add);
     }
 
     /**
@@ -1379,14 +1375,12 @@ public interface ChronicleDao<V> {
 
         switch (searchType) {
             case EQUAL -> {
-                final var keys = MAP_DB.getExactIndexSubset(index, searchTerm);
-                populateMatchingKeys(keys, matchingKeys, searchTerm);
+                final var keys = MAP_DB.getEqualIndexSubset(index, searchTerm);
+                populateMatchingKeys(keys, matchingKeys);
             }
             case NOT_EQUAL -> {
-                final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, searchTerm);
+                final var keysBefore = MAP_DB.getNotEqualIndexSubset(index, searchTerm);
                 populateMatchingKeys(keysBefore, matchingKeys);
-                final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, searchTerm);
-                populateMatchingKeys(keysAfter, matchingKeys);
             }
             case LESS -> {
                 final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
@@ -1422,8 +1416,8 @@ public interface ChronicleDao<V> {
             }
             case IN -> {
                 for (final var term : searchTermSet) {
-                    final var keys = MAP_DB.getExactIndexSubset(index, term);
-                    populateMatchingKeys(keys, matchingKeys, term);
+                    final var keys = MAP_DB.getEqualIndexSubset(index, term);
+                    populateMatchingKeys(keys, matchingKeys);
                 }
             }
             case NOT_IN -> {
@@ -1525,16 +1519,12 @@ public interface ChronicleDao<V> {
 
         switch (searchType) {
             case EQUAL -> {
-                final var keys = MAP_DB.getExactIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getEqualIndexSubset(index, searchTerm);
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case NOT_EQUAL -> {
-                final var keysBefore = MAP_DB.getKeysBeforeIndexSubset(index, searchTerm);
+                final var keysBefore = MAP_DB.getNotEqualIndexSubset(index, searchTerm);
                 addKeysUpToLimit(keysBefore, matchingKeys, limit);
-                if (matchingKeys.size() < limit) {
-                    final var keysAfter = MAP_DB.getKeysAfterIndexSubset(index, searchTerm);
-                    addKeysUpToLimit(keysAfter, matchingKeys, limit);
-                }
             }
             case LESS -> {
                 final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
@@ -1572,7 +1562,7 @@ public interface ChronicleDao<V> {
                 for (final var term : searchTermSet) {
                     if (matchingKeys.size() >= limit)
                         break;
-                    final var keys = MAP_DB.getExactIndexSubset(index, term);
+                    final var keys = MAP_DB.getEqualIndexSubset(index, term);
                     addKeysUpToLimit(keys, matchingKeys, limit);
                 }
             }

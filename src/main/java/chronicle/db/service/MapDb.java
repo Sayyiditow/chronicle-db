@@ -5,9 +5,6 @@ import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.NavigableSet;
 import java.util.Set;
@@ -15,7 +12,6 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.LongAdder;
-import java.util.stream.Collectors;
 
 import org.mapdb.DB;
 import org.mapdb.DBException;
@@ -35,6 +31,7 @@ public final class MapDb {
     public static final byte SEP = 0x1F;
     public static final String NON_CHAR = "\uFFFF";
     public static final String ASCII_0 = "\u0000";
+    private static final int SEARCH_HARD_CAP = 25_000;
 
     private static class TreeEntry {
         final DB db;
@@ -249,14 +246,6 @@ public final class MapDb {
                 StandardCharsets.UTF_8);
     }
 
-    private int findDelimiter(final byte[] bytes) {
-        for (int i = 0; i < bytes.length; i++) {
-            if (bytes[i] == (byte) 0xFF)
-                return i;
-        }
-        return -1;
-    }
-
     private int findSeparator(final byte[] data) {
         for (int i = 0; i < data.length; i++) {
             if (data[i] == SEP)
@@ -265,7 +254,8 @@ public final class MapDb {
         throw new IllegalArgumentException("Separator byte not found in key");
     }
 
-    public NavigableSet<byte[]> getExactIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+    private NavigableSet<byte[]> getEqualIndexSubsetUncapped(final NavigableSet<byte[]> index,
+            final String searchTerm) {
         final byte[] fieldBytes = searchTerm.getBytes(StandardCharsets.UTF_8);
         final byte[] lowerKey = ByteBuffer.allocate(fieldBytes.length + 1)
                 .put(fieldBytes)
@@ -283,201 +273,379 @@ public final class MapDb {
         return index.subSet(lowerKey, true, upperKey, false);
     }
 
-    public NavigableSet<byte[]> getKeysBeforeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+    public List<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final NavigableSet<byte[]> subset = getEqualIndexSubsetUncapped(index, searchTerm);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final byte[] key : subset) {
+            result.add(key);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    public int getEqualIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        return getEqualIndexSubsetUncapped(index, searchTerm).size();
+    }
+
+    private NavigableSet<byte[]> getBeforeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
         final byte[] upperKey = createIndexKey(searchTerm, "");
         final byte[] lowerKey = new byte[] { 0 }; // Minimal key
-
         return index.subSet(lowerKey, true, upperKey, false);
     }
 
-    public NavigableSet<byte[]> getKeysAfterIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final byte[] lowerKey = createIndexKey(searchTerm, NON_CHAR);
-        final byte[] upperKey = new byte[] { (byte) 0xFF, (byte) 0xFF }; // NON_CHAR
-
+    private NavigableSet<byte[]> getAfterIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
+        final byte[] lowerKey = new byte[] { (byte) 0xFF, (byte) 0xFF }; // NON_CHAR
         return index.subSet(lowerKey, false, upperKey, false);
     }
 
-    public NavigableSet<byte[]> getLessThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final byte[] upperKey = createIndexKey(searchTerm, "");
-        return index.headSet(upperKey, false);
-    }
+    public List<byte[]> getNotEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final var subset = getBeforeIndexSubset(index, searchTerm);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
 
-    public NavigableSet<byte[]> getLessThanOrEqualIndexSubset(final NavigableSet<byte[]> index,
-            final String searchTerm) {
-        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
-        return index.headSet(upperKey, true);
-    }
-
-    public NavigableSet<byte[]> getGreaterThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final byte[] lowerKey = createIndexKey(searchTerm, NON_CHAR);
-        return index.tailSet(lowerKey, false);
-    }
-
-    public NavigableSet<byte[]> getGreaterThanOrEqualIndexSubset(final NavigableSet<byte[]> index,
-            final String searchTerm) {
-        final byte[] lowerKey = createIndexKey(searchTerm, "");
-        return index.tailSet(lowerKey, true);
-    }
-
-    public NavigableSet<byte[]> getStartsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final byte[] lowerKey = searchTerm.getBytes(StandardCharsets.UTF_8);
-        final byte[] upperKey = (searchTerm + NON_CHAR).getBytes(StandardCharsets.UTF_8);
-        return index.subSet(lowerKey, true, upperKey, false);
-    }
-
-    public static final Comparator<byte[]> LEXICOGRAPHIC_BYTE_COMPARATOR = (a, b) -> {
-        final int len = Math.min(a.length, b.length);
-        for (int i = 0; i < len; i++) {
-            final int va = a[i] & 0xFF; // convert to unsigned
-            final int vb = b[i] & 0xFF;
-            if (va != vb) {
-                return va - vb;
+        for (final byte[] key : subset) {
+            result.add(key);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                return result;
             }
         }
-        return a.length - b.length;
-    };
 
-    public Set<byte[]> getBetweenIndexSubset(final NavigableSet<byte[]> index,
+        final var subset2 = getAfterIndexSubset(index, searchTerm);
+        for (final byte[] key2 : subset2) {
+            result.add(key2);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                return result;
+            }
+        }
+
+        return result;
+    }
+
+    public int getNotEqualIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        return getBeforeIndexSubset(index, searchTerm).size() + getAfterIndexSubset(index, searchTerm).size();
+    }
+
+    public List<byte[]> getLessThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] upperKey = createIndexKey(searchTerm, "");
+        final var subset = index.headSet(upperKey, false);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final byte[] key : subset) {
+            result.add(key);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    public int getLessThanIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] upperKey = createIndexKey(searchTerm, "");
+        return index.headSet(upperKey, false).size();
+    }
+
+    public List<byte[]> getLessThanOrEqualIndexSubset(final NavigableSet<byte[]> index,
+            final String searchTerm) {
+        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
+        final var subset = index.headSet(upperKey, true);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final byte[] key : subset) {
+            result.add(key);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    public int getLessThanOrEqualIndexSubsetSize(final NavigableSet<byte[]> index,
+            final String searchTerm) {
+        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
+        return index.headSet(upperKey, true).size();
+    }
+
+    public List<byte[]> getGreaterThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = createIndexKey(searchTerm, NON_CHAR);
+        final var subset = index.tailSet(lowerKey, false);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final byte[] key : subset) {
+            result.add(key);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    public int getGreaterThanIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = createIndexKey(searchTerm, NON_CHAR);
+        return index.tailSet(lowerKey, false).size();
+    }
+
+    public List<byte[]> getGreaterThanOrEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = createIndexKey(searchTerm, "");
+        final var subset = index.tailSet(lowerKey, true);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final byte[] key : subset) {
+            result.add(key);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    public int getGreaterThanOrEqualIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = createIndexKey(searchTerm, "");
+        return index.tailSet(lowerKey, true).size();
+    }
+
+    public List<byte[]> getStartsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] upperKey = (searchTerm + NON_CHAR).getBytes(StandardCharsets.UTF_8);
+        final var subset = index.subSet(lowerKey, true, upperKey, false);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final byte[] key : subset) {
+            result.add(key);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    public int getStartsWithIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] lowerKey = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] upperKey = (searchTerm + NON_CHAR).getBytes(StandardCharsets.UTF_8);
+        return index.subSet(lowerKey, true, upperKey, false).size();
+    }
+
+    public List<byte[]> getBetweenIndexSubset(final NavigableSet<byte[]> index,
             final String lowerBound, final String upperBound) {
         // Use createPrefixKey for bounds
         final byte[] lowerKey = createIndexKey(lowerBound, "");
         final byte[] upperKey = createIndexKey(upperBound, NON_CHAR);
 
-        return index.subSet(lowerKey, true, upperKey, true);
+        final var subset = index.subSet(lowerKey, true, upperKey, true);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final byte[] key : subset) {
+            result.add(key);
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
+            }
+        }
+
+        return result;
     }
 
-    public Set<byte[]> getLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final Set<byte[]> result = new HashSet<>();
+    public int getBetweenIndexSubsetSize(final NavigableSet<byte[]> index,
+            final String lowerBound, final String upperBound) {
+        // Use createPrefixKey for bounds
+        final byte[] lowerKey = createIndexKey(lowerBound, "");
+        final byte[] upperKey = createIndexKey(upperBound, NON_CHAR);
+
+        return index.subSet(lowerKey, true, upperKey, true).size();
+    }
+
+    public List<byte[]> getLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
 
         // Iterate all keys (LIKE requires full scan)
         for (final byte[] key : index) {
             final String[] decoded = decodeKey(key);
             final String fieldValue = decoded[0];
 
-            if (fieldValue != null && CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
+            if (CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
                 result.add(key);
+            }
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
             }
         }
 
         return result;
     }
 
-    public Set<byte[]> getNotLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final Set<byte[]> result = new HashSet<>();
+    public int getLikeIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        int count = 0;
+
+        // Iterate all keys (LIKE requires full scan)
+        for (final byte[] key : index) {
+            if (CHRONICLE_UTILS.containsIgnoreCase(decodeKey(key)[0], searchTerm)) {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    public List<byte[]> getNotLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
 
         // Iterate all keys (LIKE requires full scan)
         for (final byte[] key : index) {
             final String[] decoded = decodeKey(key);
             final String fieldValue = decoded[0];
 
-            if (fieldValue != null && !CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
+            if (!CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
                 result.add(key);
             }
+            if (result.size() >= SEARCH_HARD_CAP) {
+                break;
+            }
         }
 
         return result;
     }
 
-    public Set<byte[]> getNotInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms) {
-        final Set<byte[]> result = new HashSet<>();
-        final List<String> sortedTerms = new ArrayList<>(searchTerms);
-        sortedTerms.sort(String::compareTo);
-
-        final byte[] lowerKey = new byte[] { 0 }; // Minimal key
-        final byte[] upperKey = new byte[] { (byte) 0xFF, (byte) 0xFF }; // NON_CHAR
-        String lastTerm = null;
-
-        for (final String term : sortedTerms) {
-            final byte[] termKey = createIndexKey(term, "");
-
-            if (lastTerm == null) {
-                final NavigableSet<byte[]> before = index.subSet(lowerKey, true, termKey, false);
-                result.addAll(before);
-            } else {
-                final byte[] lastTermKey = createIndexKey(lastTerm, NON_CHAR);
-                final NavigableSet<byte[]> between = index.subSet(lastTermKey, false, termKey, false);
-                result.addAll(between);
+    public int getNotLikeIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        var count = 0;
+        // Iterate all keys (LIKE requires full scan)
+        for (final byte[] key : index) {
+            if (!CHRONICLE_UTILS.containsIgnoreCase(decodeKey(key)[0], searchTerm)) {
+                count++;
             }
-            lastTerm = term;
         }
 
-        if (!sortedTerms.isEmpty()) {
-            final byte[] lastTermKey = createIndexKey(lastTerm, NON_CHAR);
-            final NavigableSet<byte[]> after = index.subSet(lastTermKey, false, upperKey, false);
-            result.addAll(after);
-        } else {
-            result.addAll(index);
+        return count;
+    }
+
+    public List<byte[]> getNotInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms) {
+        final NavigableSet<byte[]> subSet = new TreeSet<>(index);
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final String searchTerm : searchTerms) {
+            subSet.removeAll(getEqualIndexSubsetUncapped(index, searchTerm));
+        }
+
+        for (final byte[] bs : subSet) {
+            result.add(bs);
+
+            if (result.size() >= SEARCH_HARD_CAP) {
+                return result;
+            }
         }
 
         return result;
     }
 
-    public Set<byte[]> getEndsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final var suffix = searchTerm.getBytes(StandardCharsets.UTF_8);
-        final byte[] lowerBound = new byte[suffix.length + 1]; // +1 for delimiter
-        System.arraycopy(suffix, 0, lowerBound, 0, suffix.length);
-        lowerBound[suffix.length] = (byte) 0xFF; // delimiter
-
-        // 2. Create the maximal possible key ending with the suffix
-        final byte[] upperBound = Arrays.copyOf(lowerBound, lowerBound.length);
-        // Increment the last byte before delimiter
-        upperBound[suffix.length - 1]++;
-
-        // 3. Find all keys where value ends with suffix
-        return index.subSet(lowerBound, true, upperBound, false)
-                .stream()
-                .filter(bytes -> {
-                    // Verify the suffix actually appears before delimiter
-                    final int delimPos = findDelimiter(bytes);
-                    if (delimPos == -1)
-                        return false;
-                    return endsWith(bytes, suffix, delimPos);
-                })
-                .collect(Collectors.toCollection(TreeSet::new));
+    public int getNotInIndexSubsetSize(final NavigableSet<byte[]> index, final Set<String> searchTerms) {
+        return getNotInIndexSubset(index, searchTerms).size();
     }
 
-    private boolean endsWith(final byte[] bytes, final byte[] suffix, final int delimPos) {
-        if (delimPos < suffix.length)
-            return false;
-        for (int i = 0; i < suffix.length; i++) {
-            if (bytes[delimPos - suffix.length + i] != suffix[i]) {
-                return false;
+    public List<byte[]> getEndsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] suffix = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] suffixWithSep = ByteBuffer.allocate(suffix.length + 1)
+                .put(suffix)
+                .put(SEP)
+                .array();
+
+        final List<byte[]> result = new ArrayList<>(SEARCH_HARD_CAP);
+
+        for (final byte[] key : index) {
+            final String keyStr = new String(key, StandardCharsets.UTF_8);
+            if (keyStr.contains(new String(suffixWithSep, StandardCharsets.UTF_8)) &&
+                    keyStr.regionMatches(
+                            keyStr.length() - suffixWithSep.length - keyStr.substring(keyStr.indexOf(SEP) + 1).length(),
+                            new String(suffixWithSep, StandardCharsets.UTF_8), 0, suffixWithSep.length)) {
+                result.add(key);
+                if (result.size() >= SEARCH_HARD_CAP) {
+                    break;
+                }
             }
         }
-        return true;
+
+        return result;
+    }
+
+    public int getEndsWithIndexSubsetSize(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] suffix = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] suffixWithSep = ByteBuffer.allocate(suffix.length + 1)
+                .put(suffix)
+                .put(SEP)
+                .array();
+        var counter = 0;
+
+        for (final byte[] key : index) {
+            final String keyStr = new String(key, StandardCharsets.UTF_8);
+            if (keyStr.contains(new String(suffixWithSep, StandardCharsets.UTF_8)) &&
+                    keyStr.regionMatches(
+                            keyStr.length() - suffixWithSep.length - keyStr.substring(keyStr.indexOf(SEP) + 1).length(),
+                            new String(suffixWithSep, StandardCharsets.UTF_8), 0, suffixWithSep.length)) {
+                counter++;
+            }
+        }
+
+        return counter;
     }
 
     public boolean isLessThanIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
-        final byte[] lowerKey = createIndexKey("", key);
-        final byte[] upperKey = createIndexKey(searchTerm, key);
+        final byte[] lowerKey = createIndexKey("", ""); // Minimum bound
+        final byte[] upperKey = createIndexKey(searchTerm, ""); // searchTerm + SEP
+        final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, false);
 
-        return !index.subSet(lowerKey, true, upperKey, false).isEmpty();
+        for (final byte[] indexKey : range) {
+            if (decodeKey(indexKey)[1].equals(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<byte[]> index,
-            final String searchTerm, final String key) {
-        final byte[] lowerKey = createIndexKey("", key);
-        final byte[] upperKey = createIndexKey(searchTerm, key);
+    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
+            final String key) {
+        final byte[] lowerKey = createIndexKey("", "");
+        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR); // Include up to searchTerm + high byte
+        final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
 
-        return !index.subSet(lowerKey, true, upperKey, true).isEmpty();
+        for (final byte[] indexKey : range) {
+            if (decodeKey(indexKey)[1].equals(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public boolean isGreaterThanIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
             final String key) {
-        final byte[] lowerKey = createIndexKey(searchTerm, key);
-        final byte[] upperKey = createIndexKey(NON_CHAR, key);
+        final byte[] lowerKey = createIndexKey(searchTerm, "");
+        final byte[] upperKey = createIndexKey(NON_CHAR, "");
+        final NavigableSet<byte[]> range = index.subSet(lowerKey, false, upperKey, true);
 
-        return !index.subSet(lowerKey, false, upperKey, true).isEmpty();
+        for (final byte[] indexKey : range) {
+            if (decodeKey(indexKey)[1].equals(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public boolean isGreaterThanOrEqualIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
             final String key) {
-        final byte[] lowerKey = createIndexKey(searchTerm, key);
-        // Upper bound: maximal fieldValue + SEP + primaryKey
-        final byte[] upperKey = createIndexKey(NON_CHAR, key);
+        final byte[] lowerKey = createIndexKey(searchTerm, "");
+        final byte[] upperKey = createIndexKey(NON_CHAR, "");
+        final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
 
-        // 4. Compare with target key
-        return !index.subSet(lowerKey, true, upperKey, true).isEmpty();
+        for (final byte[] indexKey : range) {
+            if (decodeKey(indexKey)[1].equals(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public boolean isLikeIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
@@ -492,9 +660,16 @@ public final class MapDb {
     }
 
     public boolean isStartsWithIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
-        final byte[] lowerKey = createIndexKey(searchTerm, key);
-        final byte[] upperKey = createIndexKey(searchTerm + NON_CHAR, key);
-        return !index.subSet(lowerKey, true, upperKey, false).isEmpty();
+        final byte[] lowerKey = createIndexKey(searchTerm, "");
+        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
+        final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, false);
+
+        for (final byte[] indexKey : range) {
+            if (decodeKey(indexKey)[1].equals(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public boolean isEndsWithIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
@@ -529,14 +704,16 @@ public final class MapDb {
 
     public boolean isBetweenIndexMatch(final NavigableSet<byte[]> index, final String lowerBound,
             final String upperBound, final String key) {
-        final byte[] lowerKey = createIndexKey(lowerBound, key);
-        final byte[] upperKey = createIndexKey(upperBound, key);
+        // Use the SAME key format as getBetweenIndexSubset
+        final byte[] lowerKey = createIndexKey(lowerBound, ""); // Prefix-based lower bound
+        final byte[] upperKey = createIndexKey(upperBound, NON_CHAR); // Prefix-based upper bound
 
+        // Get all keys in the range (like getBetweenIndexSubset)
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
 
+        // Check if any key in the range ends with SEP + key
         for (final byte[] indexKey : range) {
-            final String indexKeyStr = new String(indexKey, StandardCharsets.UTF_8);
-            if (indexKeyStr.endsWith(SEP + key)) {
+            if (decodeKey(indexKey)[1].equals(key)) {
                 return true;
             }
         }

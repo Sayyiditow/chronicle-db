@@ -172,7 +172,7 @@ public final class ChronicleUtils {
                         ? setSearchTermNonIndexed((List<Object>) search.searchTerm(), fieldType)
                         : null;
 
-        final Object currentValue = fieldData.getterHandle.invoke(value);
+        final Object currentValue = fieldData.getterHandle.invokeExact(value);
         if (currentValue == null)
             return false;
 
@@ -284,7 +284,7 @@ public final class ChronicleUtils {
                         final String field = fieldEntry.getKey();
                         final Set<byte[]> batch = fieldBatches.get(field);
                         if (batch != null) {
-                            final Object currentValue = fieldEntry.getValue().getterHandle.invoke(value);
+                            final Object currentValue = fieldEntry.getValue().getterHandle.invokeExact(value);
                             batch.add(MAP_DB.createIndexKey(currentValue, key.toString()));
                         }
                     }
@@ -381,7 +381,7 @@ public final class ChronicleUtils {
                     final K key = entry.getKey();
                     final V value = entry.getValue();
                     try {
-                        final Object indexValue = fieldData.getterHandle.invoke(value);
+                        final Object indexValue = fieldData.getterHandle.invokeExact(value);
                         compositeKeysToRemove
                                 .add(MAP_DB.createIndexKey(indexValue, key.toString()));
                     } catch (final Throwable e) {
@@ -459,12 +459,12 @@ public final class ChronicleUtils {
                     final V newValue = entry.getValue();
                     final V prevValue = previousValues.get(key);
                     try {
-                        final Object newIndexKey = fieldData.getterHandle.invoke(newValue);
+                        final Object newIndexKey = fieldData.getterHandle.invokeExact(newValue);
                         if (prevValue == null) {
                             compositeKeysToAdd
                                     .add(MAP_DB.createIndexKey(newIndexKey, key.toString()));
                         } else {
-                            final Object prevIndexKey = fieldData.getterHandle.invoke(prevValue);
+                            final Object prevIndexKey = fieldData.getterHandle.invokeExact(prevValue);
                             if (!Objects.equals(newIndexKey, prevIndexKey)) {
                                 compositeKeysToRemove.add(
                                         MAP_DB.createIndexKey(prevIndexKey, key.toString()));
@@ -527,11 +527,11 @@ public final class ChronicleUtils {
         final var classData = getClassData(sampleValue.getClass());
         final MethodHandle headersMethod = classData.headerHandle;
         final MethodHandle rowMethod = classData.rowHandle;
-        final String[] headerList = (String[]) headersMethod.invoke(sampleValue);
+        final String[] headerList = (String[]) headersMethod.invokeExact(sampleValue);
         final List<Object[]> rowList = new ArrayList<>(map.size());
 
         for (final var entry : map.entrySet()) {
-            rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
+            rowList.add((Object[]) rowMethod.invokeExact(entry.getValue(), entry.getKey()));
         }
 
         return new CsvObject(headerList, rowList);
@@ -548,7 +548,7 @@ public final class ChronicleUtils {
             final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, f);
             if (methodHandle != null) {
                 try {
-                    valueMap.put(f, methodHandle.invoke(value));
+                    valueMap.put(f, methodHandle.invokeExact(value));
                 } catch (final Throwable e) {
                     // should not happen, all fields must be public
                     Logger.error("Field [{}] in [{}] could not get value.", f, objectName);
@@ -597,7 +597,7 @@ public final class ChronicleUtils {
         for (final var k : fields) {
             final var fieldData = getFieldData(oldObject.getClass(), k);
             if (fieldData != null)
-                fieldData.setterHandle.invoke(oldObject, fieldData.getterHandle.invoke(newObject));
+                fieldData.setterHandle.invokeExact(oldObject, fieldData.getterHandle.invokeExact(newObject));
         }
     }
 
@@ -605,7 +605,7 @@ public final class ChronicleUtils {
             throws Throwable {
         final var setterHandle = getCachedFieldSetterHandle(object.getClass(), fieldName);
         if (setterHandle != null)
-            setterHandle.invoke(object, fieldValue);
+            setterHandle.invokeExact(object, fieldValue);
     }
 
     public <V> void setObjectValue(final V object, final String fieldName, final Object fieldValue)
@@ -615,9 +615,9 @@ public final class ChronicleUtils {
         if (fieldData != null) {
             final var type = fieldData.field.getType();
             if (type.isEnum())
-                fieldData.setterHandle.invoke(object, toEnum(type, fieldValue));
+                fieldData.setterHandle.invokeExact(object, toEnum(type, fieldValue));
             else
-                fieldData.setterHandle.invoke(object, fieldValue);
+                fieldData.setterHandle.invokeExact(object, fieldValue);
 
         }
     }
@@ -626,16 +626,16 @@ public final class ChronicleUtils {
             throws Throwable {
         final var fieldData = getFieldData(object.getClass(), fieldName);
         if (fieldData != null) {
-            final var value = (String) fieldData.getterHandle.invoke(object);
-            fieldData.setterHandle.invoke(object, value + fieldValue);
+            final var value = (String) fieldData.getterHandle.invokeExact(object);
+            fieldData.setterHandle.invokeExact(object, value + fieldValue);
         }
     }
 
     public <V> void replaceObjectValue(final V object, final String fieldName, final String fieldValue,
             final String toReplace) throws Throwable {
         final var fieldData = getFieldData(object.getClass(), fieldName);
-        final var value = ((String) fieldData.getterHandle.invoke(object)).replace(toReplace, fieldValue);
-        fieldData.setterHandle.invoke(object, value);
+        final var value = ((String) fieldData.getterHandle.invokeExact(object)).replace(toReplace, fieldValue);
+        fieldData.setterHandle.invokeExact(object, value);
     }
 
     public void deleteFileIfExists(final String filePath) {
@@ -785,8 +785,8 @@ public final class ChronicleUtils {
                     final var valueClass = e1Value.getClass();
                     final var fieldData = getFieldData(valueClass, orderByField);
                     try {
-                        final Object value1 = fieldData.getterHandle.invoke(e1Value);
-                        final Object value2 = fieldData.getterHandle.invoke(e2.getValue());
+                        final Object value1 = fieldData.getterHandle.invokeExact(e1Value);
+                        final Object value2 = fieldData.getterHandle.invokeExact(e2.getValue());
                         return Long.compare((long) value1, (long) value2);
                     } catch (final Throwable t) {
                         return 0;
