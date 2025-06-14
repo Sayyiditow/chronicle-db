@@ -727,11 +727,10 @@ public interface ChronicleDao<V> {
             return false;
         }
 
-
         final var dataFiles = getDataFiles();
         final var deletedMap = new HashMap<String, V>();
         Logger.info("Deleting {} keys at [{}].", keys.size(), dataPath());
-        
+
         if (dataFiles.size() <= 1) {
             final Object lock = LOCKS.computeIfAbsent(dataPath() + DATA_FILE, k -> new Object());
             synchronized (lock) {
@@ -1521,6 +1520,8 @@ public interface ChronicleDao<V> {
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
                 ? new HashSet<>((List<String>) search.searchTerm())
                 : null;
+        final List<Object> searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm()
+                : null;
 
         switch (searchType) {
             case EQUAL -> {
@@ -1577,6 +1578,11 @@ public interface ChronicleDao<V> {
             }
             case NOT_IN -> {
                 final var keys = MAP_DB.getNotInIndexSubset(index, searchTermSet);
+                addKeysUpToLimit(keys, matchingKeys, limit);
+            }
+            case BETWEEN -> {
+                final var keys = MAP_DB.getBetweenIndexSubset(index, searchTermBetween.get(0).toString(),
+                        searchTermBetween.get(1).toString());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);

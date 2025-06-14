@@ -532,6 +532,14 @@ public final class MapDb {
         final byte[] lowerKey = createIndexKey(lowerBound, key);
         final byte[] upperKey = createIndexKey(upperBound, key);
 
-        return !index.subSet(lowerKey, true, upperKey, true).isEmpty();
+        final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
+
+        for (final byte[] indexKey : range) {
+            final String indexKeyStr = new String(indexKey, StandardCharsets.UTF_8);
+            if (indexKeyStr.endsWith(SEP + key)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
