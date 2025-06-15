@@ -1434,6 +1434,123 @@ public interface ChronicleDao<V> {
         return matchingKeys;
     }
 
+    default int indexedSearchCount(final Search search, final NavigableSet<byte[]> index) {
+        Logger.info("Index counting at [{}] for {}.", dataPath(), search);
+        if (index == null || index.isEmpty()) {
+            return 0;
+        }
+
+        final SearchType searchType = search.searchType();
+        final String searchTerm = String.valueOf(search.searchTerm());
+        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? new HashSet<>((List<String>) search.searchTerm())
+                : null;
+        final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
+
+        switch (searchType) {
+            case EQUAL -> {
+                return MAP_DB.getEqualIndexSubsetSize(index, searchTerm);
+            }
+            case NOT_EQUAL -> {
+                return MAP_DB.getNotEqualIndexSubsetSize(index, searchTerm);
+            }
+            case LESS -> {
+                return MAP_DB.getLessThanIndexSubsetSize(index, searchTerm);
+            }
+            case LESS_OR_EQUAL -> {
+                return MAP_DB.getLessThanOrEqualIndexSubsetSize(index, searchTerm);
+            }
+            case GREATER -> {
+                return MAP_DB.getGreaterThanIndexSubsetSize(index, searchTerm);
+            }
+            case GREATER_OR_EQUAL -> {
+                return MAP_DB.getGreaterThanOrEqualIndexSubsetSize(index, searchTerm);
+            }
+            case LIKE -> {
+                return MAP_DB.getLikeIndexSubsetSize(index, searchTerm);
+            }
+            case NOT_LIKE -> {
+                return MAP_DB.getNotLikeIndexSubsetSize(index, searchTerm);
+            }
+            case STARTS_WITH -> {
+                return MAP_DB.getStartsWithIndexSubsetSize(index, searchTerm);
+            }
+            case ENDS_WITH -> {
+                return MAP_DB.getEndsWithIndexSubsetSize(index, searchTerm);
+            }
+            case IN -> {
+                var size = 0;
+                for (final var term : searchTermSet) {
+                    size += MAP_DB.getEqualIndexSubsetSize(index, term);
+                }
+                return size;
+            }
+            case NOT_IN -> {
+                return MAP_DB.getNotInIndexSubsetSize(index, searchTermSet);
+            }
+            case BETWEEN -> {
+                return MAP_DB.getBetweenIndexSubsetSize(index, searchTermBetween.get(0).toString(),
+                        searchTermBetween.get(1).toString());
+            }
+            default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
+        }
+    }
+
+    default int indexedSearchCount(final Search search, final NavigableSet<byte[]> index,
+            final Set<String> matchingKeys) {
+        Logger.info("Index searching at [{}] for {}.", dataPath(), search);
+        if (index == null || index.isEmpty()) {
+            return 0;
+        }
+
+        final SearchType searchType = search.searchType();
+        final String searchTerm = String.valueOf(search.searchTerm());
+        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
+                ? new HashSet<>((List<String>) search.searchTerm())
+                : null;
+        final List<Object> searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm()
+                : null;
+        final Set<String> results = new HashSet<>(matchingKeys.size());
+
+        for (final String key : matchingKeys) {
+            final boolean removeKey = switch (searchType) {
+                case EQUAL -> {
+                    final byte[] searchKey = MAP_DB.createIndexKey(searchTerm, key);
+                    yield !index.contains(searchKey);
+                }
+                case NOT_EQUAL -> {
+                    final byte[] searchKey = MAP_DB.createIndexKey(searchTerm, key);
+                    yield index.contains(searchKey);
+                }
+                case LESS -> !MAP_DB.isLessThanIndexMatch(index, searchTerm, key);
+                case LESS_OR_EQUAL -> !MAP_DB.isLessThanOrEqualIndexMatch(index, searchTerm, key);
+                case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, searchTerm, key);
+                case GREATER_OR_EQUAL -> !MAP_DB.isGreaterThanOrEqualIndexMatch(index, searchTerm, key);
+                case LIKE -> !MAP_DB.isLikeIndexMatch(index, searchTerm, key);
+                case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, searchTerm, key);
+                case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, searchTerm, key);
+                case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, searchTerm, key);
+                case IN -> searchTermSet.stream().noneMatch(term -> {
+                    final byte[] searchKey = MAP_DB.createIndexKey(term, key);
+                    return index.contains(searchKey);
+                });
+                case NOT_IN -> searchTermSet.stream().anyMatch(term -> {
+                    final byte[] searchKey = MAP_DB.createIndexKey(term, key);
+                    return index.contains(searchKey);
+                });
+                case BETWEEN ->
+                    !MAP_DB.isBetweenIndexMatch(index, searchTermBetween.get(0).toString(),
+                            searchTermBetween.get(1).toString(), key);
+                default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
+            };
+            if (!removeKey) {
+                results.add(key);
+            }
+        }
+
+        return results.size();
+    }
+
     default Set<String> indexedSearch(final Search search, final NavigableSet<byte[]> index,
             final Set<String> matchingKeys) {
         Logger.info("Index searching at [{}] for {}.", dataPath(), search);
