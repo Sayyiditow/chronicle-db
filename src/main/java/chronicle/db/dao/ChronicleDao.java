@@ -1375,60 +1375,62 @@ public interface ChronicleDao<V> {
 
         switch (searchType) {
             case EQUAL -> {
-                final var keys = MAP_DB.getEqualIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getEqualIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case NOT_EQUAL -> {
-                final var keysBefore = MAP_DB.getBeforeIndexSubset(index, searchTerm);
+                final var keysBefore = MAP_DB.getBeforeIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keysBefore, matchingKeys);
-                final var keysAfter = MAP_DB.getAfterIndexSubset(index, searchTerm);
-                populateMatchingKeys(keysAfter, matchingKeys);
+                if (search.limit() != -1 && matchingKeys.size() < search.limit()) {
+                    final var keysAfter = MAP_DB.getAfterIndexSubset(index, searchTerm, search.limit());
+                    populateMatchingKeys(keysAfter, matchingKeys);
+                }
             }
             case LESS -> {
-                final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case LESS_OR_EQUAL -> {
-                final var keys = MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case GREATER -> {
-                final var keys = MAP_DB.getGreaterThanIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getGreaterThanIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case GREATER_OR_EQUAL -> {
-                final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case LIKE -> {
-                final var keys = MAP_DB.getLikeIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getLikeIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case NOT_LIKE -> {
-                final var keys = MAP_DB.getNotLikeIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getNotLikeIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case STARTS_WITH -> {
-                final var keys = MAP_DB.getStartsWithIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getStartsWithIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case ENDS_WITH -> {
-                final var keys = MAP_DB.getEndsWithIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getEndsWithIndexSubset(index, searchTerm, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case IN -> {
                 for (final var term : searchTermSet) {
-                    final var keys = MAP_DB.getEqualIndexSubset(index, term);
+                    final var keys = MAP_DB.getEqualIndexSubset(index, term, search.limit());
                     populateMatchingKeys(keys, matchingKeys);
                 }
             }
             case NOT_IN -> {
-                final var keys = MAP_DB.getNotInIndexSubset(index, searchTermSet);
+                final var keys = MAP_DB.getNotInIndexSubset(index, searchTermSet, search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             case BETWEEN -> {
                 final var keys = MAP_DB.getBetweenIndexSubset(index, searchTermBetween.get(0).toString(),
-                        searchTermBetween.get(1).toString());
+                        searchTermBetween.get(1).toString(), search.limit());
                 populateMatchingKeys(keys, matchingKeys);
             }
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
@@ -1488,7 +1490,10 @@ public interface ChronicleDao<V> {
             }
         }
 
-        return results;
+        if (search.limit() == -1)
+            return results;
+
+        return CHRONICLE_UTILS.limitSetValues(results, search.limit());
     }
 
     private void addKeysUpToLimit(final Collection<byte[]> keys, final Set<String> matchingKeys, final int limit) {
@@ -1521,64 +1526,64 @@ public interface ChronicleDao<V> {
 
         switch (searchType) {
             case EQUAL -> {
-                final var keys = MAP_DB.getEqualIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getEqualIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case NOT_EQUAL -> {
-                final var keysBefore = MAP_DB.getBeforeIndexSubset(index, searchTerm);
+                final var keysBefore = MAP_DB.getBeforeIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keysBefore, matchingKeys, limit);
                 if (matchingKeys.size() < limit) {
-                    final var keysAfter = MAP_DB.getAfterIndexSubset(index, searchTerm);
+                    final var keysAfter = MAP_DB.getAfterIndexSubset(index, searchTerm, search.limit());
                     addKeysUpToLimit(keysAfter, matchingKeys, limit);
                 }
             }
             case LESS -> {
-                final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getLessThanIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case LESS_OR_EQUAL -> {
-                final var keys = MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case GREATER -> {
-                final var keys = MAP_DB.getGreaterThanIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getGreaterThanIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case GREATER_OR_EQUAL -> {
-                final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case LIKE -> {
-                final var keys = MAP_DB.getLikeIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getLikeIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case NOT_LIKE -> {
-                final var keys = MAP_DB.getNotLikeIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getNotLikeIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case STARTS_WITH -> {
-                final var keys = MAP_DB.getStartsWithIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getStartsWithIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case ENDS_WITH -> {
-                final var keys = MAP_DB.getEndsWithIndexSubset(index, searchTerm);
+                final var keys = MAP_DB.getEndsWithIndexSubset(index, searchTerm, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case IN -> {
                 for (final var term : searchTermSet) {
                     if (matchingKeys.size() >= limit)
                         break;
-                    final var keys = MAP_DB.getEqualIndexSubset(index, term);
+                    final var keys = MAP_DB.getEqualIndexSubset(index, term, search.limit());
                     addKeysUpToLimit(keys, matchingKeys, limit);
                 }
             }
             case NOT_IN -> {
-                final var keys = MAP_DB.getNotInIndexSubset(index, searchTermSet);
+                final var keys = MAP_DB.getNotInIndexSubset(index, searchTermSet, search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             case BETWEEN -> {
                 final var keys = MAP_DB.getBetweenIndexSubset(index, searchTermBetween.get(0).toString(),
-                        searchTermBetween.get(1).toString());
+                        searchTermBetween.get(1).toString(), search.limit());
                 addKeysUpToLimit(keys, matchingKeys, limit);
             }
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);

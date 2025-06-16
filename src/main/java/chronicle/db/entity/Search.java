@@ -6,7 +6,7 @@ import java.util.Map;
 
 import com.jsoniter.annotation.JsonCreator;
 
-public record Search(String field, SearchType searchType, Object searchTerm) {
+public record Search(String field, SearchType searchType, Object searchTerm, int limit) {
     public enum SearchType {
         EQUAL,
         NOT_EQUAL,
@@ -46,13 +46,14 @@ public record Search(String field, SearchType searchType, Object searchTerm) {
     }
 
     @JsonCreator
-    public Search(final String field, final SearchType searchType, final Object searchTerm) {
+    public Search(final String field, final SearchType searchType, final Object searchTerm, final int limit) {
         this.field = field;
         this.searchType = searchType;
         this.searchTerm = searchTerm;
+        this.limit = limit;
     }
 
     public Search withSearchTerm(final Object searchTerm) {
-        return new Search(this.field, this.searchType, searchTerm);
+        return new Search(this.field, this.searchType, searchTerm, this.limit);
     }
 }
