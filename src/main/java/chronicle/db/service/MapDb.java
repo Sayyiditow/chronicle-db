@@ -4,14 +4,14 @@ import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
+import java.util.Iterator;
 import java.util.NavigableSet;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 
 import org.mapdb.DB;
@@ -254,180 +254,215 @@ public final class MapDb {
         throw new IllegalArgumentException("Separator byte not found in key");
     }
 
-    public Collection<byte[]> getLimitedSubset(final NavigableSet<byte[]> subset, final int limit) {
-        if (subset.size() <= limit) {
-            return subset;
-        }
-
-        final var limitedList = new ArrayList<byte[]>(10_000);
-        for (final byte[] bs : subset) {
-            limitedList.add(bs);
-            if (limitedList.size() >= limit) {
-                break;
-            }
-        }
-
-        return limitedList;
+    public record SearchResult<T>(Iterable<T> results, AtomicInteger size) {
     }
 
-    public Collection<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit) {
+    // lazy limited results, nothing loaded to memory
+    public Iterable<byte[]> getLimitedSubset(final NavigableSet<byte[]> subset, final int limit) {
+        return () -> new Iterator<>() {
+            private final Iterator<byte[]> delegate = subset.iterator();
+            private int count = 0;
+
+            @Override
+            public boolean hasNext() {
+                return count < limit && delegate.hasNext();
+            }
+
+            @Override
+            public byte[] next() {
+                if (count++ >= limit) {
+                    throw new NoSuchElementException();
+                }
+                return delegate.next();
+            }
+        };
+    }
+
+    public NavigableSet<byte[]> getEqualIndexSubsetRaw(final NavigableSet<byte[]> index, final String searchTerm) {
         final byte[] fieldBytes = searchTerm.getBytes(StandardCharsets.UTF_8);
         final byte[] lowerKey = ByteBuffer.allocate(fieldBytes.length + 1).put(fieldBytes).put(SEP).array();
-
         final byte[] upperKey = ByteBuffer.allocate(fieldBytes.length + 2).put(fieldBytes).put(SEP).put((byte) 0xFF)
                 .array();
-        final var result = index.subSet(lowerKey, true, upperKey, false);
-
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return index.subSet(lowerKey, true, upperKey, false);
     }
 
-    public Collection<byte[]> getBeforeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+    private SearchResult<byte[]> getSearchResult(final NavigableSet<byte[]> result, final int limit) {
+        final var resultSize = result.size();
+
+        if (limit == -1 || resultSize <= limit) {
+            return new SearchResult<byte[]>(result, new AtomicInteger(resultSize));
+        }
+
+        return new SearchResult<byte[]>(getLimitedSubset(result, limit), new AtomicInteger(limit));
+    }
+
+    public SearchResult<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+            final int limit) {
+        return getSearchResult(getEqualIndexSubsetRaw(index, searchTerm), limit);
+    }
+
+    public SearchResult<byte[]> getBeforeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
         final byte[] upperKey = createIndexKey(searchTerm, "");
         final byte[] lowerKey = new byte[] { 0 }; // Minimal key
-        final var result = index.subSet(lowerKey, true, upperKey, false);
-
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return getSearchResult(index.subSet(lowerKey, true, upperKey, false), limit);
     }
 
-    public Collection<byte[]> getAfterIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+    public SearchResult<byte[]> getAfterIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
         final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
         final byte[] lowerKey = new byte[] { (byte) 0xFF, (byte) 0xFF }; // NON_CHAR
-        final var result = index.subSet(lowerKey, false, upperKey, false);
-
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return getSearchResult(index.subSet(lowerKey, false, upperKey, false), limit);
     }
 
-    public Collection<byte[]> getLessThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+    public SearchResult<byte[]> getLessThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
         final byte[] upperKey = createIndexKey(searchTerm, "");
-        final var result = index.headSet(upperKey, false);
-
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return getSearchResult(index.headSet(upperKey, false), limit);
     }
 
-    public Collection<byte[]> getLessThanOrEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+    public SearchResult<byte[]> getLessThanOrEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
         final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
-        final var result = index.headSet(upperKey, true);
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return getSearchResult(index.headSet(upperKey, true), limit);
     }
 
-    public Collection<byte[]> getGreaterThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+    public SearchResult<byte[]> getGreaterThanIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
         final byte[] lowerKey = createIndexKey(searchTerm, NON_CHAR);
-        final var result = index.tailSet(lowerKey, false);
-
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return getSearchResult(index.tailSet(lowerKey, false), limit);
     }
 
-    public Collection<byte[]> getGreaterThanOrEqualIndexSubset(final NavigableSet<byte[]> index,
+    public SearchResult<byte[]> getGreaterThanOrEqualIndexSubset(final NavigableSet<byte[]> index,
             final String searchTerm, final int limit) {
         final byte[] lowerKey = createIndexKey(searchTerm, "");
-        final var result = index.tailSet(lowerKey, true);
-
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return getSearchResult(index.tailSet(lowerKey, true), limit);
     }
 
-    public Collection<byte[]> getStartsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+    public SearchResult<byte[]> getStartsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
         final byte[] lowerKey = searchTerm.getBytes(StandardCharsets.UTF_8);
         final byte[] upperKey = (searchTerm + NON_CHAR).getBytes(StandardCharsets.UTF_8);
-        final var result = index.subSet(lowerKey, true, upperKey, false);
-
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return getSearchResult(index.subSet(lowerKey, true, upperKey, false), limit);
     }
 
-    public Collection<byte[]> getBetweenIndexSubset(final NavigableSet<byte[]> index, final String lowerBound,
+    public SearchResult<byte[]> getBetweenIndexSubset(final NavigableSet<byte[]> index, final String lowerBound,
             final String upperBound, final int limit) {
         // Use createPrefixKey for bounds
         final byte[] lowerKey = createIndexKey(lowerBound, "");
         final byte[] upperKey = createIndexKey(upperBound, NON_CHAR);
-        final var result = index.subSet(lowerKey, true, upperKey, true);
-
-        if (limit == -1)
-            return result;
-
-        return getLimitedSubset(result, limit);
+        return getSearchResult(index.subSet(lowerKey, true, upperKey, true), limit);
     }
 
-    public List<byte[]> getLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm, final int limit) {
-        final List<byte[]> result = new ArrayList<>(10_000);
-
-        // Iterate all keys (LIKE requires full scan)
-        for (final byte[] key : index) {
-            final String[] decoded = decodeKey(key);
-            final String fieldValue = decoded[0];
-
-            if (CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
-                result.add(key);
-            }
-            if (limit != -1 && result.size() >= limit)
-                return result;
-        }
-
-        return result;
-    }
-
-    public List<byte[]> getNotLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+    public SearchResult<byte[]> getLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final List<byte[]> result = new ArrayList<>(10_000);
+        final AtomicInteger count = new AtomicInteger(0);
 
-        // Iterate all keys (LIKE requires full scan)
-        for (final byte[] key : index) {
-            final String[] decoded = decodeKey(key);
-            final String fieldValue = decoded[0];
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            private final Iterator<byte[]> it = index.iterator();
+            private byte[] nextMatch = null;
 
-            if (!CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
-                result.add(key);
+            @Override
+            public boolean hasNext() {
+                if (limit != -1 && count.get() >= limit)
+                    return false;
+
+                while (it.hasNext()) {
+                    final byte[] key = it.next();
+                    final String[] decoded = decodeKey(key);
+                    final String fieldValue = decoded[0];
+
+                    if (CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
+                        nextMatch = key;
+                        return true;
+                    }
+                }
+
+                return false;
             }
-            if (limit != -1 && result.size() >= limit)
-                return result;
-        }
 
-        return result;
+            @Override
+            public byte[] next() {
+                if (nextMatch == null && !hasNext())
+                    throw new NoSuchElementException();
+                count.incrementAndGet();
+                final byte[] result = nextMatch;
+                nextMatch = null;
+                return result;
+            }
+        };
+
+        return new SearchResult<byte[]>(iterable, count);
     }
 
-    public NavigableSet<byte[]> getNotInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms,
+    public SearchResult<byte[]> getNotLikeIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+            final int limit) {
+        final AtomicInteger count = new AtomicInteger(0);
+
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            private final Iterator<byte[]> it = index.iterator();
+            private byte[] nextMatch = null;
+
+            @Override
+            public boolean hasNext() {
+                if (limit != -1 && count.get() >= limit)
+                    return false;
+
+                while (it.hasNext()) {
+                    final byte[] key = it.next();
+                    final String[] decoded = decodeKey(key);
+                    final String fieldValue = decoded[0];
+
+                    if (!CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
+                        nextMatch = key;
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            @Override
+            public byte[] next() {
+                if (nextMatch == null && !hasNext())
+                    throw new NoSuchElementException();
+                count.incrementAndGet();
+                final byte[] result = nextMatch;
+                nextMatch = null;
+                return result;
+            }
+        };
+
+        return new SearchResult<byte[]>(iterable, count);
+    }
+
+    public SearchResult<byte[]> getInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
         final NavigableSet<byte[]> subSet = new TreeSet<>(index);
 
         for (final String searchTerm : searchTerms) {
-            subSet.removeAll(getEqualIndexSubset(index, searchTerm, -1));
+            subSet.addAll(getEqualIndexSubsetRaw(index, searchTerm));
             if (limit != -1 && subSet.size() >= limit)
-                return subSet;
+                return new SearchResult<byte[]>(subSet, new AtomicInteger(limit));
         }
 
-        return subSet;
+        return new SearchResult<byte[]>(subSet, new AtomicInteger(subSet.size()));
     }
 
-    public List<byte[]> getEndsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
+    public SearchResult<byte[]> getNotInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms,
+            final int limit) {
+        final NavigableSet<byte[]> subSet = new TreeSet<>(index);
+
+        for (final String searchTerm : searchTerms) {
+            subSet.removeAll(getEqualIndexSubsetRaw(index, searchTerm));
+            if (limit != -1 && subSet.size() >= limit)
+                return new SearchResult<byte[]>(subSet, new AtomicInteger(limit));
+        }
+
+        return new SearchResult<byte[]>(subSet, new AtomicInteger(subSet.size()));
+    }
+
+    public SearchResult<byte[]> getEndsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
         final byte[] suffix = searchTerm.getBytes(StandardCharsets.UTF_8);
         final byte[] suffixWithSep = ByteBuffer.allocate(suffix.length + 1)
@@ -435,21 +470,66 @@ public final class MapDb {
                 .put(SEP)
                 .array();
 
-        final List<byte[]> result = new ArrayList<>(10_000);
+        final AtomicInteger count = new AtomicInteger(0);
+        final String suffixWithSepStr = new String(suffixWithSep, StandardCharsets.UTF_8);
 
-        for (final byte[] key : index) {
-            final String keyStr = new String(key, StandardCharsets.UTF_8);
-            if (keyStr.contains(new String(suffixWithSep, StandardCharsets.UTF_8)) &&
-                    keyStr.regionMatches(
-                            keyStr.length() - suffixWithSep.length - keyStr.substring(keyStr.indexOf(SEP) + 1).length(),
-                            new String(suffixWithSep, StandardCharsets.UTF_8), 0, suffixWithSep.length)) {
-                result.add(key);
-                if (limit != -1 && result.size() >= limit)
-                    return result;
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            private final Iterator<byte[]> it = index.iterator();
+            private byte[] nextItem = null;
+            private boolean hasNextComputed = false;
+
+            @Override
+            public boolean hasNext() {
+                if (hasNextComputed) {
+                    return nextItem != null;
+                }
+
+                while (it.hasNext()) {
+                    if (limit != -1 && count.get() >= limit) {
+                        nextItem = null;
+                        hasNextComputed = true;
+                        return false;
+                    }
+
+                    final byte[] key = it.next();
+                    final String keyStr = new String(key, StandardCharsets.UTF_8);
+
+                    // Skip invalid format
+                    final int sepIndex = keyStr.indexOf((char) SEP);
+                    if (sepIndex == -1) {
+                        continue;
+                    }
+
+                    final int suffixStart = keyStr.length() - suffixWithSepStr.length()
+                            - (keyStr.length() - sepIndex - 1);
+                    if (suffixStart >= 0
+                            && keyStr.regionMatches(suffixStart, suffixWithSepStr, 0, suffixWithSepStr.length())) {
+
+                        nextItem = key;
+                        hasNextComputed = true;
+                        return true;
+                    }
+                }
+
+                nextItem = null;
+                hasNextComputed = true;
+                return false;
             }
-        }
 
-        return result;
+            @Override
+            public byte[] next() {
+                if (!hasNext()) {
+                    throw new NoSuchElementException();
+                }
+                count.incrementAndGet();
+                final byte[] result = nextItem;
+                nextItem = null;
+                hasNextComputed = false;
+                return result;
+            }
+        };
+
+        return new SearchResult<byte[]>(iterable, count);
     }
 
     public boolean isLessThanIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {

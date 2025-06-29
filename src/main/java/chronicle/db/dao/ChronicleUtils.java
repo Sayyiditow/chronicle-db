@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -809,5 +810,22 @@ public final class ChronicleUtils {
         }
 
         return Map.of("totalPages", totalPages, "page", page, "data", resultData);
+    }
+
+    public <T> Iterable<T> concatIterable(final Iterable<T> first, final Iterable<T> second) {
+        return () -> new Iterator<>() {
+            private final Iterator<T> firstIterator = first.iterator();
+            private final Iterator<T> secondIterator = second.iterator();
+
+            @Override
+            public boolean hasNext() {
+                return firstIterator.hasNext() || secondIterator.hasNext();
+            }
+
+            @Override
+            public T next() {
+                return firstIterator.hasNext() ? firstIterator.next() : secondIterator.next();
+            }
+        };
     }
 }
