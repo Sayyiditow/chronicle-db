@@ -438,7 +438,7 @@ public final class MapDb {
 
     public SearchResult<byte[]> getInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
-        final NavigableSet<byte[]> subSet = new TreeSet<>(index);
+        final NavigableSet<byte[]> subSet = new TreeSet<>(index.comparator());
 
         for (final String searchTerm : searchTerms) {
             subSet.addAll(getEqualIndexSubsetRaw(index, searchTerm));
