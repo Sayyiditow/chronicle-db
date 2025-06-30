@@ -362,8 +362,7 @@ public final class MapDb {
 
                 while (it.hasNext()) {
                     final byte[] key = it.next();
-                    final String[] decoded = decodeKey(key);
-                    final String fieldValue = decoded[0];
+                    final String fieldValue = extractIndexValue(key);
 
                     if (CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
                         nextMatch = key;
@@ -403,8 +402,7 @@ public final class MapDb {
 
                 while (it.hasNext()) {
                     final byte[] key = it.next();
-                    final String[] decoded = decodeKey(key);
-                    final String fieldValue = decoded[0];
+                    final String fieldValue = extractIndexValue(key);
 
                     if (!CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
                         nextMatch = key;
@@ -482,8 +480,7 @@ public final class MapDb {
                         break;
 
                     final byte[] key = it.next();
-                    final String[] decoded = decodeKey(key);
-                    if (!searchTerms.contains(decoded[0])) {
+                    if (!searchTerms.contains(extractIndexValue(key))) {
                         nextValid = key;
                         hasNextComputed = true;
                         return true;
@@ -582,7 +579,7 @@ public final class MapDb {
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, false);
 
         for (final byte[] indexKey : range) {
-            if (decodeKey(indexKey)[1].equals(key)) {
+            if (extractIndexKey(indexKey).equals(key)) {
                 return true;
             }
         }
@@ -596,7 +593,7 @@ public final class MapDb {
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
 
         for (final byte[] indexKey : range) {
-            if (decodeKey(indexKey)[1].equals(key)) {
+            if (extractIndexKey(indexKey).equals(key)) {
                 return true;
             }
         }
@@ -610,7 +607,7 @@ public final class MapDb {
         final NavigableSet<byte[]> range = index.subSet(lowerKey, false, upperKey, true);
 
         for (final byte[] indexKey : range) {
-            if (decodeKey(indexKey)[1].equals(key)) {
+            if (extractIndexKey(indexKey).equals(key)) {
                 return true;
             }
         }
@@ -624,7 +621,7 @@ public final class MapDb {
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
 
         for (final byte[] indexKey : range) {
-            if (decodeKey(indexKey)[1].equals(key)) {
+            if (extractIndexKey(indexKey).equals(key)) {
                 return true;
             }
         }
@@ -648,7 +645,7 @@ public final class MapDb {
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, false);
 
         for (final byte[] indexKey : range) {
-            if (decodeKey(indexKey)[1].equals(key)) {
+            if (extractIndexKey(indexKey).equals(key)) {
                 return true;
             }
         }
@@ -696,7 +693,7 @@ public final class MapDb {
 
         // Check if any key in the range ends with SEP + key
         for (final byte[] indexKey : range) {
-            if (decodeKey(indexKey)[1].equals(key)) {
+            if (extractIndexKey(indexKey).equals(key)) {
                 return true;
             }
         }

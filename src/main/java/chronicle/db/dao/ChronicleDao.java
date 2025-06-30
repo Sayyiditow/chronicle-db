@@ -1414,7 +1414,7 @@ public interface ChronicleDao<V> {
                     }
 
                     final byte[] key = it.next();
-                    final String decodedKey = MAP_DB.decodeKey(key)[1]; // primary key part
+                    final String decodedKey = MAP_DB.extractIndexKey(key); // primary key part
 
                     final boolean removeKey = switch (searchType) {
                         case EQUAL -> {
@@ -1553,7 +1553,7 @@ public interface ChronicleDao<V> {
 
             @Override
             public String next() {
-                return MAP_DB.decodeKey(it.next())[1];
+                return MAP_DB.extractIndexKey(it.next());
             }
         };
     }
