@@ -1728,7 +1728,7 @@ public interface ChronicleDao<V> {
         }
 
         // Step 3: Fetch records for the filtered keys
-        Map<String, V> db = get(toStringIterable(searchResult.results()));
+        Map<String, V> db = searchResult != null ? get(toStringIterable(searchResult.results())) : get(matchingKeys);
         if (db.isEmpty()) {
             return Collections.emptyMap();
         }
