@@ -1324,51 +1324,51 @@ public interface ChronicleDao<V> {
 
         switch (searchType) {
             case EQUAL -> {
-                return MAP_DB.getEqualIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getEqualIndexSearch(index, searchTerm, search.limit());
             }
             case NOT_EQUAL -> {
-                final var keysBefore = MAP_DB.getBeforeIndexSubset(index, searchTerm, search.limit());
+                final var keysBefore = MAP_DB.getBeforeIndexSearch(index, searchTerm, search.limit());
                 var combinedResults = keysBefore.results();
                 final var combinedSize = keysBefore.size();
                 if (search.limit() != -1 && keysBefore.size().get() < search.limit()) {
-                    final var keysAfter = MAP_DB.getAfterIndexSubset(index, searchTerm, search.limit());
+                    final var keysAfter = MAP_DB.getAfterIndexSearch(index, searchTerm, search.limit());
                     combinedResults = CHRONICLE_UTILS.concatIterable(keysBefore.results(), keysAfter.results());
                     combinedSize.set(combinedSize.get() + keysAfter.size().get());
                 }
                 return new SearchResult<byte[]>(combinedResults, combinedSize);
             }
             case LESS -> {
-                return MAP_DB.getLessThanIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getLessThanIndexSearch(index, searchTerm, search.limit());
             }
             case LESS_OR_EQUAL -> {
-                return MAP_DB.getLessThanOrEqualIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getLessThanOrEqualIndexSearch(index, searchTerm, search.limit());
             }
             case GREATER -> {
-                return MAP_DB.getGreaterThanIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getGreaterThanIndexSearch(index, searchTerm, search.limit());
             }
             case GREATER_OR_EQUAL -> {
-                return MAP_DB.getGreaterThanOrEqualIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getGreaterThanOrEqualIndexSearch(index, searchTerm, search.limit());
             }
             case LIKE -> {
-                return MAP_DB.getLikeIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getLikeIndexSearch(index, searchTerm, search.limit());
             }
             case NOT_LIKE -> {
-                return MAP_DB.getNotLikeIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getNotLikeIndexSearch(index, searchTerm, search.limit());
             }
             case STARTS_WITH -> {
-                return MAP_DB.getStartsWithIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit());
             }
             case ENDS_WITH -> {
-                return MAP_DB.getEndsWithIndexSubset(index, searchTerm, search.limit());
+                return MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit());
             }
             case IN -> {
-                return MAP_DB.getInIndexSubset(index, searchTermSet, search.limit());
+                return MAP_DB.getInIndexSearch(index, searchTermSet, search.limit());
             }
             case NOT_IN -> {
-                return MAP_DB.getNotInIndexSubset(index, searchTermSet, search.limit());
+                return MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit());
             }
             case BETWEEN -> {
-                return MAP_DB.getBetweenIndexSubset(index, searchTermBetween.get(0).toString(),
+                return MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
                         searchTermBetween.get(1).toString(), search.limit());
             }
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
