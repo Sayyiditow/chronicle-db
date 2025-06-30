@@ -254,37 +254,39 @@ public final class MapDb {
         throw new IllegalArgumentException("Separator byte not found in key");
     }
 
-    public NavigableSet<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final byte[] fieldBytes = searchTerm.getBytes(StandardCharsets.UTF_8);
-        final byte[] lowerKey = ByteBuffer.allocate(fieldBytes.length + 1).put(fieldBytes).put(SEP).array();
-        final byte[] upperKey = ByteBuffer.allocate(fieldBytes.length + 2).put(fieldBytes).put(SEP).put((byte) 0xFF)
-                .array();
-        return index.subSet(lowerKey, true, upperKey, false);
-    }
-
     public record SearchResult<T>(Iterable<T> results, AtomicInteger size) {
     }
 
     private SearchResult<byte[]> getSearchResult(final NavigableSet<byte[]> result, final int limit) {
-        final AtomicInteger count = new AtomicInteger(0);
+        final AtomicInteger count = new AtomicInteger(0); // Updated during iteration
+        final Iterable<byte[]> iterable = () -> new Iterator<byte[]>() {
+            private final Iterator<byte[]> it = result.iterator();
+            private int remainingLimit = limit == -1 ? Integer.MAX_VALUE : limit;
 
-        final Iterator<byte[]> iterator = result.iterator();
-        final Iterator<byte[]> limitedIterator = new Iterator<>() {
             @Override
             public boolean hasNext() {
-                return (limit == -1 || count.get() < limit) && iterator.hasNext();
+                return (remainingLimit > 0) && it.hasNext();
             }
 
             @Override
             public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
+                remainingLimit--;
                 count.incrementAndGet();
-                return iterator.next();
+                return it.next();
             }
         };
 
-        return new SearchResult<>(() -> limitedIterator, count);
+        return new SearchResult<>(iterable, count);
+    }
+
+    public NavigableSet<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+        final byte[] fieldBytes = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] lowerKey = ByteBuffer.allocate(fieldBytes.length + 1).put(fieldBytes).put(SEP).array();
+        final byte[] upperKey = ByteBuffer.allocate(fieldBytes.length + 2).put(fieldBytes).put(SEP).put((byte) 0xFF)
+                .array();
+        return index.subSet(lowerKey, true, upperKey, false);
     }
 
     public SearchResult<byte[]> getEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
