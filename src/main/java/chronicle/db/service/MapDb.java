@@ -431,21 +431,36 @@ public final class MapDb {
 
     public SearchResult<byte[]> getInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
-        final AtomicInteger size = new AtomicInteger(0);
-        Iterable<byte[]> results = Collections::emptyIterator;
+        final Iterator<String> termIterator = searchTerms.iterator();
+        final AtomicInteger count = new AtomicInteger(0);
 
-        for (final String term : searchTerms) {
-            final var resultSet = getEqualIndexSubset(index, term);
-            size.addAndGet(resultSet.size());
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            private Iterator<byte[]> current = Collections.emptyIterator();
 
-            results = CHRONICLE_UTILS.concatIterable(results, resultSet);
-
-            if (limit != -1 && size.get() >= limit) {
-                break;
+            @Override
+            public boolean hasNext() {
+                while ((limit == -1 || count.get() < limit)) {
+                    if (current.hasNext()) {
+                        return true;
+                    } else if (termIterator.hasNext()) {
+                        current = getEqualIndexSubset(index, termIterator.next()).iterator();
+                    } else {
+                        return false;
+                    }
+                }
+                return false;
             }
-        }
 
-        return new SearchResult<>(results, size);
+            @Override
+            public byte[] next() {
+                if (!hasNext())
+                    throw new NoSuchElementException();
+                count.incrementAndGet();
+                return current.next();
+            }
+        };
+
+        return new SearchResult<>(iterable, count);
     }
 
     public SearchResult<byte[]> getNotInIndexSearch(final NavigableSet<byte[]> index,
