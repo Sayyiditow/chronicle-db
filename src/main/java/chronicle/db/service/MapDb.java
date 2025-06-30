@@ -4,11 +4,11 @@ import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.NavigableSet;
 import java.util.NoSuchElementException;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -436,30 +436,84 @@ public final class MapDb {
         return new SearchResult<byte[]>(iterable, count);
     }
 
-    public SearchResult<byte[]> getInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms,
+    public SearchResult<byte[]> getInIndexSubset(final NavigableSet<byte[]> index,
+            final Set<String> searchTerms,
             final int limit) {
-        final NavigableSet<byte[]> subSet = new TreeSet<>(index.comparator());
+        final Iterator<String> termIterator = searchTerms.iterator();
+        final AtomicInteger count = new AtomicInteger(0);
 
-        for (final String searchTerm : searchTerms) {
-            subSet.addAll(getEqualIndexSubsetRaw(index, searchTerm));
-            if (limit != -1 && subSet.size() >= limit)
-                return new SearchResult<byte[]>(subSet, new AtomicInteger(limit));
-        }
+        final Iterable<byte[]> iterable = () -> new Iterator<byte[]>() {
+            private Iterator<byte[]> current = termIterator.hasNext()
+                    ? getEqualIndexSubsetRaw(index, termIterator.next()).iterator()
+                    : Collections.emptyIterator();
 
-        return new SearchResult<byte[]>(subSet, new AtomicInteger(subSet.size()));
+            @Override
+            public boolean hasNext() {
+                while ((limit == -1 || count.get() < limit) && !current.hasNext()) {
+                    if (termIterator.hasNext()) {
+                        current = getEqualIndexSubsetRaw(index, termIterator.next()).iterator();
+                    } else {
+                        return false;
+                    }
+                }
+                return (limit == -1 || count.get() < limit) && current.hasNext();
+            }
+
+            @Override
+            public byte[] next() {
+                if (!hasNext())
+                    throw new NoSuchElementException();
+                count.incrementAndGet();
+                return current.next();
+            }
+        };
+
+        return new SearchResult<>(iterable, count);
     }
 
-    public SearchResult<byte[]> getNotInIndexSubset(final NavigableSet<byte[]> index, final Set<String> searchTerms,
+    public SearchResult<byte[]> getNotInIndexSubset(final NavigableSet<byte[]> index,
+            final Set<String> searchTerms,
             final int limit) {
-        final NavigableSet<byte[]> subSet = new TreeSet<>(index.comparator());
+        final AtomicInteger count = new AtomicInteger(0);
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            final Iterator<byte[]> it = index.iterator();
+            byte[] nextValid = null;
+            boolean hasNextComputed = false;
 
-        for (final String searchTerm : searchTerms) {
-            subSet.removeAll(getEqualIndexSubsetRaw(index, searchTerm));
-            if (limit != -1 && subSet.size() >= limit)
-                return new SearchResult<byte[]>(subSet, new AtomicInteger(limit));
-        }
+            @Override
+            public boolean hasNext() {
+                if (hasNextComputed)
+                    return nextValid != null;
 
-        return new SearchResult<byte[]>(subSet, new AtomicInteger(subSet.size()));
+                while (it.hasNext()) {
+                    if (limit != -1 && count.get() >= limit)
+                        break;
+
+                    final byte[] key = it.next();
+                    final String[] decoded = decodeKey(key);
+                    if (!searchTerms.contains(decoded[0])) {
+                        nextValid = key;
+                        hasNextComputed = true;
+                        return true;
+                    }
+                }
+
+                nextValid = null;
+                hasNextComputed = true;
+                return false;
+            }
+
+            @Override
+            public byte[] next() {
+                if (!hasNext())
+                    throw new NoSuchElementException();
+                count.incrementAndGet();
+                hasNextComputed = false;
+                return nextValid;
+            }
+        };
+
+        return new SearchResult<>(iterable, count);
     }
 
     public SearchResult<byte[]> getEndsWithIndexSubset(final NavigableSet<byte[]> index, final String searchTerm,
