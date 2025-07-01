@@ -4,6 +4,7 @@ import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.NavigableSet;
@@ -32,6 +33,9 @@ public final class MapDb {
     public static final byte SEP = 0x1F;
     public static final String NON_CHAR = "\uFFFF";
     public static final String ASCII_0 = "\u0000";
+    private static final byte[] upperBoundByte = new byte[] { (byte) 0xFF };
+    private static final byte[] lowerBoundByte = new byte[] { 0x00 };
+    private static final byte[] zeroByte = new byte[0];
 
     private static class TreeEntry {
         final DB db;
@@ -194,12 +198,20 @@ public final class MapDb {
         return input.toString().replace((char) SEP, ' ');
     }
 
+    public byte[] getSanitizedByte(final Object value) {
+        return sanitize(value).getBytes(StandardCharsets.UTF_8);
+    }
+
+    public byte[] createIndexKey(final byte[] fieldBytes, final byte[] keyBytes) {
+        return ByteBuffer.allocate(fieldBytes.length + 1 + keyBytes.length)
+                .put(fieldBytes).put(SEP).put(keyBytes).array();
+    }
+
     public byte[] createIndexKey(final Object fieldValue, final String primaryKey) {
-        final byte[] fieldBytes = sanitize(fieldValue).getBytes(StandardCharsets.UTF_8);
-        final byte[] keyBytes = sanitize(primaryKey).getBytes(StandardCharsets.UTF_8);
-        final ByteBuffer buf = ByteBuffer.allocate(fieldBytes.length + 1 + keyBytes.length);
-        buf.put(fieldBytes).put(SEP).put(keyBytes);
-        return buf.array();
+        final byte[] fieldBytes = getSanitizedByte(fieldValue);
+        final byte[] keyBytes = getSanitizedByte(primaryKey);
+        return ByteBuffer.allocate(fieldBytes.length + 1 + keyBytes.length)
+                .put(fieldBytes).put(SEP).put(keyBytes).array();
     }
 
     public String[] decodeKey(final byte[] keyBytes) {
@@ -221,9 +233,13 @@ public final class MapDb {
         return new String[] { field, primaryKey };
     }
 
-    public String extractIndexKey(final byte[] indexKey) {
+    public String extractIndexKeyFromCompositeKey(final byte[] indexKey) {
         final int sepIndex = findSeparator(indexKey);
         return new String(indexKey, sepIndex + 1, indexKey.length - sepIndex - 1, StandardCharsets.UTF_8);
+    }
+
+    public String extractIndexKey(final byte[] keyBytes) {
+        return new String(keyBytes, StandardCharsets.UTF_8);
     }
 
     public String extractIndexValue(final byte[] indexKey) {
@@ -231,19 +247,13 @@ public final class MapDb {
         return new String(indexKey, 0, sepIndex, StandardCharsets.UTF_8);
     }
 
-    private String extractKey(final byte[] composite) {
-        int delimPos = -1;
-        for (int i = 0; i < composite.length; i++) {
-            if (composite[i] == (byte) 0xFF) {
-                delimPos = i;
-                break;
+    public byte[] extractIndexKeyBytes(final byte[] compositeKey) {
+        for (int i = 0; i < compositeKey.length; i++) {
+            if (compositeKey[i] == SEP) {
+                return Arrays.copyOfRange(compositeKey, i + 1, compositeKey.length);
             }
         }
-        if (delimPos == -1 || delimPos == composite.length - 1) {
-            return ""; // No key portion exists
-        }
-        return new String(composite, delimPos + 1, composite.length - delimPos - 1,
-                StandardCharsets.UTF_8);
+        return compositeKey; // fallback: no separator found
     }
 
     private int findSeparator(final byte[] data) {
@@ -252,6 +262,28 @@ public final class MapDb {
                 return i;
         }
         throw new IllegalArgumentException("Separator byte not found in key");
+    }
+
+    private boolean matchesPrimaryKey(final byte[] indexKey, final byte[] keyBytes) {
+        int sepIndex = -1;
+        for (int i = 0; i < indexKey.length; i++) {
+            if (indexKey[i] == SEP) {
+                sepIndex = i;
+                break;
+            }
+        }
+
+        if (sepIndex == -1)
+            return false;
+        final int keyLength = keyBytes.length;
+        if (indexKey.length - sepIndex - 1 != keyLength)
+            return false;
+
+        for (int i = 0; i < keyLength; i++) {
+            if (indexKey[sepIndex + 1 + i] != keyBytes[i])
+                return false;
+        }
+        return true;
     }
 
     public record SearchResult<T>(Iterable<T> results, AtomicInteger size) {
@@ -274,7 +306,7 @@ public final class MapDb {
                     throw new NoSuchElementException();
                 remainingLimit--;
                 count.incrementAndGet();
-                return it.next();
+                return extractIndexKeyBytes(it.next()); // Extract only the primary key
             }
         };
 
@@ -365,7 +397,7 @@ public final class MapDb {
                     final String fieldValue = extractIndexValue(key);
 
                     if (CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
-                        nextMatch = key;
+                        nextMatch = extractIndexKeyBytes(key);
                         return true;
                     }
                 }
@@ -405,7 +437,7 @@ public final class MapDb {
                     final String fieldValue = extractIndexValue(key);
 
                     if (!CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
-                        nextMatch = key;
+                        nextMatch = extractIndexKeyBytes(key);
                         return true;
                     }
                 }
@@ -429,9 +461,10 @@ public final class MapDb {
 
     public SearchResult<byte[]> getInIndexSearch(final NavigableSet<byte[]> index,
             final Set<String> searchTerms, final int limit) {
+
         final AtomicInteger size = new AtomicInteger(0);
 
-        final Iterable<byte[]> lazyResults = () -> new Iterator<byte[]>() {
+        final Iterable<byte[]> lazyResults = () -> new Iterator<>() {
             private final Iterator<String> termIterator = searchTerms.iterator();
             private Iterator<byte[]> currentTermResults = Collections.emptyIterator();
 
@@ -439,9 +472,16 @@ public final class MapDb {
             public boolean hasNext() {
                 if (limit > 0 && size.get() >= limit)
                     return false;
+
                 while (!currentTermResults.hasNext() && termIterator.hasNext()) {
-                    currentTermResults = getEqualIndexSubset(index, termIterator.next()).iterator();
+                    final String term = termIterator.next();
+                    final NavigableSet<byte[]> matches = getEqualIndexSubset(index, term);
+                    // ↓ Strip to just primary key
+                    currentTermResults = matches.stream()
+                            .map(MAP_DB::extractIndexKeyBytes) // <-- this line replaces full composite key
+                            .iterator();
                 }
+
                 return currentTermResults.hasNext();
             }
 
@@ -476,7 +516,7 @@ public final class MapDb {
 
                     final byte[] key = it.next();
                     if (!searchTerms.contains(extractIndexValue(key))) {
-                        nextValid = key;
+                        nextValid = extractIndexKeyBytes(key);
                         hasNextComputed = true;
                         return true;
                     }
@@ -541,7 +581,7 @@ public final class MapDb {
                     if (suffixStart >= 0
                             && keyStr.regionMatches(suffixStart, suffixWithSepStr, 0, suffixWithSepStr.length())) {
 
-                        nextItem = key;
+                        nextItem = extractIndexKeyBytes(key);
                         hasNextComputed = true;
                         return true;
                     }
@@ -568,127 +608,166 @@ public final class MapDb {
         return new SearchResult<byte[]>(iterable, count);
     }
 
-    public boolean isLessThanIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
-        final byte[] lowerKey = createIndexKey("", ""); // Minimum bound
-        final byte[] upperKey = createIndexKey(searchTerm, ""); // searchTerm + SEP
+    public boolean isLessThanIndexMatch(final NavigableSet<byte[]> index, final byte[] searchTerm, final byte[] key) {
+        final byte[] lowerKey = createIndexKey(zeroByte, zeroByte); // Minimum bound
+        final byte[] upperKey = createIndexKey(searchTerm, upperBoundByte);
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, false);
 
         for (final byte[] indexKey : range) {
-            if (extractIndexKey(indexKey).equals(key)) {
+            if (matchesPrimaryKey(indexKey, key)) {
                 return true;
             }
         }
         return false;
     }
 
-    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
-            final String key) {
-        final byte[] lowerKey = createIndexKey("", "");
-        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR); // Include up to searchTerm + high byte
+    public boolean isLessThanOrEqualIndexMatch(final NavigableSet<byte[]> index, final byte[] searchTerm,
+            final byte[] key) {
+        final byte[] lowerKey = createIndexKey(zeroByte, zeroByte); // Minimum bound
+        final byte[] upperKey = createIndexKey(searchTerm, upperBoundByte);
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
 
         for (final byte[] indexKey : range) {
-            if (extractIndexKey(indexKey).equals(key)) {
+            if (matchesPrimaryKey(indexKey, key)) {
                 return true;
             }
         }
         return false;
     }
 
-    public boolean isGreaterThanIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
-            final String key) {
-        final byte[] lowerKey = createIndexKey(searchTerm, "");
-        final byte[] upperKey = createIndexKey(NON_CHAR, "");
+    public boolean isGreaterThanIndexMatch(final NavigableSet<byte[]> index, final byte[] searchTerm,
+            final byte[] key) {
+        final byte[] lowerKey = createIndexKey(searchTerm, lowerBoundByte);
+        final byte[] upperKey = createIndexKey(upperBoundByte, zeroByte);
         final NavigableSet<byte[]> range = index.subSet(lowerKey, false, upperKey, true);
-
         for (final byte[] indexKey : range) {
-            if (extractIndexKey(indexKey).equals(key)) {
+            if (matchesPrimaryKey(indexKey, key)) {
                 return true;
             }
         }
         return false;
     }
 
-    public boolean isGreaterThanOrEqualIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
-            final String key) {
-        final byte[] lowerKey = createIndexKey(searchTerm, "");
-        final byte[] upperKey = createIndexKey(NON_CHAR, "");
+    public boolean isGreaterThanOrEqualIndexMatch(final NavigableSet<byte[]> index, final byte[] searchTerm,
+            final byte[] key) {
+        final byte[] lowerKey = createIndexKey(searchTerm, lowerBoundByte);
+        final byte[] upperKey = createIndexKey(upperBoundByte, zeroByte);
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
-
         for (final byte[] indexKey : range) {
-            if (extractIndexKey(indexKey).equals(key)) {
+            if (matchesPrimaryKey(indexKey, key)) {
                 return true;
             }
         }
         return false;
     }
 
-    public boolean isLikeIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
-        // Optimized for cases where searchTerm appears early in keys
+    private int indexOfSep(final byte[] data) {
+        for (int i = 0; i < data.length; i++) {
+            if (data[i] == SEP)
+                return i;
+        }
+        return -1;
+    }
+
+    private boolean containsSubarray(final byte[] array, final byte[] sub) {
+        outer: for (int i = 0; i <= array.length - sub.length; i++) {
+            for (int j = 0; j < sub.length; j++) {
+                if (array[i + j] != sub[j]) {
+                    continue outer;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    public boolean isLikeIndexMatch(final NavigableSet<byte[]> index, final byte[] searchTerm,
+            final byte[] key) {
         for (final byte[] composite : index) {
-            final String foundKey = extractKey(composite);
-            if (foundKey.contains(searchTerm)) {
-                return foundKey.equals(key);
+            final int sep = indexOfSep(composite);
+            if (sep == -1)
+                continue;
+
+            final int keyLen = composite.length - sep - 1;
+            if (keyLen <= 0)
+                continue;
+
+            final byte[] actualKey = Arrays.copyOfRange(composite, sep + 1, composite.length);
+
+            if (containsSubarray(actualKey, searchTerm) && Arrays.equals(actualKey, key)) {
+                return true;
             }
         }
         return false;
     }
 
-    public boolean isStartsWithIndexMatch(final NavigableSet<byte[]> index, final String searchTerm, final String key) {
-        final byte[] lowerKey = createIndexKey(searchTerm, "");
-        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
+    public boolean isStartsWithIndexMatch(final NavigableSet<byte[]> index, final byte[] searchTerm, final byte[] key) {
+        final byte[] lowerKey = createIndexKey(searchTerm, zeroByte);
+        final byte[] upperKey = createIndexKey(searchTerm, upperBoundByte);
+
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, false);
 
         for (final byte[] indexKey : range) {
-            if (extractIndexKey(indexKey).equals(key)) {
+            if (matchesPrimaryKey(indexKey, key)) {
                 return true;
             }
         }
         return false;
     }
 
-    public boolean isEndsWithIndexMatch(final NavigableSet<byte[]> index, final String searchTerm,
-            final String primaryKey) {
-        final String searchTermLower = searchTerm.toLowerCase();
-        final byte[] searchTermBytes = searchTermLower.getBytes(StandardCharsets.UTF_8);
-        final byte[] primaryKeyBytes = primaryKey.getBytes(StandardCharsets.UTF_8);
-        final byte[] sep = new byte[] { SEP }; // 0x1F
-
-        // Lower bound: 0x00 + searchTerm + SEP + primaryKey
-        final ByteBuffer lowerBuf = ByteBuffer.allocate(1 + searchTermBytes.length + 1 + primaryKeyBytes.length);
-        lowerBuf.put((byte) 0x00).put(searchTermBytes).put(sep).put(primaryKeyBytes);
-        final byte[] lowerKey = lowerBuf.array();
-
-        // Upper bound: 0xFF + searchTerm + SEP + primaryKey
-        final ByteBuffer upperBuf = ByteBuffer.allocate(1 + searchTermBytes.length + 1 + primaryKeyBytes.length);
-        upperBuf.put((byte) 0xFF).put(searchTermBytes).put(sep).put(primaryKeyBytes);
-        final byte[] upperKey = upperBuf.array();
-
-        final NavigableSet<byte[]> subset = index.subSet(lowerKey, true, upperKey, true);
-        boolean match = false;
-
-        for (final byte[] key : subset) {
-            final String[] parts = decodeKey(key);
-            if (parts[1].equals(primaryKey) && parts[0].toLowerCase().endsWith(searchTermLower)) {
-                match = true;
-            }
-        }
-
-        return match;
+    private static byte toLower(final byte b) {
+        if (b >= 'A' && b <= 'Z')
+            return (byte) (b + 32);
+        return b;
     }
 
-    public boolean isBetweenIndexMatch(final NavigableSet<byte[]> index, final String lowerBound,
-            final String upperBound, final String key) {
-        // Use the SAME key format as getBetweenIndexSubset
-        final byte[] lowerKey = createIndexKey(lowerBound, ""); // Prefix-based lower bound
-        final byte[] upperKey = createIndexKey(upperBound, NON_CHAR); // Prefix-based upper bound
+    public boolean isEndsWithIndexMatch(final NavigableSet<byte[]> index, final byte[] searchTerm,
+            final byte[] primaryKey) {
+        for (final byte[] entry : index) {
+            if (!matchesPrimaryKey(entry, primaryKey))
+                continue;
 
-        // Get all keys in the range (like getBetweenIndexSubset)
+            int sepIndex = -1;
+            for (int i = 0; i < entry.length; i++) {
+                if (entry[i] == SEP) {
+                    sepIndex = i;
+                    break;
+                }
+            }
+            if (sepIndex == -1)
+                continue;
+
+            final int fieldLen = sepIndex;
+            final int suffixLen = searchTerm.length;
+            if (fieldLen < suffixLen)
+                continue;
+
+            boolean match = true;
+            for (int i = 0; i < suffixLen; i++) {
+                final byte b1 = toLower(entry[fieldLen - suffixLen + i]);
+                final byte b2 = toLower(searchTerm[i]);
+                if (b1 != b2) {
+                    match = false;
+                    break;
+                }
+            }
+
+            if (match)
+                return true;
+        }
+
+        return false;
+    }
+
+    public boolean isBetweenIndexMatch(final NavigableSet<byte[]> index,
+            final byte[] lowerBound, final byte[] upperBound, final byte[] key) {
+        final byte[] lowerKey = createIndexKey(lowerBound, zeroByte);
+        final byte[] upperKey = createIndexKey(upperBound, upperBoundByte);
+
         final NavigableSet<byte[]> range = index.subSet(lowerKey, true, upperKey, true);
 
-        // Check if any key in the range ends with SEP + key
         for (final byte[] indexKey : range) {
-            if (extractIndexKey(indexKey).equals(key)) {
+            if (matchesPrimaryKey(indexKey, key)) {
                 return true;
             }
         }

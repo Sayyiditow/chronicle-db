@@ -6,6 +6,7 @@ import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -1385,14 +1386,27 @@ public interface ChronicleDao<V> {
 
         final SearchType searchType = search.searchType();
         final String searchTerm = String.valueOf(search.searchTerm());
+        final Set<byte[]> searchTermBytesSet;
+        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
+            final List<String> termList = (List<String>) search.searchTerm();
+            searchTermBytesSet = termList.stream()
+                    .map(s -> s.getBytes(StandardCharsets.UTF_8))
+                    .collect(Collectors.toSet());
+        } else {
+            searchTermBytesSet = null;
+        }
+        final byte[] sanitizedBetween1;
+        final byte[] sanitizedBetween2;
 
-        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? new HashSet<>((List<String>) search.searchTerm())
-                : null;
-
-        final List<Object> searchTermBetween = searchType == SearchType.BETWEEN
-                ? (List<Object>) search.searchTerm()
-                : null;
+        if (searchType == SearchType.BETWEEN) {
+            final var searchTermBetween = (List<Object>) search.searchTerm();
+            sanitizedBetween1 = MAP_DB.getSanitizedByte(searchTermBetween.get(0));
+            sanitizedBetween2 = MAP_DB.getSanitizedByte(searchTermBetween.get(1));
+        } else {
+            sanitizedBetween1 = null;
+            sanitizedBetween2 = null;
+        }
+        final var sanitizedSearchTerm = MAP_DB.getSanitizedByte(searchTerm);
 
         final AtomicInteger count = new AtomicInteger(0);
         final Iterable<byte[]> filtered = () -> new Iterator<>() {
@@ -1412,37 +1426,49 @@ public interface ChronicleDao<V> {
                         hasNextComputed = true;
                         return false;
                     }
-
                     final byte[] key = it.next();
-                    final String decodedKey = MAP_DB.extractIndexKey(key); // primary key part
-
                     final boolean removeKey = switch (searchType) {
                         case EQUAL -> {
-                            final byte[] searchKey = MAP_DB.createIndexKey(searchTerm, decodedKey);
+                            final byte[] searchKey = MAP_DB.createIndexKey(sanitizedSearchTerm, key);
                             yield !index.contains(searchKey);
                         }
                         case NOT_EQUAL -> {
-                            final byte[] searchKey = MAP_DB.createIndexKey(searchTerm, decodedKey);
+                            final byte[] searchKey = MAP_DB.createIndexKey(sanitizedSearchTerm, key);
                             yield index.contains(searchKey);
                         }
-                        case LESS -> !MAP_DB.isLessThanIndexMatch(index, searchTerm, decodedKey);
-                        case LESS_OR_EQUAL -> !MAP_DB.isLessThanOrEqualIndexMatch(index, searchTerm, decodedKey);
-                        case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, searchTerm, decodedKey);
-                        case GREATER_OR_EQUAL -> !MAP_DB.isGreaterThanOrEqualIndexMatch(index, searchTerm, decodedKey);
-                        case LIKE -> !MAP_DB.isLikeIndexMatch(index, searchTerm, decodedKey);
-                        case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, searchTerm, decodedKey);
-                        case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, searchTerm, decodedKey);
-                        case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, searchTerm, decodedKey);
-                        case IN -> searchTermSet.stream().noneMatch(term -> {
-                            final byte[] searchKey = MAP_DB.createIndexKey(term, decodedKey);
-                            return index.contains(searchKey);
-                        });
-                        case NOT_IN -> searchTermSet.stream().anyMatch(term -> {
-                            final byte[] searchKey = MAP_DB.createIndexKey(term, decodedKey);
-                            return index.contains(searchKey);
-                        });
-                        case BETWEEN -> !MAP_DB.isBetweenIndexMatch(index, searchTermBetween.get(0).toString(),
-                                searchTermBetween.get(1).toString(), decodedKey);
+                        case LESS -> !MAP_DB.isLessThanIndexMatch(index, sanitizedSearchTerm, key);
+                        case LESS_OR_EQUAL -> !MAP_DB.isLessThanOrEqualIndexMatch(index, sanitizedSearchTerm, key);
+                        case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, sanitizedSearchTerm, key);
+                        case GREATER_OR_EQUAL ->
+                            !MAP_DB.isGreaterThanOrEqualIndexMatch(index, sanitizedSearchTerm, key);
+                        case LIKE -> !MAP_DB.isLikeIndexMatch(index, sanitizedSearchTerm, key);
+                        case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, sanitizedSearchTerm, key);
+                        case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, sanitizedSearchTerm, key);
+                        case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, sanitizedSearchTerm, key);
+                        case IN -> {
+                            boolean found = false;
+                            for (final byte[] term : searchTermBytesSet) {
+                                final byte[] compositeKey = MAP_DB.createIndexKey(term, key);
+                                if (index.contains(compositeKey)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            yield !found;
+                        }
+                        case NOT_IN -> {
+                            boolean found = false;
+                            for (final byte[] term : searchTermBytesSet) {
+                                final byte[] compositeKey = MAP_DB.createIndexKey(term, key);
+                                if (index.contains(compositeKey)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            yield !found;
+                        }
+                        case BETWEEN ->
+                            !MAP_DB.isBetweenIndexMatch(index, sanitizedBetween1, sanitizedBetween2, key);
                         default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
                     };
 
@@ -1483,11 +1509,27 @@ public interface ChronicleDao<V> {
 
         final SearchType searchType = search.searchType();
         final String searchTerm = String.valueOf(search.searchTerm());
-        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? new HashSet<>((List<String>) search.searchTerm())
-                : null;
-        final List<Object> searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm()
-                : null;
+        final Set<byte[]> searchTermBytesSet;
+        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
+            final List<String> termList = (List<String>) search.searchTerm();
+            searchTermBytesSet = termList.stream()
+                    .map(s -> s.getBytes(StandardCharsets.UTF_8))
+                    .collect(Collectors.toSet());
+        } else {
+            searchTermBytesSet = null;
+        }
+        final var sanitizedSearchTerm = MAP_DB.getSanitizedByte(searchTerm);
+        final byte[] sanitizedBetween1;
+        final byte[] sanitizedBetween2;
+
+        if (searchType == SearchType.BETWEEN) {
+            final var searchTermBetween = (List<Object>) search.searchTerm();
+            sanitizedBetween1 = MAP_DB.getSanitizedByte(searchTermBetween.get(0));
+            sanitizedBetween2 = MAP_DB.getSanitizedByte(searchTermBetween.get(1));
+        } else {
+            sanitizedBetween1 = null;
+            sanitizedBetween2 = null;
+        }
 
         final AtomicInteger count = new AtomicInteger(0);
         final Iterable<byte[]> results = () -> new Iterator<>() {
@@ -1498,29 +1540,49 @@ public interface ChronicleDao<V> {
             public boolean hasNext() {
                 while (it.hasNext()) {
                     final String key = it.next();
+                    final var sanitizedKey = MAP_DB.getSanitizedByte(key);
                     final boolean skip = switch (searchType) {
-                        case EQUAL -> !index.contains(MAP_DB.createIndexKey(searchTerm, key));
-                        case NOT_EQUAL -> index.contains(MAP_DB.createIndexKey(searchTerm, key));
-                        case LESS -> !MAP_DB.isLessThanIndexMatch(index, searchTerm, key);
-                        case LESS_OR_EQUAL -> !MAP_DB.isLessThanOrEqualIndexMatch(index, searchTerm, key);
-                        case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, searchTerm, key);
-                        case GREATER_OR_EQUAL -> !MAP_DB.isGreaterThanOrEqualIndexMatch(index, searchTerm, key);
-                        case LIKE -> !MAP_DB.isLikeIndexMatch(index, searchTerm, key);
-                        case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, searchTerm, key);
-                        case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, searchTerm, key);
-                        case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, searchTerm, key);
-                        case IN ->
-                            searchTermSet.stream().noneMatch(term -> index.contains(MAP_DB.createIndexKey(term, key)));
-                        case NOT_IN ->
-                            searchTermSet.stream().anyMatch(term -> index.contains(MAP_DB.createIndexKey(term, key)));
-                        case BETWEEN -> !MAP_DB.isBetweenIndexMatch(index,
-                                searchTermBetween.get(0).toString(),
-                                searchTermBetween.get(1).toString(), key);
+                        case EQUAL -> !index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, sanitizedKey));
+                        case NOT_EQUAL -> index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, sanitizedKey));
+                        case LESS -> !MAP_DB.isLessThanIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case LESS_OR_EQUAL ->
+                            !MAP_DB.isLessThanOrEqualIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case GREATER_OR_EQUAL ->
+                            !MAP_DB.isGreaterThanOrEqualIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case LIKE -> !MAP_DB.isLikeIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case IN -> {
+                            boolean found = false;
+                            for (final byte[] term : searchTermBytesSet) {
+                                final byte[] compositeKey = MAP_DB.createIndexKey(term, sanitizedKey);
+                                if (index.contains(compositeKey)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            yield !found;
+                        }
+                        case NOT_IN -> {
+                            boolean found = false;
+                            for (final byte[] term : searchTermBytesSet) {
+                                final byte[] compositeKey = MAP_DB.createIndexKey(term, sanitizedKey);
+                                if (index.contains(compositeKey)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            yield !found;
+                        }
+                        case BETWEEN ->
+                            !MAP_DB.isBetweenIndexMatch(index, sanitizedBetween1, sanitizedBetween2, sanitizedKey);
                         default -> throw new UnsupportedOperationException("Unsupported search type: " + searchType);
                     };
 
                     if (!skip) {
-                        next = MAP_DB.createIndexKey(null, key); // Only key part encoded
+                        next = sanitizedKey;
                         return true;
                     }
                 }
