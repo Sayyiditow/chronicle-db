@@ -439,7 +439,6 @@ public final class MapDb {
             public boolean hasNext() {
                 if (limit > 0 && size.get() >= limit)
                     return false;
-
                 while (!currentTermResults.hasNext() && termIterator.hasNext()) {
                     currentTermResults = getEqualIndexSubset(index, termIterator.next()).iterator();
                 }
@@ -450,7 +449,6 @@ public final class MapDb {
             public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
-
                 size.incrementAndGet();
                 return currentTermResults.next();
             }
