@@ -434,18 +434,30 @@ public final class MapDb {
 
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private Iterator<byte[]> current = Collections.emptyIterator();
+            private boolean hasNextComputed = false;
+            private byte[] nextElement = null;
 
             @Override
             public boolean hasNext() {
+                if (hasNextComputed)
+                    return nextElement != null;
+
                 while ((limit == -1 || count.get() < limit)) {
-                    if (current.hasNext()) {
-                        return true;
-                    } else if (termIterator.hasNext()) {
+                    while (!current.hasNext() && termIterator.hasNext()) {
                         current = getEqualIndexSubset(index, termIterator.next()).iterator();
+                    }
+
+                    if (current.hasNext()) {
+                        nextElement = current.next();
+                        hasNextComputed = true;
+                        return true;
                     } else {
-                        return false;
+                        break; // No more terms
                     }
                 }
+
+                nextElement = null;
+                hasNextComputed = true;
                 return false;
             }
 
@@ -453,8 +465,9 @@ public final class MapDb {
             public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
+                hasNextComputed = false;
                 count.incrementAndGet();
-                return current.next();
+                return nextElement;
             }
         };
 
