@@ -427,56 +427,40 @@ public final class MapDb {
         return new SearchResult<byte[]>(iterable, count);
     }
 
-    public SearchResult<byte[]> getInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
-            final int limit) {
-        final Iterator<String> termIterator = searchTerms.iterator();
-        final AtomicInteger count = new AtomicInteger(0);
+    public SearchResult<byte[]> getInIndexSearch(final NavigableSet<byte[]> index,
+            final Set<String> searchTerms, final int limit) {
+        final AtomicInteger size = new AtomicInteger(0);
 
-        final Iterable<byte[]> iterable = () -> new Iterator<>() {
-            private Iterator<byte[]> current = Collections.emptyIterator();
-            private boolean hasNextComputed = false;
-            private byte[] nextElement = null;
+        final Iterable<byte[]> lazyResults = () -> new Iterator<byte[]>() {
+            private final Iterator<String> termIterator = searchTerms.iterator();
+            private Iterator<byte[]> currentTermResults = Collections.emptyIterator();
 
             @Override
             public boolean hasNext() {
-                if (hasNextComputed)
-                    return nextElement != null;
+                if (limit > 0 && size.get() >= limit)
+                    return false;
 
-                while ((limit == -1 || count.get() < limit)) {
-                    while (!current.hasNext() && termIterator.hasNext()) {
-                        current = getEqualIndexSubset(index, termIterator.next()).iterator();
-                    }
-
-                    if (current.hasNext()) {
-                        nextElement = current.next();
-                        hasNextComputed = true;
-                        return true;
-                    } else {
-                        break; // No more terms
-                    }
+                while (!currentTermResults.hasNext() && termIterator.hasNext()) {
+                    currentTermResults = getEqualIndexSubset(index, termIterator.next()).iterator();
                 }
-
-                nextElement = null;
-                hasNextComputed = true;
-                return false;
+                return currentTermResults.hasNext();
             }
 
             @Override
             public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
-                hasNextComputed = false;
-                count.incrementAndGet();
-                return nextElement;
+
+                size.incrementAndGet();
+                return currentTermResults.next();
             }
         };
 
-        return new SearchResult<>(iterable, count);
+        return new SearchResult<>(lazyResults, size);
     }
 
     public SearchResult<byte[]> getNotInIndexSearch(final NavigableSet<byte[]> index,
-            final Set<String> searchTerms,
-            final int limit) {
+            final Set<String> searchTerms, final int limit) {
         final AtomicInteger count = new AtomicInteger(0);
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
             final Iterator<byte[]> it = index.iterator();
