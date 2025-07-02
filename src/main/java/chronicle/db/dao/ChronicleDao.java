@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
@@ -34,6 +35,7 @@ import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.MapDb.SearchResult;
+import chronicle.db.service.MapDb.WrappedKey;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -1380,7 +1382,7 @@ public interface ChronicleDao<V> {
             final SearchResult<byte[]> prevSearchResult) {
         Logger.info("Index searching at [{}] for {}.", dataPath(), search);
 
-        if (index == null || index.isEmpty()) {
+        if (index == null) {
             return new SearchResult<byte[]>(Collections.emptyList(), new AtomicInteger(0));
         }
 
@@ -1395,18 +1397,58 @@ public interface ChronicleDao<V> {
         } else {
             searchTermBytesSet = null;
         }
-        final byte[] sanitizedBetween1;
-        final byte[] sanitizedBetween2;
 
+        final Set<WrappedKey> allMatchedKeys = new HashSet<>();
         if (searchType == SearchType.BETWEEN) {
             final var searchTermBetween = (List<Object>) search.searchTerm();
-            sanitizedBetween1 = MAP_DB.getSanitizedByte(searchTermBetween.get(0));
-            sanitizedBetween2 = MAP_DB.getSanitizedByte(searchTermBetween.get(1));
-        } else {
-            sanitizedBetween1 = null;
-            sanitizedBetween2 = null;
+            final byte[] lower = MAP_DB.getSanitizedByte(searchTermBetween.get(0));
+            final byte[] upper = MAP_DB.getSanitizedByte(searchTermBetween.get(1));
+
+            final NavigableSet<byte[]> betweenRange = MAP_DB.getBetweenRange(index, lower, upper);
+            final Iterator<byte[]> prevIt = prevSearchResult.results().iterator();
+            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(prevIt, 50_000);
+
+            for (final Set<WrappedKey> batch : batches) {
+                for (final byte[] compositeKey : betweenRange) {
+                    final var split = MAP_DB.splitCompositeKey(compositeKey);
+                    final WrappedKey wrapped = new WrappedKey(split.primaryKey());
+                    if (batch.contains(wrapped)) {
+                        allMatchedKeys.add(wrapped);
+                    }
+                }
+            }
         }
+
         final var sanitizedSearchTerm = MAP_DB.getSanitizedByte(searchTerm);
+        final NavigableSet<byte[]> startsWithRange;
+        if (searchType == SearchType.STARTS_WITH) {
+            startsWithRange = MAP_DB.getStartsWithRange(index, sanitizedSearchTerm);
+        } else {
+            startsWithRange = null;
+        }
+
+        final NavigableSet<byte[]> comparisonRange;
+        if (Search.RANGE_SEARCH_TYPE.contains(searchType)) {
+            comparisonRange = MAP_DB.getComparisonRange(index, sanitizedSearchTerm, searchType);
+        } else {
+            comparisonRange = null;
+        }
+
+        final Set<byte[]> likeMatchedKeys;
+        if (searchType == SearchType.LIKE) {
+            final Set<byte[]> previousKeys = new HashSet<>();
+            for (final byte[] key : prevSearchResult.results()) {
+                previousKeys.add(key);
+            }
+
+            final var likeMatchedKeysIterable = MAP_DB.getMatchingKeysForLike(index, sanitizedSearchTerm, previousKeys,
+                    search.limit());
+            likeMatchedKeys = StreamSupport
+                    .stream(likeMatchedKeysIterable.spliterator(), false)
+                    .collect(Collectors.toSet());
+        } else {
+            likeMatchedKeys = null;
+        }
 
         final AtomicInteger count = new AtomicInteger(0);
         final Iterable<byte[]> filtered = () -> new Iterator<>() {
@@ -1436,14 +1478,13 @@ public interface ChronicleDao<V> {
                             final byte[] searchKey = MAP_DB.createIndexKey(sanitizedSearchTerm, key);
                             yield index.contains(searchKey);
                         }
-                        case LESS -> !MAP_DB.isLessThanIndexMatch(index, sanitizedSearchTerm, key);
-                        case LESS_OR_EQUAL -> !MAP_DB.isLessThanOrEqualIndexMatch(index, sanitizedSearchTerm, key);
-                        case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, sanitizedSearchTerm, key);
-                        case GREATER_OR_EQUAL ->
-                            !MAP_DB.isGreaterThanOrEqualIndexMatch(index, sanitizedSearchTerm, key);
-                        case LIKE -> !MAP_DB.isLikeIndexMatch(index, sanitizedSearchTerm, key);
-                        case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, sanitizedSearchTerm, key);
-                        case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, sanitizedSearchTerm, key);
+                        case LESS -> !MAP_DB.isMatchInRange(comparisonRange, key);
+                        case LESS_OR_EQUAL -> !MAP_DB.isMatchInRange(comparisonRange, key);
+                        case GREATER -> !MAP_DB.isMatchInRange(comparisonRange, key);
+                        case GREATER_OR_EQUAL -> !MAP_DB.isMatchInRange(comparisonRange, key);
+                        case LIKE -> !likeMatchedKeys.contains(key);
+                        case NOT_LIKE -> likeMatchedKeys.contains(key);
+                        case STARTS_WITH -> !MAP_DB.isMatchInRange(startsWithRange, key);
                         case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, sanitizedSearchTerm, key);
                         case IN -> {
                             boolean found = false;
@@ -1465,10 +1506,9 @@ public interface ChronicleDao<V> {
                                     break;
                                 }
                             }
-                            yield !found;
+                            yield found;
                         }
-                        case BETWEEN ->
-                            !MAP_DB.isBetweenIndexMatch(index, sanitizedBetween1, sanitizedBetween2, key);
+                        case BETWEEN -> !allMatchedKeys.contains(new WrappedKey(key));
                         default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
                     };
 
@@ -1503,7 +1543,7 @@ public interface ChronicleDao<V> {
     default SearchResult<byte[]> indexedSearch(final Search search, final NavigableSet<byte[]> index,
             final Set<String> matchingKeys) {
         Logger.info("Index searching at [{}] for {}.", dataPath(), search);
-        if (index == null || index.isEmpty() || matchingKeys == null || matchingKeys.isEmpty()) {
+        if (index == null || matchingKeys == null || matchingKeys.isEmpty()) {
             return new SearchResult<>(Collections.emptyList(), new AtomicInteger(0));
         }
 
@@ -1518,17 +1558,37 @@ public interface ChronicleDao<V> {
         } else {
             searchTermBytesSet = null;
         }
-        final var sanitizedSearchTerm = MAP_DB.getSanitizedByte(searchTerm);
-        final byte[] sanitizedBetween1;
-        final byte[] sanitizedBetween2;
 
+        final NavigableSet<byte[]> betweenRange;
         if (searchType == SearchType.BETWEEN) {
             final var searchTermBetween = (List<Object>) search.searchTerm();
-            sanitizedBetween1 = MAP_DB.getSanitizedByte(searchTermBetween.get(0));
-            sanitizedBetween2 = MAP_DB.getSanitizedByte(searchTermBetween.get(1));
+            betweenRange = MAP_DB.getBetweenRange(index, MAP_DB.getSanitizedByte(searchTermBetween.get(0)),
+                    MAP_DB.getSanitizedByte(searchTermBetween.get(1)));
         } else {
-            sanitizedBetween1 = null;
-            sanitizedBetween2 = null;
+            betweenRange = null;
+        }
+
+        final var sanitizedSearchTerm = MAP_DB.getSanitizedByte(searchTerm);
+        final NavigableSet<byte[]> startsWithRange;
+        if (searchType == SearchType.STARTS_WITH) {
+            startsWithRange = MAP_DB.getStartsWithRange(index, sanitizedSearchTerm);
+        } else {
+            startsWithRange = null;
+        }
+
+        final NavigableSet<byte[]> comparisonRange;
+        if (Search.RANGE_SEARCH_TYPE.contains(searchType)) {
+            comparisonRange = MAP_DB.getComparisonRange(index, sanitizedSearchTerm, searchType);
+        } else {
+            comparisonRange = null;
+        }
+
+        final Set<byte[]> likeMatchedKeys;
+        if (searchType == SearchType.LIKE) {
+            likeMatchedKeys = MAP_DB.getMatchingKeysForLikeString(index, sanitizedSearchTerm, matchingKeys,
+                    search.limit());
+        } else {
+            likeMatchedKeys = null;
         }
 
         final AtomicInteger count = new AtomicInteger(0);
@@ -1544,15 +1604,13 @@ public interface ChronicleDao<V> {
                     final boolean skip = switch (searchType) {
                         case EQUAL -> !index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, sanitizedKey));
                         case NOT_EQUAL -> index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, sanitizedKey));
-                        case LESS -> !MAP_DB.isLessThanIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
-                        case LESS_OR_EQUAL ->
-                            !MAP_DB.isLessThanOrEqualIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
-                        case GREATER -> !MAP_DB.isGreaterThanIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
-                        case GREATER_OR_EQUAL ->
-                            !MAP_DB.isGreaterThanOrEqualIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
-                        case LIKE -> !MAP_DB.isLikeIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
-                        case NOT_LIKE -> MAP_DB.isLikeIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
-                        case STARTS_WITH -> !MAP_DB.isStartsWithIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                        case LESS -> !MAP_DB.isMatchInRange(comparisonRange, sanitizedKey);
+                        case LESS_OR_EQUAL -> !MAP_DB.isMatchInRange(comparisonRange, sanitizedKey);
+                        case GREATER -> !MAP_DB.isMatchInRange(comparisonRange, sanitizedKey);
+                        case GREATER_OR_EQUAL -> !MAP_DB.isMatchInRange(comparisonRange, sanitizedKey);
+                        case LIKE -> !likeMatchedKeys.contains(sanitizedKey);
+                        case NOT_LIKE -> likeMatchedKeys.contains(sanitizedKey);
+                        case STARTS_WITH -> !MAP_DB.isMatchInRange(startsWithRange, sanitizedKey);
                         case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
                         case IN -> {
                             boolean found = false;
@@ -1576,8 +1634,7 @@ public interface ChronicleDao<V> {
                             }
                             yield !found;
                         }
-                        case BETWEEN ->
-                            !MAP_DB.isBetweenIndexMatch(index, sanitizedBetween1, sanitizedBetween2, sanitizedKey);
+                        case BETWEEN -> !MAP_DB.isMatchInRange(betweenRange, sanitizedKey);
                         default -> throw new UnsupportedOperationException("Unsupported search type: " + searchType);
                     };
 

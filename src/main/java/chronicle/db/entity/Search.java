@@ -3,6 +3,7 @@ package chronicle.db.entity;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.jsoniter.annotation.JsonCreator;
 
@@ -24,6 +25,9 @@ public record Search(String field, SearchType searchType, Object searchTerm, int
         NOT_IN,
         BETWEEN
     }
+
+    public static final Set<SearchType> RANGE_SEARCH_TYPE = Set.of(SearchType.LESS, SearchType.LESS_OR_EQUAL,
+            SearchType.GREATER, SearchType.GREATER_OR_EQUAL);
 
     private static final Map<SearchType, Integer> SEARCH_TYPE_PRIORITY = Map.ofEntries(
             Map.entry(SearchType.EQUAL, 0),
