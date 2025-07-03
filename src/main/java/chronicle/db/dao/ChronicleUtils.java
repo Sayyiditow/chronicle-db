@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -839,12 +840,18 @@ public final class ChronicleUtils {
 
             @Override
             public Set<WrappedKey> next() {
+                if (!hasNext())
+                    throw new NoSuchElementException();
+
                 final Set<WrappedKey> batch = new HashSet<>(batchSize);
                 int count = 0;
                 while (iterator.hasNext() && count < batchSize) {
                     batch.add(new WrappedKey(iterator.next()));
                     count++;
                 }
+
+                if (batch.isEmpty())
+                    throw new NoSuchElementException();
                 return batch;
             }
         };
