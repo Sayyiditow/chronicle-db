@@ -1553,8 +1553,7 @@ public interface ChronicleDao<V> {
 
             final var likeMatchedKeysIterable = MAP_DB.getMatchingKeysForLike(index, sanitizedSearchTerm, previousKeys,
                     search.limit());
-            likeMatchedKeys = StreamSupport
-                    .stream(likeMatchedKeysIterable.spliterator(), false)
+            likeMatchedKeys = StreamSupport.stream(likeMatchedKeysIterable.spliterator(), false)
                     .collect(Collectors.toSet());
         } else {
             likeMatchedKeys = null;
@@ -1644,6 +1643,22 @@ public interface ChronicleDao<V> {
         return new SearchResult<byte[]>(filtered, count);
     }
 
+    private Iterator<byte[]> getMatchingKeysIterator(final Set<String> matchingKeys) {
+        return new Iterator<>() {
+            final Iterator<String> keyIt = matchingKeys.iterator();
+
+            @Override
+            public boolean hasNext() {
+                return keyIt.hasNext();
+            }
+
+            @Override
+            public byte[] next() {
+                return MAP_DB.getSanitizedByte(keyIt.next());
+            }
+        };
+    }
+
     default SearchResult<byte[]> indexedSearch(final Search search, final NavigableSet<byte[]> index,
             final Set<String> matchingKeys) {
         Logger.info("Index searching at [{}] for {}.", dataPath(), search);
@@ -1663,74 +1678,214 @@ public interface ChronicleDao<V> {
             searchTermBytesSet = null;
         }
 
-        final NavigableSet<byte[]> betweenRange;
         if (searchType == SearchType.BETWEEN) {
             final var searchTermBetween = (List<Object>) search.searchTerm();
-            betweenRange = MAP_DB.getBetweenRange(index, MAP_DB.getSanitizedByte(searchTermBetween.get(0)),
-                    MAP_DB.getSanitizedByte(searchTermBetween.get(1)));
-        } else {
-            betweenRange = null;
+            final byte[] lower = MAP_DB.getSanitizedByte(searchTermBetween.get(0));
+            final byte[] upper = MAP_DB.getSanitizedByte(searchTermBetween.get(1));
+            final NavigableSet<byte[]> betweenRange = MAP_DB.getBetweenRange(index, lower, upper);
+            final Iterator<byte[]> prevIt = getMatchingKeysIterator(matchingKeys);
+            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(prevIt, 50_000);
+
+            final Iterator<byte[]> matchIterator = new Iterator<>() {
+                private final Iterator<Set<WrappedKey>> batchIt = batches.iterator();
+                private Iterator<byte[]> currentBatchMatches = Collections.emptyIterator();
+                private byte[] next = null;
+
+                @Override
+                public boolean hasNext() {
+                    while ((currentBatchMatches == null || !currentBatchMatches.hasNext()) && batchIt.hasNext()) {
+                        final Set<WrappedKey> batch = batchIt.next();
+                        final Set<byte[]> matches = new HashSet<>();
+                        for (final byte[] compositeKey : betweenRange) {
+                            final var split = MAP_DB.splitCompositeKey(compositeKey);
+                            final WrappedKey wrapped = new WrappedKey(split.primaryKey());
+                            if (batch.contains(wrapped)) {
+                                matches.add(split.primaryKey());
+                            }
+                        }
+                        currentBatchMatches = matches.iterator();
+                    }
+
+                    if (currentBatchMatches != null && currentBatchMatches.hasNext()) {
+                        next = currentBatchMatches.next();
+                        return true;
+                    }
+
+                    return false;
+                }
+
+                @Override
+                public byte[] next() {
+                    if (next == null && !hasNext()) {
+                        throw new NoSuchElementException();
+                    }
+                    final byte[] out = next;
+                    next = null;
+                    return out;
+                }
+            };
+
+            final AtomicInteger count = new AtomicInteger(); // you can update it inside `next()` if needed
+            return new SearchResult<>(() -> matchIterator, count);
         }
 
         final var sanitizedSearchTerm = MAP_DB.getSanitizedByte(searchTerm);
-        final NavigableSet<byte[]> startsWithRange;
         if (searchType == SearchType.STARTS_WITH) {
-            startsWithRange = MAP_DB.getStartsWithRange(index, sanitizedSearchTerm);
-        } else {
-            startsWithRange = null;
+            final byte[] sanitized = MAP_DB.getSanitizedByte(searchTerm);
+            final NavigableSet<byte[]> startsWithRange = MAP_DB.getStartsWithRange(index, sanitized);
+            final Iterator<byte[]> prevIt = getMatchingKeysIterator(matchingKeys);
+            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(prevIt, 50_000);
+
+            final Iterator<byte[]> matchIterator = new Iterator<>() {
+                private final Iterator<Set<WrappedKey>> batchIt = batches.iterator();
+                private Iterator<byte[]> currentBatchMatches = Collections.emptyIterator();
+                private byte[] next = null;
+
+                @Override
+                public boolean hasNext() {
+                    while ((currentBatchMatches == null || !currentBatchMatches.hasNext()) && batchIt.hasNext()) {
+                        final Set<WrappedKey> batch = batchIt.next();
+                        final Set<byte[]> matches = new HashSet<>();
+                        for (final byte[] compositeKey : startsWithRange) {
+                            final var split = MAP_DB.splitCompositeKey(compositeKey);
+                            if (batch.contains(new WrappedKey(split.primaryKey()))) {
+                                matches.add(split.primaryKey());
+                            }
+                        }
+                        currentBatchMatches = matches.iterator();
+                    }
+
+                    if (currentBatchMatches != null && currentBatchMatches.hasNext()) {
+                        next = currentBatchMatches.next();
+                        return true;
+                    }
+
+                    return false;
+                }
+
+                @Override
+                public byte[] next() {
+                    if (next == null && !hasNext()) {
+                        throw new NoSuchElementException();
+                    }
+                    final byte[] out = next;
+                    next = null;
+                    return out;
+                }
+            };
+
+            return new SearchResult<>(() -> matchIterator, new AtomicInteger());
         }
 
-        final NavigableSet<byte[]> comparisonRange;
         if (Search.RANGE_SEARCH_TYPE.contains(searchType)) {
-            comparisonRange = MAP_DB.getComparisonRange(index, sanitizedSearchTerm, searchType);
-        } else {
-            comparisonRange = null;
+            final byte[] sanitized = MAP_DB.getSanitizedByte(searchTerm);
+            final NavigableSet<byte[]> comparisonRange = MAP_DB.getComparisonRange(index, sanitized, searchType);
+            final Iterator<byte[]> prevIt = getMatchingKeysIterator(matchingKeys);
+            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(prevIt, 50_000);
+
+            final Iterator<byte[]> matchIterator = new Iterator<>() {
+                private final Iterator<Set<WrappedKey>> batchIt = batches.iterator();
+                private Iterator<byte[]> currentBatchMatches = Collections.emptyIterator();
+                private byte[] next = null;
+
+                @Override
+                public boolean hasNext() {
+                    while ((currentBatchMatches == null || !currentBatchMatches.hasNext()) && batchIt.hasNext()) {
+                        final Set<WrappedKey> batch = batchIt.next();
+                        final Set<byte[]> matches = new HashSet<>();
+                        for (final byte[] compositeKey : comparisonRange) {
+                            final var split = MAP_DB.splitCompositeKey(compositeKey);
+                            if (batch.contains(new WrappedKey(split.primaryKey()))) {
+                                matches.add(split.primaryKey());
+                            }
+                        }
+                        currentBatchMatches = matches.iterator();
+                    }
+
+                    if (currentBatchMatches != null && currentBatchMatches.hasNext()) {
+                        next = currentBatchMatches.next();
+                        return true;
+                    }
+
+                    return false;
+                }
+
+                @Override
+                public byte[] next() {
+                    if (next == null && !hasNext()) {
+                        throw new NoSuchElementException();
+                    }
+                    final byte[] out = next;
+                    next = null;
+                    return out;
+                }
+            };
+
+            return new SearchResult<>(() -> matchIterator, new AtomicInteger());
         }
 
         final Set<byte[]> likeMatchedKeys;
         if (searchType == SearchType.LIKE) {
-            likeMatchedKeys = MAP_DB.getMatchingKeysForLikeString(index, sanitizedSearchTerm, matchingKeys,
+            final Set<byte[]> previousKeys = new HashSet<>();
+            final var prevIt = getMatchingKeysIterator(matchingKeys);
+            while (prevIt.hasNext()) {
+                previousKeys.add(prevIt.next());
+            }
+
+            final var likeMatchedKeysIterable = MAP_DB.getMatchingKeysForLike(index, sanitizedSearchTerm, previousKeys,
                     search.limit());
+            likeMatchedKeys = StreamSupport.stream(likeMatchedKeysIterable.spliterator(), false)
+                    .collect(Collectors.toSet());
         } else {
             likeMatchedKeys = null;
         }
 
         final AtomicInteger count = new AtomicInteger(0);
-        final Iterable<byte[]> results = () -> new Iterator<>() {
-            final Iterator<String> it = matchingKeys.iterator();
-            byte[] next = null;
+        final Iterable<byte[]> filtered = () -> new Iterator<>() {
+            private final Iterator<byte[]> it = getMatchingKeysIterator(matchingKeys);
+            private byte[] nextValid = null;
+            private boolean hasNextComputed = false;
 
             @Override
             public boolean hasNext() {
+                if (hasNextComputed) {
+                    return nextValid != null;
+                }
+
                 while (it.hasNext()) {
-                    final String key = it.next();
-                    final var sanitizedKey = MAP_DB.getSanitizedByte(key);
-                    final boolean skip = switch (searchType) {
-                        case EQUAL -> !index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, sanitizedKey));
-                        case NOT_EQUAL -> index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, sanitizedKey));
-                        case LESS -> !MAP_DB.isMatchInRange(comparisonRange, sanitizedKey);
-                        case LESS_OR_EQUAL -> !MAP_DB.isMatchInRange(comparisonRange, sanitizedKey);
-                        case GREATER -> !MAP_DB.isMatchInRange(comparisonRange, sanitizedKey);
-                        case GREATER_OR_EQUAL -> !MAP_DB.isMatchInRange(comparisonRange, sanitizedKey);
-                        case LIKE -> !likeMatchedKeys.contains(sanitizedKey);
-                        case NOT_LIKE -> likeMatchedKeys.contains(sanitizedKey);
-                        case STARTS_WITH -> !MAP_DB.isMatchInRange(startsWithRange, sanitizedKey);
-                        case ENDS_WITH -> !MAP_DB.isEndsWithIndexMatch(index, sanitizedSearchTerm, sanitizedKey);
+                    if (search.limit() != -1 && count.get() >= search.limit()) {
+                        nextValid = null;
+                        hasNextComputed = true;
+                        return false;
+                    }
+                    final byte[] key = it.next();
+                    final boolean add = switch (searchType) {
+                        case EQUAL -> {
+                            final byte[] searchKey = MAP_DB.createIndexKey(sanitizedSearchTerm, key);
+                            yield index.contains(searchKey);
+                        }
+                        case NOT_EQUAL -> {
+                            final byte[] searchKey = MAP_DB.createIndexKey(sanitizedSearchTerm, key);
+                            yield !index.contains(searchKey);
+                        }
+                        case LIKE -> likeMatchedKeys.contains(key);
+                        case NOT_LIKE -> !likeMatchedKeys.contains(key);
+                        case ENDS_WITH -> MAP_DB.isEndsWithIndexMatch(index, sanitizedSearchTerm, key);
                         case IN -> {
                             boolean found = false;
                             for (final byte[] term : searchTermBytesSet) {
-                                final byte[] compositeKey = MAP_DB.createIndexKey(term, sanitizedKey);
+                                final byte[] compositeKey = MAP_DB.createIndexKey(term, key);
                                 if (index.contains(compositeKey)) {
                                     found = true;
                                     break;
                                 }
                             }
-                            yield !found;
+                            yield found;
                         }
                         case NOT_IN -> {
                             boolean found = false;
                             for (final byte[] term : searchTermBytesSet) {
-                                final byte[] compositeKey = MAP_DB.createIndexKey(term, sanitizedKey);
+                                final byte[] compositeKey = MAP_DB.createIndexKey(term, key);
                                 if (index.contains(compositeKey)) {
                                     found = true;
                                     break;
@@ -1738,31 +1893,35 @@ public interface ChronicleDao<V> {
                             }
                             yield !found;
                         }
-                        case BETWEEN -> !MAP_DB.isMatchInRange(betweenRange, sanitizedKey);
-                        default -> throw new UnsupportedOperationException("Unsupported search type: " + searchType);
+                        default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
                     };
 
-                    if (!skip) {
-                        next = sanitizedKey;
+                    if (add) {
+                        nextValid = key;
+                        hasNextComputed = true;
                         return true;
                     }
                 }
+
+                nextValid = null;
+                hasNextComputed = true;
                 return false;
             }
 
             @Override
             public byte[] next() {
-                if (next == null && !hasNext()) {
+                if (!hasNext()) {
                     throw new NoSuchElementException();
                 }
                 count.incrementAndGet();
-                final byte[] result = next;
-                next = null;
+                final byte[] result = nextValid;
+                nextValid = null;
+                hasNextComputed = false;
                 return result;
             }
         };
 
-        return new SearchResult<>(results, count);
+        return new SearchResult<byte[]>(filtered, count);
     }
 
     default Iterable<String> toStringIterable(final Iterable<byte[]> byteKeys) {
