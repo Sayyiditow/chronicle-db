@@ -831,6 +831,27 @@ public final class ChronicleUtils {
         };
     }
 
+    public <T> Iterable<T> concatIterable(final Iterable<T> first, final Iterable<T> second, final int limit) {
+        return () -> new Iterator<>() {
+            private final Iterator<T> firstIterator = first.iterator();
+            private final Iterator<T> secondIterator = second.iterator();
+            private int remaining = limit != -1 ? limit : Integer.MAX_VALUE;
+
+            @Override
+            public boolean hasNext() {
+                return remaining > 0 && (firstIterator.hasNext() || secondIterator.hasNext());
+            }
+
+            @Override
+            public T next() {
+                if (!hasNext())
+                    throw new NoSuchElementException();
+                remaining--;
+                return firstIterator.hasNext() ? firstIterator.next() : secondIterator.next();
+            }
+        };
+    }
+
     public Iterable<Set<WrappedKey>> batchedSetsWrapped(final Iterator<byte[]> iterator, final int batchSize) {
         return () -> new Iterator<>() {
             @Override
