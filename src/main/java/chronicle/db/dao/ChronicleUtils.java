@@ -229,30 +229,38 @@ public final class ChronicleUtils {
         Logger.info("Indexing {} at [{}].", fields, dataPath);
         if (db.isEmpty())
             return;
-        final int BATCH_SIZE = db.size() > 1_000 ? 100_000 : 1_000;
 
-        final Map<String, FieldData> fieldMap = new HashMap<>(fields.size());
+        final int BATCH_SIZE = 100_000;
+
+        // NEW: Parse fields with support for multi-fields
+        final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
         final Class<?>[] valueType = new Class<?>[1];
-        try {
-            db.forEachEntry(e -> {
-                if (valueType[0] == null && e.value() != null) {
-                    valueType[0] = e.value().get().getClass();
-                    throw new RuntimeException("Breaking forEachEntry.");
-                }
-            });
-        } catch (final RuntimeException e) {
-        }
 
-        for (final String field : fields) {
-            final FieldData fieldGetterHandle = getFieldData(valueType[0], field);
-            if (fieldGetterHandle != null)
-                fieldMap.put(field, fieldGetterHandle);
+        db.forEachEntryWhile(e -> {
+            if (valueType[0] == null && e.value() != null) {
+                valueType[0] = e.value().get().getClass();
+                return false; // stop iteration
+            }
+            return true; // continue
+        });
+
+        for (final String rawField : fields) {
+            final String[] parts = rawField.split("\\+");
+            final List<FieldData> getters = new ArrayList<>();
+
+            for (final String part : parts) {
+                getters.add(getFieldData(valueType[0], part));
+            }
+
+            if (!getters.isEmpty()) {
+                indexFieldMap.put(rawField, getters);
+            }
         }
 
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
+
         try {
-            // Step 1: Open all indexes upfront to avoid repeated open/close
-            for (final String field : fieldMap.keySet()) {
+            for (final String field : indexFieldMap.keySet()) {
                 final String indexPath = indexDirPath + "/" + field;
                 final var indexDb = MAP_DB.openIndex(indexPath);
                 if (indexDb != null) {
@@ -262,13 +270,10 @@ public final class ChronicleUtils {
                 }
             }
 
-            // Step 2: Process all fields in a single pass and batch inserts
-            Logger.info("Building indexes for fields: {} at: [{}]", fieldMap.keySet(), indexDirPath);
             final Map<String, Set<byte[]>> fieldBatches = new HashMap<>();
             final AtomicInteger recordCount = new AtomicInteger(0);
 
-            // Initialize batches for each field
-            for (final String field : fieldMap.keySet()) {
+            for (final String field : indexFieldMap.keySet()) {
                 final String indexPath = indexDirPath + "/" + field;
                 if (openIndexes.containsKey(indexPath)) {
                     fieldBatches.put(field, new HashSet<>(BATCH_SIZE));
@@ -277,31 +282,41 @@ public final class ChronicleUtils {
                 }
             }
 
-            // Iterate over db entries once
             db.forEachEntry(entry -> {
                 final K key = entry.key().get();
                 final V value = entry.value().get();
+
                 try {
-                    // Extract values for all fields
-                    for (final Map.Entry<String, FieldData> fieldEntry : fieldMap.entrySet()) {
-                        final String field = fieldEntry.getKey();
-                        final Set<byte[]> batch = fieldBatches.get(field);
-                        if (batch != null) {
-                            final Object currentValue = fieldEntry.getValue().getterHandle.invoke(value);
-                            batch.add(MAP_DB.createIndexKey(currentValue, key.toString()));
+                    for (final Map.Entry<String, List<FieldData>> fieldEntry : indexFieldMap.entrySet()) {
+                        final String compoundField = fieldEntry.getKey();
+                        final Set<byte[]> batch = fieldBatches.get(compoundField);
+                        if (batch == null)
+                            continue;
+
+                        final List<FieldData> fieldDataList = fieldEntry.getValue();
+                        final StringBuilder sb = new StringBuilder();
+
+                        for (final FieldData fd : fieldDataList) {
+                            final Object val = fd.getterHandle.invoke(value);
+                            if (val != null)
+                                sb.append(val.toString());
+                        }
+
+                        if (sb.length() > 0) {
+                            final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), key.toString());
+                            batch.add(indexKey);
                         }
                     }
+
                     recordCount.incrementAndGet();
 
-                    // Insert batches when any field reaches BATCH_SIZE
-                    final boolean anyBatchFull = fieldBatches.values().stream()
-                            .anyMatch(batch -> batch.size() >= BATCH_SIZE);
-                    if (anyBatchFull) {
+                    // Check if any batch is full
+                    final boolean anyFull = fieldBatches.values().stream().anyMatch(b -> b.size() >= BATCH_SIZE);
+                    if (anyFull) {
                         for (final Map.Entry<String, Set<byte[]>> batchEntry : fieldBatches.entrySet()) {
                             final String field = batchEntry.getKey();
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
-                                Logger.debug("Inserting batch of [{}] keys for field: [{}]", batch.size(), field);
                                 final NavigableSet<byte[]> indexDb = openIndexes.get(indexDirPath + "/" + field);
                                 if (indexDb != null) {
                                     indexDb.addAll(batch);
@@ -311,16 +326,15 @@ public final class ChronicleUtils {
                         }
                     }
                 } catch (final Throwable e) {
-                    Logger.error("Error processing key [{}] for fields", key, e);
+                    Logger.error("Error processing key [{}] for compound fields", key, e);
                 }
             });
 
-            // Insert any remaining keys
+            // Flush remaining
             for (final Map.Entry<String, Set<byte[]>> batchEntry : fieldBatches.entrySet()) {
                 final String field = batchEntry.getKey();
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
-                    Logger.debug("Inserting final batch of [{}] keys for field: [{}]", batch.size(), field);
                     final NavigableSet<byte[]> indexDb = openIndexes.get(indexDirPath + "/" + field);
                     if (indexDb != null) {
                         indexDb.addAll(batch);
@@ -328,13 +342,10 @@ public final class ChronicleUtils {
                 }
             }
 
-            Logger.info("Indexed [{}] records for fields: {}", recordCount.get(), fieldMap.keySet());
+            Logger.info("Indexed [{}] records for compound fields: {}", recordCount.get(), indexFieldMap.keySet());
 
         } finally {
-            // Step 3: Close all indexes
-            openIndexes.forEach((indexPath, indexDb) -> {
-                MAP_DB.closeIndex(indexPath);
-            });
+            openIndexes.forEach((indexPath, indexDb) -> MAP_DB.closeIndex(indexPath));
         }
     }
 
@@ -344,174 +355,201 @@ public final class ChronicleUtils {
             return;
         }
 
-        // Step 1: Open all indexes upfront
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
         try {
             final V sampleValue = values.values().iterator().next();
-            for (final String file : indexFileNames) {
-                final String indexPath = dataPath + "/indexes/" + file;
-                final FieldData fieldData = getFieldData(sampleValue.getClass(), file);
-                if (fieldData == null) {
-                    deleteFileIfExists(indexPath);
-                    continue;
+
+            // Step 1: Parse all field getters (supporting compound fields)
+            final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
+            for (final String indexName : indexFileNames) {
+                final String[] parts = indexName.split("\\+");
+                final List<FieldData> getters = new ArrayList<>();
+
+                for (final String part : parts) {
+                    getters.add(getFieldData(sampleValue.getClass(), part));
                 }
-                final var indexDb = MAP_DB.openIndex(indexPath);
-                if (indexDb != null) {
-                    openIndexes.put(indexPath, indexDb);
+
+                if (!getters.isEmpty()) {
+                    indexFieldMap.put(indexName, getters);
+                    final String indexPath = dataPath + "/indexes/" + indexName;
+                    final var indexDb = MAP_DB.openIndex(indexPath);
+                    if (indexDb != null) {
+                        openIndexes.put(indexPath, indexDb);
+                    } else {
+                        Logger.error("Failed to open index for field [{}]", indexName);
+                    }
                 } else {
-                    Logger.error("Failed to open index for file: {}", file);
+                    final String indexPath = dataPath + "/indexes/" + indexName;
+                    deleteFileIfExists(indexPath);
                 }
             }
 
-            // Step 2: Process each field sequentially
-            for (final String file : indexFileNames) {
-                final String indexPath = dataPath + "/indexes/" + file;
-                final var indexDb = openIndexes.get(indexPath);
-                if (indexDb == null) {
+            // Step 2: Remove from each index
+            for (final var entry : indexFieldMap.entrySet()) {
+                final String fieldName = entry.getKey();
+                final List<FieldData> fieldGetters = entry.getValue();
+                final String indexPath = dataPath + "/indexes/" + fieldName;
+                final NavigableSet<byte[]> indexDb = openIndexes.get(indexPath);
+                if (indexDb == null)
                     continue;
-                }
 
-                final FieldData fieldData = getFieldData(sampleValue.getClass(), file);
-                if (fieldData == null) {
-                    continue;
-                }
+                final Set<byte[]> keysToRemove = new HashSet<>(values.size());
 
-                Logger.info("Removing keys for index: {} at path: {}", file, indexPath);
-                final Set<byte[]> compositeKeysToRemove = new HashSet<>(values.size());
+                for (final var e : values.entrySet()) {
+                    final K key = e.getKey();
+                    final V value = e.getValue();
 
-                // Step 3: Collect composite keys to remove
-                for (final var entry : values.entrySet()) {
-                    final K key = entry.getKey();
-                    final V value = entry.getValue();
                     try {
-                        final Object indexValue = fieldData.getterHandle.invoke(value);
-                        compositeKeysToRemove
-                                .add(MAP_DB.createIndexKey(indexValue, key.toString()));
-                    } catch (final Throwable e) {
-                        Logger.error("Error processing file {} for key {}: {}", file, key, e);
+                        final StringBuilder sb = new StringBuilder();
+                        for (final FieldData fd : fieldGetters) {
+                            final Object val = fd.getterHandle.invoke(value);
+                            if (val != null) {
+                                sb.append(val.toString());
+                            }
+                        }
+
+                        if (sb.length() > 0) {
+                            final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), key.toString());
+                            keysToRemove.add(indexKey);
+                        }
+                    } catch (final Throwable t) {
+                        Logger.error("Failed to generate key for [{}] in [{}]: {}", key, fieldName, t.getMessage());
                     }
                 }
 
-                // Step 4: Batch remove keys
-                if (!compositeKeysToRemove.isEmpty()) {
-                    final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
+                if (!keysToRemove.isEmpty()) {
+                    final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
-                        indexDb.removeAll(compositeKeysToRemove);
+                        indexDb.removeAll(keysToRemove);
                     }
                 }
             }
+
         } finally {
-            // Step 5: Close all indexes
-            openIndexes.forEach((indexPath, indexDb) -> {
-                MAP_DB.closeIndex(indexPath);
-            });
+            openIndexes.forEach((path, index) -> MAP_DB.closeIndex(path));
         }
     }
 
-    public <K, V> void updateIndex(final String dbName, final String dataPath,
-            final Set<String> indexFileNames, final Map<K, V> values, final Map<K, V> previousValues) {
+    public <K, V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
+            final Map<K, V> values, final Map<K, V> previousValues) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
 
-        final int BATCH_SIZE = values.size() > 1_000 ? 100_000 : 1_000;
+        final int BATCH_SIZE = 50_000;
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
+
         try {
             final V sampleValue = values.values().iterator().next();
-            final Class<?> sampleValueClass = sampleValue.getClass();
+            final Class<?> sampleClass = sampleValue.getClass();
 
-            // Step 1: Open all indexes upfront
-            for (final String file : indexFileNames) {
-                final String indexPath = dataPath + "/indexes/" + file;
-                final FieldData fieldData = getFieldData(sampleValueClass, file);
-                if (fieldData == null) {
-                    Logger.warn("No field data for index [{}] and class [{}], deleting", file,
-                            sampleValueClass.getSimpleName());
-                    deleteFileIfExists(indexPath);
-                    continue;
+            // Step 1: Parse field getters
+            final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
+            for (final String indexName : indexFileNames) {
+                final String[] parts = indexName.split("\\+");
+                final List<FieldData> getters = new ArrayList<>();
+
+                for (final String part : parts) {
+                    getters.add(getFieldData(sampleClass, part));
                 }
-                final var indexDb = MAP_DB.openIndex(indexPath);
-                if (indexDb != null) {
-                    openIndexes.put(indexPath, indexDb);
+
+                if (!getters.isEmpty()) {
+                    indexFieldMap.put(indexName, getters);
+                    final String indexPath = dataPath + "/indexes/" + indexName;
+                    final var indexDb = MAP_DB.openIndex(indexPath);
+                    if (indexDb != null) {
+                        openIndexes.put(indexPath, indexDb);
+                    } else {
+                        Logger.error("Failed to open index for [{}]", indexName);
+                    }
                 } else {
-                    Logger.error("Failed to open index for file: [{}]", file);
+                    deleteFileIfExists(dataPath + "/indexes/" + indexName);
                 }
             }
 
-            // Step 2: Process each field sequentially
-            for (final String file : indexFileNames) {
-                final String indexPath = dataPath + "/indexes/" + file;
-                final var indexDb = openIndexes.get(indexPath);
-                if (indexDb == null) {
+            // Step 2: Update indexes
+            for (final var entry : indexFieldMap.entrySet()) {
+                final String indexName = entry.getKey();
+                final List<FieldData> fieldGetters = entry.getValue();
+                final String indexPath = dataPath + "/indexes/" + indexName;
+                final NavigableSet<byte[]> indexDb = openIndexes.get(indexPath);
+                if (indexDb == null)
                     continue;
-                }
 
-                final FieldData fieldData = getFieldData(sampleValueClass, file);
-                if (fieldData == null) {
-                    continue;
-                }
-
-                Logger.info("Updating index: {} at path: {}", file, indexPath);
-                final Set<byte[]> compositeKeysToAdd = new HashSet<>(BATCH_SIZE);
-                final Set<byte[]> compositeKeysToRemove = new HashSet<>(BATCH_SIZE);
+                Logger.info("Updating index: [{}]", indexName);
+                final Set<byte[]> addBatch = new HashSet<>(BATCH_SIZE);
+                final Set<byte[]> removeBatch = new HashSet<>(BATCH_SIZE);
                 int recordCount = 0;
 
-                // Step 3: Collect keys to add/remove in batches
-                for (final var entry : values.entrySet()) {
-                    final K key = entry.getKey();
-                    final V newValue = entry.getValue();
-                    final V prevValue = previousValues.get(key);
+                for (final var valEntry : values.entrySet()) {
+                    final K key = valEntry.getKey();
+                    final V newVal = valEntry.getValue();
+                    final V prevVal = previousValues.get(key);
+
                     try {
-                        final Object newIndexKey = fieldData.getterHandle.invoke(newValue);
-                        if (prevValue == null) {
-                            compositeKeysToAdd
-                                    .add(MAP_DB.createIndexKey(newIndexKey, key.toString()));
+                        final StringBuilder newSb = new StringBuilder();
+                        for (final FieldData fd : fieldGetters) {
+                            final Object value = fd.getterHandle.invoke(newVal);
+                            if (value != null)
+                                newSb.append(value.toString());
+                        }
+
+                        if (prevVal == null) {
+                            if (newSb.length() > 0) {
+                                addBatch.add(MAP_DB.createIndexKey(newSb.toString(), key.toString()));
+                            }
                         } else {
-                            final Object prevIndexKey = fieldData.getterHandle.invoke(prevValue);
-                            if (!Objects.equals(newIndexKey, prevIndexKey)) {
-                                compositeKeysToRemove.add(
-                                        MAP_DB.createIndexKey(prevIndexKey, key.toString()));
-                                compositeKeysToAdd
-                                        .add(MAP_DB.createIndexKey(newIndexKey, key.toString()));
+                            final StringBuilder oldSb = new StringBuilder();
+                            for (final FieldData fd : fieldGetters) {
+                                final Object value = fd.getterHandle.invoke(prevVal);
+                                if (value != null)
+                                    oldSb.append(value.toString());
+                            }
+
+                            final String oldVal = oldSb.toString();
+                            final String newValStr = newSb.toString();
+
+                            if (!Objects.equals(oldVal, newValStr)) {
+                                if (!oldVal.isEmpty()) {
+                                    removeBatch.add(MAP_DB.createIndexKey(oldVal, key.toString()));
+                                }
+                                if (!newValStr.isEmpty()) {
+                                    addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                                }
                             }
                         }
 
                         recordCount++;
-                        if (compositeKeysToAdd.size() >= BATCH_SIZE || compositeKeysToRemove.size() >= BATCH_SIZE) {
-                            final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
+
+                        if (addBatch.size() >= BATCH_SIZE || removeBatch.size() >= BATCH_SIZE) {
+                            final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                             synchronized (lock) {
-                                Logger.debug("Updating batch: [{}] keys to remove, [{}] keys to add for index: [{}]",
-                                        compositeKeysToRemove.size(), compositeKeysToAdd.size(), file);
-                                indexDb.removeAll(compositeKeysToRemove);
-                                indexDb.addAll(compositeKeysToAdd);
-                                compositeKeysToRemove.clear();
-                                compositeKeysToAdd.clear();
+                                indexDb.removeAll(removeBatch);
+                                indexDb.addAll(addBatch);
+                                removeBatch.clear();
+                                addBatch.clear();
                             }
                         }
-                    } catch (final Throwable e) {
-                        Logger.error("Error processing file [{}] for key [{}]: [{}]", file, key, e);
+
+                    } catch (final Throwable t) {
+                        Logger.error("Failed to update index [{}] for key [{}]: {}", indexName, key, t.getMessage());
                     }
                 }
 
-                // Step 4: Process final batch
-                if (!compositeKeysToRemove.isEmpty() || !compositeKeysToAdd.isEmpty()) {
-                    final var lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
+                // Final flush
+                if (!addBatch.isEmpty() || !removeBatch.isEmpty()) {
+                    final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
-                        Logger.debug("Updating final batch: [{}] keys to remove, [{}] keys to add for index: [{}]",
-                                compositeKeysToRemove.size(), compositeKeysToAdd.size(), file);
-                        if (!compositeKeysToRemove.isEmpty())
-                            indexDb.removeAll(compositeKeysToRemove);
-                        if (!compositeKeysToAdd.isEmpty())
-                            indexDb.addAll(compositeKeysToAdd);
+                        indexDb.removeAll(removeBatch);
+                        indexDb.addAll(addBatch);
                     }
                 }
-                Logger.info("Updated [{}] records for index: [{}]", recordCount, file);
+
+                Logger.info("Updated [{}] records for index: [{}]", recordCount, indexName);
             }
+
         } finally {
-            // Step 5: Close all indexes
-            openIndexes.forEach((indexPath, indexDb) -> {
-                MAP_DB.closeIndex(indexPath);
-            });
+            openIndexes.forEach((path, db) -> MAP_DB.closeIndex(path));
         }
     }
 

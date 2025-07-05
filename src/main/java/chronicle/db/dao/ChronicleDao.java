@@ -6,8 +6,6 @@ import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -19,12 +17,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
-import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
@@ -35,7 +31,6 @@ import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.MapDb.SearchResult;
-import chronicle.db.service.MapDb.WrappedKey;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -870,26 +865,28 @@ public interface ChronicleDao<V> {
         Logger.info("Rotated data file at [{}] to {}.", dataPath(), rotatedFile);
     }
 
-    private ChronicleMap<String, V> checkAndRotate(ChronicleMap<String, V> db) throws IOException {
+    private boolean checkAndRotate(ChronicleMap<String, V> db) throws IOException {
         if (db.size() >= entries()) {
             closeDb();
             rotateFile();
             db = openDb();
+            return true;
         }
 
-        return db;
+        return false;
     }
 
-    private ChronicleMap<String, V> checkAndRotate(ChronicleMap<String, V> db, final Map<String, String> keyMapUpdate)
+    private boolean checkAndRotate(ChronicleMap<String, V> db, final Map<String, String> keyMapUpdate)
             throws IOException {
         if (db.size() >= entries()) {
             closeDb();
             rotateFile();
             keyMapUpdate.clear();
             db = openDb();
+            return true;
         }
 
-        return db;
+        return false;
     }
 
     /**
@@ -910,6 +907,8 @@ public interface ChronicleDao<V> {
         V prevValue = null;
         Set<String> dataFiles;
         var file = DATA_FILE;
+        var rotated = false;
+        var inserted = false;
         synchronized (lock) {
             dataFiles = getDataFiles();
             file = getDbFile(key, dataFiles);
@@ -917,14 +916,15 @@ public interface ChronicleDao<V> {
                 file = DATA_FILE;
             }
 
-            var db = openDb(file);
+            final var db = openDb(file);
             if (db != null) {
                 try {
                     // only rotate if current file is full and insert mode
                     if (DATA_FILE.equals(file) && !db.containsKey(key)) {
-                        db = checkAndRotate(db);
+                        rotated = checkAndRotate(db);
                     }
                     prevValue = db.put(key, value);
+                    inserted = true;
                 } finally {
                     closeDb(file);
                 }
@@ -937,7 +937,7 @@ public interface ChronicleDao<V> {
                     Map.of(key, prevValue));
             status = PutStatus.UPDATED;
         } else {
-            if (dataFiles.size() > 1) {
+            if (inserted && !rotated && dataFiles.size() > 1) {
                 addToKeyMap(key, file);
             }
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
@@ -1020,6 +1020,8 @@ public interface ChronicleDao<V> {
         Set<String> dataFiles;
         var file = DATA_FILE;
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+        var rotated = false;
+        var inserted = false;
         synchronized (lock) {
             dataFiles = getDataFiles();
             file = getDbFile(key, dataFiles);
@@ -1030,19 +1032,20 @@ public interface ChronicleDao<V> {
                 return PutStatus.FAILED; // already exists
             }
 
-            var db = openDb();
+            final var db = openDb();
             if (db != null) {
                 try {
                     // only rotate if current file is full and insert mode
-                    db = checkAndRotate(db);
+                    rotated = checkAndRotate(db);
                     db.put(key, value);
+                    inserted = true;
                 } finally {
                     closeDb();
                 }
             }
         }
 
-        if (dataFiles.size() > 1) {
+        if (inserted && !rotated && dataFiles.size() > 1) {
             addToKeyMap(key, DATA_FILE);
         }
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap());
@@ -1103,14 +1106,14 @@ public interface ChronicleDao<V> {
             }
             if (!keysToInsert.isEmpty()) {
                 // Insert new records (only keys in keysToInsert)
-                var db = openDb();
+                final var db = openDb();
                 if (db != null) {
                     try {
                         for (final String key : keysToInsert) {
                             final V value = map.get(key);
-                            db = checkAndRotate(db, keyMapUpdate);
+                            final var rotated = checkAndRotate(db, keyMapUpdate);
                             db.put(key, value);
-                            if (dataFiles.size() > 1) {
+                            if (!rotated && dataFiles.size() > 1) {
                                 keyMapUpdate.put(key, DATA_FILE);
                             }
                         }
@@ -1200,15 +1203,15 @@ public interface ChronicleDao<V> {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var dataFiles = getDataFiles();
-            var db = openDb();
+            final var db = openDb();
             if (db != null) {
                 try {
                     for (final var entry : map.entrySet()) {
                         final String key = entry.getKey();
                         final V value = entry.getValue();
-                        db = checkAndRotate(db, keyMapUpdate);
+                        final var rotated = checkAndRotate(db, keyMapUpdate);
                         db.put(key, value);
-                        if (dataFiles.size() > 1) {
+                        if (!rotated && dataFiles.size() > 1) {
                             keyMapUpdate.put(key, DATA_FILE);
                         }
                     }
@@ -1228,21 +1231,83 @@ public interface ChronicleDao<V> {
         return PutStatus.INSERTED;
     }
 
-    /**
-     * Search the chronicle map based on values
-     * 
-     * @param db     the map
-     * @param search object search
-     * @return a map of the fitting values
-     * @throws Throwable
-     */
-    default Map<String, V> search(final Map<String, V> db, final Search search) throws Throwable {
-        Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
-        final Map<String, V> map = new HashMap<>(Math.min(db.size(), 1000));
+    default Map<String, V> search(final Iterable<String> keys, final List<Search> filters) throws Throwable {
+        if (keys == null || !keys.iterator().hasNext()) {
+            return Collections.emptyMap();
+        }
 
-        for (final var entry : db.entrySet()) {
-            if (CHRONICLE_UTILS.search(search, entry.getKey(), entry.getValue())) {
-                map.put(entry.getKey(), db.get(entry.getKey()));
+        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters", dataPath(), filters.size());
+        final var map = new HashMap<String, V>(10_000);
+        final var dbFiles = getDataFiles();
+
+        // Determine minimum positive limit across all filters
+        final int minLimit = filters.stream().map(Search::limit).filter(l -> l > 0).min(Integer::compare)
+                .orElse(Integer.MAX_VALUE);
+
+        if (dbFiles.size() <= 1) {
+            final var db = openDb();
+            if (db != null) {
+                try {
+                    for (final String key : keys) {
+                        if (map.size() >= minLimit)
+                            break;
+
+                        final V value = db.getUsing(key, using());
+                        if (value == null)
+                            continue;
+
+                        boolean match = true;
+                        for (final var search : filters) {
+                            if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                match = false;
+                                break;
+                            }
+                        }
+
+                        if (match) {
+                            map.put(key, value);
+                        }
+                    }
+                } finally {
+                    closeDb();
+                }
+            }
+            return map;
+        }
+
+        // Multi-file case
+        final var keyFiles = getDbFiles(keys, dbFiles);
+        for (final var entry : keyFiles.entrySet()) {
+            if (map.size() >= minLimit)
+                break;
+
+            final var file = entry.getKey();
+            final var db = openDb(file);
+            if (db != null) {
+                try {
+                    for (final String key : entry.getValue()) {
+                        if (map.size() >= minLimit)
+                            break;
+
+                        final V value = db.getUsing(key, using());
+                        if (value == null)
+                            continue;
+
+                        boolean match = true;
+                        for (final var search : filters) {
+                            if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                match = false;
+                                break;
+                            }
+                        }
+
+                        if (match) {
+                            map.put(key, value);
+                        }
+                    }
+                } finally {
+                    closeDb(file);
+                }
             }
         }
 
@@ -1253,55 +1318,73 @@ public interface ChronicleDao<V> {
      * Same as above, just faster with forEachEntry for first search using whole db
      * as chronicle map doesnt allow parallel streams until second map
      */
-    private Map<String, V> search(final ChronicleMap<String, V> db, final Search search) {
-        Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
-        final Map<String, V> map = new HashMap<>(Math.min(db.size(), 1000));
+    private Map<String, V> search(final ChronicleMap<String, V> db, final List<Search> filters) {
+        Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        final Map<String, V> result = new HashMap<>(10_000);
+        final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(Integer.MAX_VALUE);
 
-        db.forEachEntry(entry -> {
+        db.forEachEntryWhile(entry -> {
             try {
-                final String key = entry.key().get();
-                if (CHRONICLE_UTILS.search(search, key, entry.value().get())) {
-                    map.put(key, db.getUsing(key, using()));
+                if (result.size() >= limit) {
+                    return false; // Early exit
                 }
+
+                final String key = entry.key().get();
+                final V value = entry.value().get();
+                if (value == null) {
+                    return true;
+                }
+
+                for (final Search search : filters) {
+                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                        return true;
+                    }
+                }
+
+                result.put(key, db.getUsing(key, using()));
             } catch (final Throwable e) {
-                Logger.error("Search failed. {}", search);
+                Logger.error("Search failed during multi-filter scan.");
                 Logger.error(e);
             }
+            return true;
         });
 
-        return map;
+        return result;
     }
 
-    /**
-     * Search the chronicle map based on values
-     * 
-     * @param db     the map
-     * @param search object search
-     * @return a map of the fitting values
-     * @throws IOException
-     */
-    default Map<String, V> search(final Search search) throws IOException {
-        Logger.info("Searching DB at [{}] for {}.", dataPath(), search);
-        final Map<String, V> results = new HashMap<>();
-        final int limit = search.limit();
-        final var files = getDataFiles();
+    private Map<String, V> search(final Map<String, V> db, final List<Search> filters) {
+        Logger.info("Searching in-memory map with [{}] filters.", filters.size());
+        final Map<String, V> result = new HashMap<>(Math.min(db.size(), 10_000));
 
-        for (final String file : files) {
-            if (limit != -1 && results.size() >= limit) {
-                break;
+        for (final Map.Entry<String, V> entry : db.entrySet()) {
+            final String key = entry.getKey();
+            final V value = entry.getValue();
+
+            if (value == null) {
+                continue;
             }
 
-            final var db = openDb(file);
-            if (db != null) {
+            boolean match = true;
+            for (final Search search : filters) {
                 try {
-                    results.putAll(search(db, search));
-                } finally {
-                    closeDb(file);
+                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                        match = false;
+                        break;
+                    }
+                } catch (final Throwable e) {
+                    Logger.error("Search failed on key [{}] during filter scan.", key);
+                    Logger.error(e);
+                    match = false;
+                    break;
                 }
+            }
+
+            if (match) {
+                result.put(key, value);
             }
         }
 
-        return results;
+        return result;
     }
 
     /**
@@ -1373,285 +1456,6 @@ public interface ChronicleDao<V> {
         }
     }
 
-    private Iterator<byte[]> filterIndexRange(final Iterable<Set<WrappedKey>> batches, final NavigableSet<byte[]> range,
-            final Map<ByteBuffer, WrappedKey> wrappedKeyCache) {
-        return new Iterator<>() {
-            private final Iterator<Set<WrappedKey>> batchIt = batches.iterator();
-            private Iterator<byte[]> currentMatches = Collections.emptyIterator();
-            private byte[] next = null;
-
-            @Override
-            public boolean hasNext() {
-                while ((currentMatches == null || !currentMatches.hasNext()) && batchIt.hasNext()) {
-                    final Set<WrappedKey> batch = batchIt.next();
-                    final Set<byte[]> matches = new HashSet<>();
-                    for (final byte[] compositeKey : range) {
-                        final var split = MAP_DB.splitCompositeKey(compositeKey);
-                        final ByteBuffer buf = ByteBuffer.wrap(split.primaryKey());
-                        final WrappedKey wrapped = wrappedKeyCache.computeIfAbsent(buf,
-                                b -> new WrappedKey(split.primaryKey()));
-                        if (batch.contains(wrapped)) {
-                            matches.add(split.primaryKey());
-                        }
-                    }
-                    currentMatches = matches.iterator();
-                }
-
-                if (currentMatches != null && currentMatches.hasNext()) {
-                    next = currentMatches.next();
-                    return true;
-                }
-
-                return false;
-            }
-
-            @Override
-            public byte[] next() {
-                if (next == null && !hasNext())
-                    throw new NoSuchElementException();
-                final byte[] result = next;
-                next = null;
-                return result;
-            }
-        };
-    }
-
-    default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index,
-            final SearchResult prevSearchResult) {
-        Logger.info("Index searching at [{}] for {}.", dataPath(), search);
-
-        if (index == null) {
-            return new SearchResult(Collections.emptyList());
-        }
-
-        final SearchType searchType = search.searchType();
-        final String searchTerm = String.valueOf(search.searchTerm());
-
-        // Prepare IN / NOT_IN terms if needed
-        final Set<byte[]> searchTermBytesSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? ((List<String>) search.searchTerm()).stream()
-                        .map(s -> s.getBytes(StandardCharsets.UTF_8))
-                        .collect(Collectors.toSet())
-                : null;
-
-        final Map<ByteBuffer, WrappedKey> wrappedKeyCache = new HashMap<>();
-
-        if (searchType == SearchType.BETWEEN) {
-            final var terms = (List<Object>) search.searchTerm();
-            final byte[] lower = MAP_DB.getSanitizedByte(terms.get(0));
-            final byte[] upper = MAP_DB.getSanitizedByte(terms.get(1));
-            final NavigableSet<byte[]> betweenRange = MAP_DB.getBetweenRange(index, lower, upper);
-            final Iterator<byte[]> prevIt = prevSearchResult.results().iterator();
-            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(prevIt, 50_000);
-            final Iterator<byte[]> filteredIterator = filterIndexRange(batches, betweenRange, wrappedKeyCache);
-            return new SearchResult(() -> filteredIterator);
-        }
-
-        if (searchType == SearchType.STARTS_WITH) {
-            final byte[] prefix = MAP_DB.getSanitizedByte(searchTerm);
-            final NavigableSet<byte[]> startsWithRange = MAP_DB.getStartsWithRange(index, prefix);
-            final Iterator<byte[]> prevIt = prevSearchResult.results().iterator();
-            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(prevIt, 50_000);
-            final Iterator<byte[]> filteredIterator = filterIndexRange(batches, startsWithRange, wrappedKeyCache);
-            return new SearchResult(() -> filteredIterator);
-        }
-
-        if (Search.RANGE_SEARCH_TYPE.contains(searchType)) {
-            final byte[] val = MAP_DB.getSanitizedByte(searchTerm);
-            final NavigableSet<byte[]> comparisonRange = MAP_DB.getComparisonRange(index, val, searchType);
-            final Iterator<byte[]> prevIt = prevSearchResult.results().iterator();
-            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(prevIt, 50_000);
-            final Iterator<byte[]> filteredIterator = filterIndexRange(batches, comparisonRange, wrappedKeyCache);
-            return new SearchResult(() -> filteredIterator);
-        }
-
-        final var sanitizedSearchTerm = MAP_DB.getSanitizedByte(searchTerm);
-        final Set<byte[]> likeMatchedKeys = (searchType == SearchType.LIKE)
-                ? StreamSupport.stream(
-                        MAP_DB.getMatchingKeysForLike(index, sanitizedSearchTerm,
-                                StreamSupport.stream(prevSearchResult.results().spliterator(), false)
-                                        .collect(Collectors.toSet()),
-                                search.limit())
-                                .spliterator(),
-                        false)
-                        .collect(Collectors.toSet())
-                : null;
-
-        return new SearchResult(() -> new Iterator<>() {
-            private final Iterator<byte[]> it = prevSearchResult.results().iterator();
-            private byte[] nextValid = null;
-            private boolean hasNextComputed = false;
-            private int remaining = search.limit() != -1 ? search.limit() : Integer.MAX_VALUE;
-
-            @Override
-            public boolean hasNext() {
-                if (hasNextComputed)
-                    return nextValid != null;
-
-                while (it.hasNext() && remaining > 0) {
-                    final byte[] key = it.next();
-                    final boolean add = switch (searchType) {
-                        case EQUAL -> index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, key));
-                        case NOT_EQUAL -> !index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, key));
-                        case LIKE -> likeMatchedKeys.contains(key);
-                        case NOT_LIKE -> !likeMatchedKeys.contains(key);
-                        case ENDS_WITH -> MAP_DB.isEndsWithIndexMatch(index, sanitizedSearchTerm, key);
-                        case IN -> searchTermBytesSet.stream()
-                                .anyMatch(term -> index.contains(MAP_DB.createIndexKey(term, key)));
-                        case NOT_IN -> searchTermBytesSet.stream()
-                                .noneMatch(term -> index.contains(MAP_DB.createIndexKey(term, key)));
-                        default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
-                    };
-
-                    if (add) {
-                        nextValid = key;
-                        hasNextComputed = true;
-                        return true;
-                    }
-                }
-
-                nextValid = null;
-                hasNextComputed = true;
-                return false;
-            }
-
-            @Override
-            public byte[] next() {
-                if (!hasNext())
-                    throw new NoSuchElementException();
-                remaining--;
-                final byte[] result = nextValid;
-                nextValid = null;
-                hasNextComputed = false;
-                return result;
-            }
-        });
-    }
-
-    private Iterator<byte[]> getMatchingKeysIterator(final Set<String> matchingKeys) {
-        return new Iterator<>() {
-            final Iterator<String> keyIt = matchingKeys.iterator();
-
-            @Override
-            public boolean hasNext() {
-                return keyIt.hasNext();
-            }
-
-            @Override
-            public byte[] next() {
-                return MAP_DB.getSanitizedByte(keyIt.next());
-            }
-        };
-    }
-
-    default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index,
-            final Set<String> matchingKeys) {
-        Logger.info("Index searching at [{}] for {}.", dataPath(), search);
-        if (index == null || matchingKeys == null || matchingKeys.isEmpty()) {
-            return new SearchResult(Collections.emptyList());
-        }
-
-        final SearchType searchType = search.searchType();
-        final String searchTerm = String.valueOf(search.searchTerm());
-
-        // Prepare IN / NOT_IN terms if needed
-        final Set<byte[]> searchTermBytesSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? ((List<String>) search.searchTerm()).stream()
-                        .map(s -> s.getBytes(StandardCharsets.UTF_8))
-                        .collect(Collectors.toSet())
-                : null;
-
-        final var sanitizedSearchTerm = MAP_DB.getSanitizedByte(searchTerm);
-        final Map<ByteBuffer, WrappedKey> wrappedKeyCache = new HashMap<>();
-
-        if (searchType == SearchType.BETWEEN) {
-            final var terms = (List<Object>) search.searchTerm();
-            final byte[] lower = MAP_DB.getSanitizedByte(terms.get(0));
-            final byte[] upper = MAP_DB.getSanitizedByte(terms.get(1));
-            final NavigableSet<byte[]> betweenRange = MAP_DB.getBetweenRange(index, lower, upper);
-            final Iterator<byte[]> keyIt = getMatchingKeysIterator(matchingKeys);
-            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(keyIt, 50_000);
-            final Iterator<byte[]> filteredIterator = filterIndexRange(batches, betweenRange, wrappedKeyCache);
-            return new SearchResult(() -> filteredIterator);
-        }
-
-        if (searchType == SearchType.STARTS_WITH) {
-            final byte[] prefix = MAP_DB.getSanitizedByte(searchTerm);
-            final NavigableSet<byte[]> startsWithRange = MAP_DB.getStartsWithRange(index, prefix);
-            final Iterator<byte[]> keyIt = getMatchingKeysIterator(matchingKeys);
-            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(keyIt, 50_000);
-            final Iterator<byte[]> filteredIterator = filterIndexRange(batches, startsWithRange, wrappedKeyCache);
-            return new SearchResult(() -> filteredIterator);
-        }
-
-        if (Search.RANGE_SEARCH_TYPE.contains(searchType)) {
-            final byte[] val = MAP_DB.getSanitizedByte(searchTerm);
-            final NavigableSet<byte[]> comparisonRange = MAP_DB.getComparisonRange(index, val, searchType);
-            final Iterator<byte[]> keyIt = getMatchingKeysIterator(matchingKeys);
-            final Iterable<Set<WrappedKey>> batches = CHRONICLE_UTILS.batchedSetsWrapped(keyIt, 50_000);
-            final Iterator<byte[]> filteredIterator = filterIndexRange(batches, comparisonRange, wrappedKeyCache);
-            return new SearchResult(() -> filteredIterator);
-        }
-
-        final Set<byte[]> likeMatchedKeys = (searchType == SearchType.LIKE)
-                ? StreamSupport.stream(
-                        MAP_DB.getMatchingKeysForLike(index, sanitizedSearchTerm,
-                                matchingKeys.stream().map(MAP_DB::getSanitizedByte).collect(Collectors.toSet()),
-                                search.limit()).spliterator(),
-                        false).collect(Collectors.toSet())
-                : null;
-
-        return new SearchResult(() -> new Iterator<>() {
-            private final Iterator<byte[]> it = getMatchingKeysIterator(matchingKeys);
-            private byte[] nextValid = null;
-            private boolean hasNextComputed = false;
-            private int remaining = search.limit() != -1 ? search.limit() : Integer.MAX_VALUE;
-
-            @Override
-            public boolean hasNext() {
-                if (hasNextComputed)
-                    return nextValid != null;
-
-                while (it.hasNext() && remaining > 0) {
-                    final byte[] key = it.next();
-                    final boolean add = switch (searchType) {
-                        case EQUAL -> index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, key));
-                        case NOT_EQUAL -> !index.contains(MAP_DB.createIndexKey(sanitizedSearchTerm, key));
-                        case LIKE -> likeMatchedKeys.contains(key);
-                        case NOT_LIKE -> !likeMatchedKeys.contains(key);
-                        case ENDS_WITH -> MAP_DB.isEndsWithIndexMatch(index, sanitizedSearchTerm, key);
-                        case IN -> searchTermBytesSet.stream()
-                                .anyMatch(term -> index.contains(MAP_DB.createIndexKey(term, key)));
-                        case NOT_IN -> searchTermBytesSet.stream()
-                                .noneMatch(term -> index.contains(MAP_DB.createIndexKey(term, key)));
-                        default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
-                    };
-
-                    if (add) {
-                        nextValid = key;
-                        hasNextComputed = true;
-                        return true;
-                    }
-                }
-
-                nextValid = null;
-                hasNextComputed = true;
-                return false;
-            }
-
-            @Override
-            public byte[] next() {
-                if (!hasNext())
-                    throw new NoSuchElementException();
-                remaining--;
-                final byte[] result = nextValid;
-                nextValid = null;
-                hasNextComputed = false;
-                return result;
-            }
-        });
-    }
-
     default Iterable<String> toStringIterable(final Iterable<byte[]> byteKeys) {
         return () -> new Iterator<>() {
             final Iterator<byte[]> it = byteKeys.iterator();
@@ -1668,40 +1472,58 @@ public interface ChronicleDao<V> {
         };
     }
 
+    private <T> boolean isResultEmpty(final Iterable<T> result) {
+        return result == null || !result.iterator().hasNext();
+    }
+
     default Map<String, V> indexedSearch(final Search search) throws IOException {
-        final var indexFilePath = getIndexPath(search.field());
-        final var indexDb = MAP_DB.openIndex(indexFilePath);
+        final String indexPath = getIndexPath(search.field());
+        final var indexDb = MAP_DB.openIndex(indexPath);
         if (indexDb != null) {
             try {
-                return get(toStringIterable(indexedSearch(search, indexDb).results()));
+                final var searchResult = indexedSearch(search, indexDb);
+                if (isResultEmpty(searchResult.results())) {
+                    return Collections.emptyMap();
+                }
+
+                return get(toStringIterable(searchResult.results()));
             } finally {
-                MAP_DB.closeIndex(indexFilePath);
+                MAP_DB.closeIndex(indexPath);
             }
         }
-
         return Collections.emptyMap();
     }
 
-    default Map<String, V> indexedSearch(final Set<String> keys, final Search search) throws IOException {
-        if (keys == null || keys.isEmpty()) {
+    default Map<String, V> indexedSearch(final Set<String> matchingKeys, final Search search) throws Throwable {
+        if (matchingKeys == null || matchingKeys.isEmpty()) {
             return Collections.emptyMap();
         }
 
-        final var indexFilePath = getIndexPath(search.field());
-        final var indexDb = MAP_DB.openIndex(indexFilePath);
-        if (indexDb != null) {
-            try {
-                return get(toStringIterable(indexedSearch(search, indexDb, keys).results()));
-            } finally {
-                MAP_DB.closeIndex(indexFilePath);
+        return search(matchingKeys, List.of(search));
+    }
+
+    default Map<String, V> search(final Map<String, V> db, final Search search) throws IOException {
+        if (db == null || db.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return search(db, List.of(search));
+    }
+
+    default Map<String, V> search(final Search search) throws IOException {
+        final Map<String, V> result = new HashMap<>();
+
+        for (final String file : getDataFiles()) {
+            final var db = openDb(file);
+            if (db != null) {
+                try {
+                    result.putAll(search(db, List.of(search)));
+                } finally {
+                    closeDb(file);
+                }
             }
         }
 
-        return Collections.emptyMap();
-    }
-
-    private <T> boolean isResultEmpty(final Iterable<T> result) {
-        return result == null || !result.iterator().hasNext();
+        return result;
     }
 
     default Map<String, V> multiSearch(final List<Search> searches) throws Throwable {
@@ -1709,85 +1531,68 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        // Step 1: Split searches into indexed and non-indexed
-        final List<Search> indexedSearches = new ArrayList<>();
-        final List<Search> nonIndexedSearches = new ArrayList<>();
         final Set<String> indexFileNames = indexFileNames();
 
-        for (final Search search : searches) {
-            if (indexFileNames.contains(search.field())) {
-                indexedSearches.add(search);
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (indexedSearch == null && indexFileNames.contains(s.field())) {
+                indexedSearch = s;
             } else {
-                nonIndexedSearches.add(search);
+                remainingSearches.add(s);
             }
         }
 
-        Map<String, V> db = null;
-        // Step 2: Process indexed searches to get intersecting keys
-        if (!indexedSearches.isEmpty()) {
-            final var openIndexes = new ArrayList<String>();
-            SearchResult searchResult = null;
+        SearchResult searchResult = null;
+        String indexPath = null;
+        NavigableSet<byte[]> indexDb = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            indexDb = MAP_DB.openIndex(indexPath);
 
-            try {
-                for (final Search search : indexedSearches) {
-                    final var indexPath = getIndexPath(search.field());
-                    final var indexDb = MAP_DB.openIndex(indexPath);
+            if (indexDb != null) {
+                searchResult = indexedSearch(indexedSearch, indexDb);
+                if (isResultEmpty(searchResult.results())) {
+                    MAP_DB.closeIndex(indexPath);
+                    return Collections.emptyMap();
+                }
 
-                    if (indexDb != null) {
-                        openIndexes.add(indexPath);
-                        searchResult = (searchResult == null)
-                                ? indexedSearch(search, indexDb)
-                                : indexedSearch(search, indexDb, searchResult);
-
-                        if (isResultEmpty(searchResult.results())) {
-                            return Collections.emptyMap();
-                        }
+                if (remainingSearches.isEmpty()) {
+                    try {
+                        return get(toStringIterable(searchResult.results()));
+                    } finally {
+                        MAP_DB.closeIndex(indexPath);
                     }
                 }
-
-                db = get(toStringIterable(searchResult.results()));
-                if (nonIndexedSearches.isEmpty()) {
-                    return db;
-                }
-            } finally {
-                for (final String path : openIndexes) {
-                    MAP_DB.closeIndex(path);
-                }
             }
         }
 
-        // Step 3: Process non-indexed searches
-        for (final var search : nonIndexedSearches) {
-            if (db == null) {
-                // First non-indexed search and no indexed searches; scan all records
-                db = new HashMap<>();
-                final var files = getDataFiles();
-                for (final String file : files) {
-                    final var dbToSearch = openDb(file);
-                    if (dbToSearch != null) {
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                final Map<String, V> result = new HashMap<>();
+                for (final String file : getDataFiles()) {
+                    final var db = openDb(file);
+                    if (db != null) {
                         try {
-                            db.putAll(search(dbToSearch, search));
+                            result.putAll(search(db, searches));
                         } finally {
                             closeDb(file);
                         }
                     }
                 }
+                return result;
             } else {
-                // Reuse the filtered db for subsequent non-indexed searches
-                db = search(db, search);
+                return search(toStringIterable(searchResult.results()), remainingSearches);
             }
-
-            if (db.isEmpty()) {
-                return Collections.emptyMap(); // Early exit if no matches
+        } finally {
+            if (indexDb != null) {
+                MAP_DB.closeIndex(indexPath);
             }
         }
-
-        if (db == null) {
-            return Collections.emptyMap();
-        }
-
-        // Step 5: Return the final results
-        return db;
     }
 
     default Map<String, V> multiSearch(final Set<String> matchingKeys, final List<Search> searches) throws Throwable {
@@ -1795,64 +1600,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        // Step 1: Split searches into indexed and non-indexed
-        final List<Search> indexedSearches = new ArrayList<>();
-        final List<Search> nonIndexedSearches = new ArrayList<>();
-        final Set<String> indexFileNames = indexFileNames();
-
-        for (final Search search : searches) {
-            if (indexFileNames.contains(search.field())) {
-                indexedSearches.add(search);
-            } else {
-                nonIndexedSearches.add(search);
-            }
-        }
-
-        SearchResult searchResult = null;
-        if (!indexedSearches.isEmpty()) {
-            final var openIndexes = new ArrayList<String>();
-            try {
-                for (int i = 0; i < indexedSearches.size() && !matchingKeys.isEmpty(); i++) {
-                    final Search search = indexedSearches.get(i);
-                    final var indexFilePath = getIndexPath(search.field());
-                    final var indexDb = MAP_DB.openIndex(indexFilePath);
-
-                    if (indexDb != null) {
-                        openIndexes.add(indexFilePath);
-                        searchResult = indexedSearch(search, indexDb, matchingKeys);
-                    }
-
-                    if (isResultEmpty(searchResult.results())) {
-                        return Collections.emptyMap();
-                    }
-                }
-
-                if (nonIndexedSearches.isEmpty()) {
-                    return get(toStringIterable(searchResult.results()));
-                }
-            } finally {
-                for (final String path : openIndexes) {
-                    MAP_DB.closeIndex(path);
-                }
-            }
-        }
-
-        // Step 3: Fetch records for the filtered keys
-        Map<String, V> db = searchResult != null ? get(toStringIterable(searchResult.results())) : get(matchingKeys);
-        if (db.isEmpty()) {
-            return Collections.emptyMap();
-        }
-
-        // Step 4: Process non-indexed searches
-        for (final var search : nonIndexedSearches) {
-            db = search(db, search);
-            if (db.isEmpty()) {
-                return Collections.emptyMap(); // Early exit if no matches
-            }
-        }
-
-        // Step 5: Return the final results
-        return db;
+        return search(matchingKeys, searches);
     }
 
     default int multiIndexSearchCount(final List<Search> searches) throws Throwable {
@@ -1860,31 +1608,65 @@ public interface ChronicleDao<V> {
             return 0;
         }
 
-        final var openIndexes = new ArrayList<String>();
-        SearchResult searchResult = null;
-        try {
-            for (final Search search : searches) {
-                final var indexFilePath = getIndexPath(search.field());
-                final var indexDb = MAP_DB.openIndex(indexFilePath);
-                if (indexDb != null) {
-                    openIndexes.add(indexFilePath);
-                    searchResult = (searchResult == null)
-                            ? indexedSearch(search, indexDb)
-                            : indexedSearch(search, indexDb, searchResult);
+        final Set<String> indexFileNames = indexFileNames();
 
-                    if (isResultEmpty(searchResult.results())) {
-                        return 0;
+        // Step 1: Separate searches into one indexed + remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (indexedSearch == null && indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+
+        String indexPath = null;
+        NavigableSet<byte[]> indexDb = null;
+        // Step 2: Indexed search (only first index used)
+        SearchResult searchResult = null;
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            indexDb = MAP_DB.openIndex(indexPath);
+            if (indexDb != null) {
+                searchResult = indexedSearch(indexedSearch, indexDb);
+                if (isResultEmpty(searchResult.results())) {
+                    MAP_DB.closeIndex(indexPath);
+                    return 0;
+                }
+                if (remainingSearches.isEmpty()) {
+                    try {
+                        return MAP_DB.fastCount(searchResult.results());
+                    } finally {
+                        MAP_DB.closeIndex(indexPath);
                     }
                 }
             }
+        }
 
-            if (searchResult != null) {
-                return MAP_DB.fastCount(searchResult.results());
+        try {
+            if (searchResult == null) {
+                final Map<String, V> result = new HashMap<>();
+
+                for (final String file : getDataFiles()) {
+                    final var db = openDb(file);
+                    if (db != null) {
+                        try {
+                            result.putAll(search(db, searches)); // all searches in one go
+                        } finally {
+                            closeDb(file);
+                        }
+                    }
+                }
+
+                return result.size();
+            } else {
+                return search(toStringIterable(searchResult.results()), remainingSearches).size();
             }
-            return 0;
         } finally {
-            for (final String path : openIndexes) {
-                MAP_DB.closeIndex(path);
+            if (indexDb != null) {
+                MAP_DB.closeIndex(indexPath);
             }
         }
     }

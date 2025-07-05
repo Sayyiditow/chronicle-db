@@ -6,7 +6,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.NavigableSet;
 import java.util.NoSuchElementException;
@@ -22,8 +21,6 @@ import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
 import org.tinylog.Logger;
 
-import chronicle.db.entity.Search.SearchType;
-
 public final class MapDb {
     private MapDb() {
     }
@@ -36,8 +33,6 @@ public final class MapDb {
     public static final String NON_CHAR = "\uFFFF";
     public static final String ASCII_0 = "\u0000";
     private static final byte upperByte = (byte) 0xFF;
-    private static final byte[] upperBoundByte = new byte[] { upperByte };
-    private static final byte[] zeroByte = new byte[0];
 
     private static class TreeEntry {
         final DB db;
@@ -305,22 +300,6 @@ public final class MapDb {
                 return i;
         }
         throw new IllegalArgumentException("Separator byte not found in key");
-    }
-
-    private boolean matchesPrimaryKey(final byte[] indexKey, final byte[] primaryKey) {
-        int sep = indexKey.length - 1;
-        while (sep >= 0 && indexKey[sep] != SEP)
-            sep--;
-        if (sep < 0)
-            return false;
-        final int pkLen = indexKey.length - sep - 1;
-        if (pkLen != primaryKey.length)
-            return false;
-        for (int i = 0; i < pkLen; i++) {
-            if (indexKey[sep + 1 + i] != primaryKey[i])
-                return false;
-        }
-        return true;
     }
 
     public int fastCount(final Iterable<byte[]> result) {
@@ -643,191 +622,5 @@ public final class MapDb {
         };
 
         return new SearchResult(iterable);
-    }
-
-    public NavigableSet<byte[]> getComparisonRange(final NavigableSet<byte[]> index, final byte[] searchTerm,
-            final SearchType searchType) {
-        final byte[] minKey = createIndexKey(zeroByte, zeroByte);
-        final byte[] maxKey = createIndexKey(searchTerm, upperBoundByte);
-        final byte[] minSearchKey = createIndexKey(searchTerm, zeroByte);
-        final byte[] beyondMax = createIndexKey(new byte[] { upperByte }, new byte[] { upperByte });
-
-        return switch (searchType) {
-            case LESS -> index.subSet(minKey, true, maxKey, false);
-            case LESS_OR_EQUAL -> index.subSet(minKey, true, maxKey, true);
-            case GREATER -> index.subSet(minSearchKey, false, beyondMax, true);
-            case GREATER_OR_EQUAL -> index.subSet(minSearchKey, true, beyondMax, true);
-            default -> throw new UnsupportedOperationException("Unsupported comparison type: " + searchType);
-        };
-    }
-
-    private int indexOfSep(final byte[] data) {
-        for (int i = 0; i < data.length; i++) {
-            if (data[i] == SEP)
-                return i;
-        }
-        return -1;
-    }
-
-    private boolean containsSubarray(final byte[] array, final byte[] sub) {
-        outer: for (int i = 0; i <= array.length - sub.length; i++) {
-            for (int j = 0; j < sub.length; j++) {
-                if (array[i + j] != sub[j]) {
-                    continue outer;
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    public Set<byte[]> getMatchingKeysForLikeString(final NavigableSet<byte[]> index, final byte[] searchTerm,
-            final Set<String> matchingKeys, final int limit) {
-        final Set<byte[]> matchedKeys = new HashSet<>();
-        int matchedCount = 0;
-
-        for (final byte[] composite : index) {
-            if (limit != -1 && matchedCount >= limit) {
-                break;
-            }
-
-            final int sep = indexOfSep(composite);
-            if (sep == -1 || sep >= composite.length - 1)
-                continue;
-
-            final byte[] fieldValue = Arrays.copyOfRange(composite, 0, sep);
-            final byte[] keyBytes = Arrays.copyOfRange(composite, sep + 1, composite.length);
-
-            if (matchingKeys.contains(extractIndexKey(keyBytes)) && containsSubarray(fieldValue, searchTerm)) {
-                matchedKeys.add(keyBytes);
-                matchedCount++;
-            }
-        }
-
-        return matchedKeys;
-    }
-
-    public Iterable<byte[]> getMatchingKeysForLike(final NavigableSet<byte[]> index, final byte[] searchTerm,
-            final Set<byte[]> matchingKeys, final int limit) {
-        return new Iterable<byte[]>() {
-            @Override
-            public Iterator<byte[]> iterator() {
-                return new Iterator<byte[]>() {
-                    private final Iterator<byte[]> it = index.iterator();
-                    private int count = 0;
-                    private byte[] next = null;
-                    private boolean computed = false;
-
-                    @Override
-                    public boolean hasNext() {
-                        if (computed)
-                            return next != null;
-
-                        while (it.hasNext()) {
-                            if (limit != -1 && count >= limit) {
-                                next = null;
-                                computed = true;
-                                return false;
-                            }
-
-                            final byte[] composite = it.next();
-                            final int sep = indexOfSep(composite);
-                            if (sep == -1 || sep >= composite.length - 1)
-                                continue;
-
-                            final byte[] fieldValue = Arrays.copyOfRange(composite, 0, sep);
-                            final byte[] keyBytes = Arrays.copyOfRange(composite, sep + 1, composite.length);
-
-                            if (matchingKeys.contains(keyBytes) && containsSubarray(fieldValue, searchTerm)) {
-                                next = keyBytes;
-                                computed = true;
-                                return true;
-                            }
-                        }
-
-                        next = null;
-                        computed = true;
-                        return false;
-                    }
-
-                    @Override
-                    public byte[] next() {
-                        if (!hasNext())
-                            throw new NoSuchElementException();
-                        computed = false;
-                        count++;
-                        return next;
-                    }
-                };
-            }
-        };
-    }
-
-    public NavigableSet<byte[]> getStartsWithRange(final NavigableSet<byte[]> index, final byte[] searchTerm) {
-        final byte[] lowerKey = createIndexKey(searchTerm, zeroByte);
-        final byte[] upperKey = createIndexKey(searchTerm, upperBoundByte);
-
-        return index.subSet(lowerKey, true, upperKey, false);
-    }
-
-    private static byte toLower(final byte b) {
-        if (b >= 'A' && b <= 'Z')
-            return (byte) (b + 32);
-        return b;
-    }
-
-    public boolean isEndsWithIndexMatch(final NavigableSet<byte[]> index, final byte[] searchTerm,
-            final byte[] primaryKey) {
-        for (final byte[] entry : index) {
-            if (!matchesPrimaryKey(entry, primaryKey))
-                continue;
-
-            int sepIndex = -1;
-            for (int i = 0; i < entry.length; i++) {
-                if (entry[i] == SEP) {
-                    sepIndex = i;
-                    break;
-                }
-            }
-            if (sepIndex == -1)
-                continue;
-
-            final int fieldLen = sepIndex;
-            final int suffixLen = searchTerm.length;
-            if (fieldLen < suffixLen)
-                continue;
-
-            boolean match = true;
-            for (int i = 0; i < suffixLen; i++) {
-                final byte b1 = toLower(entry[fieldLen - suffixLen + i]);
-                final byte b2 = toLower(searchTerm[i]);
-                if (b1 != b2) {
-                    match = false;
-                    break;
-                }
-            }
-
-            if (match)
-                return true;
-        }
-
-        return false;
-    }
-
-    public NavigableSet<byte[]> getBetweenRange(final NavigableSet<byte[]> index,
-            final byte[] lowerBound, final byte[] upperBound) {
-        final byte[] lowerKey = createIndexKey(lowerBound, zeroByte);
-        final byte[] upperKey = createIndexKey(upperBound, upperBoundByte);
-
-        return index.subSet(lowerKey, true, upperKey, true);
-    }
-
-    public boolean isMatchInRange(final NavigableSet<byte[]> range, final byte[] key) {
-        for (final byte[] indexKey : range) {
-            if (matchesPrimaryKey(indexKey, key)) {
-                return true;
-            }
-        }
-        return false;
     }
 }
