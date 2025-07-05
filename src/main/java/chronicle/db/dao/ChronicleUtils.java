@@ -349,15 +349,27 @@ public final class ChronicleUtils {
         }
     }
 
-    public <K, V> void removeFromIndex(final String dbName, final String dataPath,
-            final Set<String> indexFileNames, final Map<K, V> values) {
+    public <K, V> void removeFromIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
+            final Map<K, V> values) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
 
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
         try {
-            final V sampleValue = values.values().iterator().next();
+            V sampleValue = null;
+            for (final V v : values.values()) {
+                if (v != null) {
+                    sampleValue = v;
+                    break;
+                }
+            }
+
+            if (sampleValue == null) {
+                Logger.warn("removeFromIndex(): All values are null. Skipping index removal. Keys: {}",
+                        values.keySet());
+                return;
+            }
 
             // Step 1: Parse all field getters (supporting compound fields)
             final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
