@@ -865,28 +865,31 @@ public interface ChronicleDao<V> {
         Logger.info("Rotated data file at [{}] to {}.", dataPath(), rotatedFile);
     }
 
-    private boolean checkAndRotate(ChronicleMap<String, V> db) throws IOException {
+    record RotateResult<V>(boolean rotated, ChronicleMap<String, V> db) {
+    }
+
+    private RotateResult<V> checkAndRotate(ChronicleMap<String, V> db) throws IOException {
         if (db.size() >= entries()) {
             closeDb();
             rotateFile();
             db = openDb();
-            return true;
+            return new RotateResult<V>(true, db);
         }
 
-        return false;
+        return new RotateResult<>(false, db);
     }
 
-    private boolean checkAndRotate(ChronicleMap<String, V> db, final Map<String, String> keyMapUpdate)
+    private RotateResult<V> checkAndRotate(ChronicleMap<String, V> db, final Map<String, String> keyMapUpdate)
             throws IOException {
         if (db.size() >= entries()) {
             closeDb();
             rotateFile();
             keyMapUpdate.clear();
             db = openDb();
-            return true;
+            return new RotateResult<V>(true, db);
         }
 
-        return false;
+        return new RotateResult<>(false, db);
     }
 
     /**
@@ -907,8 +910,7 @@ public interface ChronicleDao<V> {
         V prevValue = null;
         Set<String> dataFiles;
         var file = DATA_FILE;
-        var rotated = false;
-        var inserted = false;
+        RotateResult<V> rotated = null;
         synchronized (lock) {
             dataFiles = getDataFiles();
             file = getDbFile(key, dataFiles);
@@ -916,15 +918,15 @@ public interface ChronicleDao<V> {
                 file = DATA_FILE;
             }
 
-            final var db = openDb(file);
+            var db = openDb(file);
             if (db != null) {
                 try {
                     // only rotate if current file is full and insert mode
                     if (DATA_FILE.equals(file) && !db.containsKey(key)) {
                         rotated = checkAndRotate(db);
+                        db = rotated.db();
                     }
                     prevValue = db.put(key, value);
-                    inserted = true;
                 } finally {
                     closeDb(file);
                 }
@@ -937,7 +939,7 @@ public interface ChronicleDao<V> {
                     Map.of(key, prevValue));
             status = PutStatus.UPDATED;
         } else {
-            if (inserted && !rotated && dataFiles.size() > 1) {
+            if (rotated != null && !rotated.rotated() && dataFiles.size() > 1) {
                 addToKeyMap(key, file);
             }
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
@@ -1020,8 +1022,7 @@ public interface ChronicleDao<V> {
         Set<String> dataFiles;
         var file = DATA_FILE;
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        var rotated = false;
-        var inserted = false;
+        RotateResult<V> rotated = null;
         synchronized (lock) {
             dataFiles = getDataFiles();
             file = getDbFile(key, dataFiles);
@@ -1032,20 +1033,19 @@ public interface ChronicleDao<V> {
                 return PutStatus.FAILED; // already exists
             }
 
-            final var db = openDb();
+            var db = openDb();
             if (db != null) {
                 try {
-                    // only rotate if current file is full and insert mode
                     rotated = checkAndRotate(db);
+                    db = rotated.db();
                     db.put(key, value);
-                    inserted = true;
                 } finally {
                     closeDb();
                 }
             }
         }
 
-        if (inserted && !rotated && dataFiles.size() > 1) {
+        if (rotated != null && !rotated.rotated() && dataFiles.size() > 1) {
             addToKeyMap(key, DATA_FILE);
         }
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap());
@@ -1106,14 +1106,15 @@ public interface ChronicleDao<V> {
             }
             if (!keysToInsert.isEmpty()) {
                 // Insert new records (only keys in keysToInsert)
-                final var db = openDb();
+                var db = openDb();
                 if (db != null) {
                     try {
                         for (final String key : keysToInsert) {
                             final V value = map.get(key);
                             final var rotated = checkAndRotate(db, keyMapUpdate);
+                            db = rotated.db();
                             db.put(key, value);
-                            if (!rotated && dataFiles.size() > 1) {
+                            if (!rotated.rotated() && dataFiles.size() > 1) {
                                 keyMapUpdate.put(key, DATA_FILE);
                             }
                         }
@@ -1203,15 +1204,16 @@ public interface ChronicleDao<V> {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             final var dataFiles = getDataFiles();
-            final var db = openDb();
+            var db = openDb();
             if (db != null) {
                 try {
                     for (final var entry : map.entrySet()) {
                         final String key = entry.getKey();
                         final V value = entry.getValue();
                         final var rotated = checkAndRotate(db, keyMapUpdate);
+                        db = rotated.db();
                         db.put(key, value);
-                        if (!rotated && dataFiles.size() > 1) {
+                        if (!rotated.rotated() && dataFiles.size() > 1) {
                             keyMapUpdate.put(key, DATA_FILE);
                         }
                     }
