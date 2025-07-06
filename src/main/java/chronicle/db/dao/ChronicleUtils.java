@@ -341,9 +341,7 @@ public final class ChronicleUtils {
                     }
                 }
             }
-
             Logger.info("Indexed [{}] records for compound fields: {}", recordCount.get(), indexFieldMap.keySet());
-
         } finally {
             openIndexes.forEach((indexPath, indexDb) -> MAP_DB.closeIndex(indexPath));
         }
@@ -436,7 +434,6 @@ public final class ChronicleUtils {
                     }
                 }
             }
-
         } finally {
             openIndexes.forEach((path, index) -> MAP_DB.closeIndex(path));
         }
