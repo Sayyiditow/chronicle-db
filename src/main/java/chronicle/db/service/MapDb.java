@@ -214,33 +214,6 @@ public final class MapDb {
     public record KeyParts(byte[] fieldValue, byte[] primaryKey) {
     }
 
-    public static final class WrappedKey {
-        private final byte[] key;
-
-        public WrappedKey(final byte[] key) {
-            this.key = key;
-        }
-
-        public byte[] get() {
-            return key;
-        }
-
-        @Override
-        public boolean equals(final Object o) {
-            if (this == o)
-                return true;
-            if (!(o instanceof WrappedKey))
-                return false;
-            final WrappedKey that = (WrappedKey) o;
-            return Arrays.equals(this.key, that.key);
-        }
-
-        @Override
-        public int hashCode() {
-            return Arrays.hashCode(key);
-        }
-    }
-
     public KeyParts splitCompositeKey(final byte[] compositeKey) {
         for (int i = 0; i < compositeKey.length; i++) {
             if (compositeKey[i] == SEP) {
@@ -337,7 +310,7 @@ public final class MapDb {
     }
 
     public NavigableSet<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
-        final byte[] fieldBytes = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] fieldBytes = getSanitizedByte(searchTerm);
         final byte[] lowerKey = ByteBuffer.allocate(fieldBytes.length + 1).put(fieldBytes).put(SEP).array();
         final byte[] upperKey = ByteBuffer.allocate(fieldBytes.length + 2).put(fieldBytes).put(SEP).put(upperByte)
                 .array();

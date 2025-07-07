@@ -36,7 +36,6 @@ import org.tinylog.Logger;
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
-import chronicle.db.service.MapDb.WrappedKey;
 import net.openhft.chronicle.map.ChronicleMap;
 
 @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -861,23 +860,6 @@ public final class ChronicleUtils {
         return Map.of("totalPages", totalPages, "page", page, "data", resultData);
     }
 
-    public <T> Iterable<T> concatIterable(final Iterable<T> first, final Iterable<T> second) {
-        return () -> new Iterator<>() {
-            private final Iterator<T> firstIterator = first.iterator();
-            private final Iterator<T> secondIterator = second.iterator();
-
-            @Override
-            public boolean hasNext() {
-                return firstIterator.hasNext() || secondIterator.hasNext();
-            }
-
-            @Override
-            public T next() {
-                return firstIterator.hasNext() ? firstIterator.next() : secondIterator.next();
-            }
-        };
-    }
-
     public <T> Iterable<T> concatIterable(final Iterable<T> first, final Iterable<T> second, final int limit) {
         return () -> new Iterator<>() {
             private final Iterator<T> firstIterator = first.iterator();
@@ -895,32 +877,6 @@ public final class ChronicleUtils {
                     throw new NoSuchElementException();
                 remaining--;
                 return firstIterator.hasNext() ? firstIterator.next() : secondIterator.next();
-            }
-        };
-    }
-
-    public Iterable<Set<WrappedKey>> batchedSetsWrapped(final Iterator<byte[]> iterator, final int batchSize) {
-        return () -> new Iterator<>() {
-            @Override
-            public boolean hasNext() {
-                return iterator.hasNext();
-            }
-
-            @Override
-            public Set<WrappedKey> next() {
-                if (!hasNext())
-                    throw new NoSuchElementException();
-
-                final Set<WrappedKey> batch = new HashSet<>(batchSize);
-                int count = 0;
-                while (iterator.hasNext() && count < batchSize) {
-                    batch.add(new WrappedKey(iterator.next()));
-                    count++;
-                }
-
-                if (batch.isEmpty())
-                    throw new NoSuchElementException();
-                return batch;
             }
         };
     }
