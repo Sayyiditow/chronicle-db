@@ -28,10 +28,8 @@ public final class MapDb {
     public static final MapDb MAP_DB = new MapDb();
     private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, TreeEntry> treeCache = new ConcurrentHashMap<>();
-    public static final int MAP_DB_SEGMENTS = 8;
-    public static final byte SEP = 0x1F;
-    public static final String NON_CHAR = "\uFFFF";
-    public static final String ASCII_0 = "\u0000";
+    private static final int mapDbSegments = 8;
+    private static final byte indexSep = 0x1F;
     private static final byte upperByte = (byte) 0xFF;
 
     private static class TreeEntry {
@@ -85,7 +83,7 @@ public final class MapDb {
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable()
-                        .concurrencyScale(MAP_DB_SEGMENTS)
+                        .concurrencyScale(mapDbSegments)
                         .make()
                         .hashMap("map")
                         .keySerializer(Serializer.STRING)
@@ -151,7 +149,7 @@ public final class MapDb {
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable()
-                        .concurrencyScale(MAP_DB_SEGMENTS)
+                        .concurrencyScale(mapDbSegments)
                         .make();
                 final var tree = db.treeSet("index")
                         .serializer(Serializer.BYTE_ARRAY)
@@ -194,7 +192,7 @@ public final class MapDb {
         if (input == null)
             return "null";
         final String str = input.toString();
-        return str.indexOf(SEP) >= 0 ? str.replace((char) SEP, ' ') : str;
+        return str.indexOf(indexSep) >= 0 ? str.replace((char) indexSep, ' ') : str;
     }
 
     private byte[] getSanitizedByte(final Object value) {
@@ -206,7 +204,7 @@ public final class MapDb {
         final byte[] keyBytes = getSanitizedByte(primaryKey);
         final byte[] result = new byte[fieldBytes.length + 1 + keyBytes.length];
         System.arraycopy(fieldBytes, 0, result, 0, fieldBytes.length); // Copy 1st part
-        result[fieldBytes.length] = SEP; // Insert separator
+        result[fieldBytes.length] = indexSep; // Insert separator
         System.arraycopy(keyBytes, 0, result, fieldBytes.length + 1, keyBytes.length); // Copy 2nd part
         return result;
     }
@@ -217,7 +215,7 @@ public final class MapDb {
 
     public String extractIndexValue(final byte[] compositeKey) {
         for (int i = 0; i < compositeKey.length; i++) {
-            if (compositeKey[i] == SEP) {
+            if (compositeKey[i] == indexSep) {
                 return new String(compositeKey, 0, i, StandardCharsets.UTF_8);
             }
         }
@@ -226,7 +224,7 @@ public final class MapDb {
 
     public byte[] extractIndexKeyBytes(final byte[] compositeKey) {
         for (int i = 0; i < compositeKey.length; i++) {
-            if (compositeKey[i] == SEP) {
+            if (compositeKey[i] == indexSep) {
                 return Arrays.copyOfRange(compositeKey, i + 1, compositeKey.length);
             }
         }
@@ -267,12 +265,25 @@ public final class MapDb {
         return new SearchResult(iterable);
     }
 
+    private byte[] createLowerBoundKey(final byte[] fieldBytes) {
+        final byte[] key = new byte[fieldBytes.length + 1];
+        System.arraycopy(fieldBytes, 0, key, 0, fieldBytes.length);
+        key[fieldBytes.length] = indexSep;
+        return key;
+    }
+
+    private byte[] createUpperBoundKey(final byte[] fieldBytes) {
+        final byte[] key = new byte[fieldBytes.length + 2];
+        System.arraycopy(fieldBytes, 0, key, 0, fieldBytes.length);
+        key[fieldBytes.length] = indexSep;
+        key[fieldBytes.length + 1] = upperByte;
+        return key;
+    }
+
     private NavigableSet<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
         final byte[] fieldBytes = getSanitizedByte(searchTerm);
-        final byte[] lowerKey = ByteBuffer.allocate(fieldBytes.length + 1).put(fieldBytes).put(SEP).array();
-        final byte[] upperKey = ByteBuffer.allocate(fieldBytes.length + 2).put(fieldBytes).put(SEP).put(upperByte)
-                .array();
-        return index.subSet(lowerKey, true, upperKey, false);
+        return index.subSet(createLowerBoundKey(fieldBytes), true,
+                createUpperBoundKey(fieldBytes), false);
     }
 
     public SearchResult getEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
@@ -282,54 +293,54 @@ public final class MapDb {
 
     public SearchResult getBeforeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] upperKey = createIndexKey(searchTerm, "");
+        final byte[] upperKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         final byte[] lowerKey = new byte[] { 0 }; // Minimal key
         return getSearchResult(index.subSet(lowerKey, true, upperKey, false), limit);
     }
 
     public SearchResult getAfterIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
-        final byte[] lowerKey = new byte[] { upperByte, upperByte }; // NON_CHAR
+        final byte[] upperKey = createUpperBoundKey(getSanitizedByte(searchTerm));
+        final byte[] lowerKey = new byte[] { upperByte, upperByte };
         return getSearchResult(index.subSet(lowerKey, false, upperKey, false), limit);
     }
 
     public SearchResult getLessThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] upperKey = createIndexKey(searchTerm, "");
+        final byte[] upperKey = createLowerBoundKey(createLowerBoundKey(getSanitizedByte(searchTerm)));
         return getSearchResult(index.headSet(upperKey, false), limit);
     }
 
     public SearchResult getLessThanOrEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] upperKey = createIndexKey(searchTerm, NON_CHAR);
+        final byte[] upperKey = createUpperBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.headSet(upperKey, true), limit);
     }
 
     public SearchResult getGreaterThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] lowerKey = createIndexKey(searchTerm, NON_CHAR);
+        final byte[] lowerKey = createUpperBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.tailSet(lowerKey, false), limit);
     }
 
     public SearchResult getGreaterThanOrEqualIndexSearch(final NavigableSet<byte[]> index,
             final String searchTerm, final int limit) {
-        final byte[] lowerKey = createIndexKey(searchTerm, "");
+        final byte[] lowerKey = createLowerBoundKey(createLowerBoundKey(getSanitizedByte(searchTerm)));
         return getSearchResult(index.tailSet(lowerKey, true), limit);
     }
 
     public SearchResult getStartsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] lowerKey = getSanitizedByte(searchTerm);
-        final byte[] upperKey = (searchTerm + NON_CHAR).getBytes(StandardCharsets.UTF_8);
-        return getSearchResult(index.subSet(lowerKey, true, upperKey, false), limit);
+        final byte[] termBytes = getSanitizedByte(searchTerm);
+        final byte[] upperKey = Arrays.copyOf(termBytes, termBytes.length + 1);
+        upperKey[termBytes.length] = upperByte;
+        return getSearchResult(index.subSet(termBytes, true, upperKey, false), limit);
     }
 
     public SearchResult getBetweenIndexSearch(final NavigableSet<byte[]> index, final String lowerBound,
             final String upperBound, final int limit) {
-        // Use createPrefixKey for bounds
-        final byte[] lowerKey = createIndexKey(lowerBound, "");
-        final byte[] upperKey = createIndexKey(upperBound, NON_CHAR);
+        final byte[] lowerKey = createLowerBoundKey(getSanitizedByte(lowerBound));
+        final byte[] upperKey = createUpperBoundKey(getSanitizedByte(upperBound));
         return getSearchResult(index.subSet(lowerKey, true, upperKey, true), limit);
     }
 
@@ -493,7 +504,7 @@ public final class MapDb {
             final int limit) {
         final byte[] suffix = getSanitizedByte(searchTerm);
         final byte[] suffixWithSep = ByteBuffer.allocate(suffix.length + 1)
-                .put(suffix).put(SEP).array();
+                .put(suffix).put(indexSep).array();
         final String suffixWithSepStr = new String(suffixWithSep, StandardCharsets.UTF_8);
 
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
@@ -517,7 +528,7 @@ public final class MapDb {
 
                     final byte[] key = it.next();
                     final String keyStr = new String(key, StandardCharsets.UTF_8);
-                    final int sepIndex = keyStr.indexOf((char) SEP);
+                    final int sepIndex = keyStr.indexOf((char) indexSep);
 
                     if (sepIndex == -1) {
                         continue; // Skip malformed entries
