@@ -362,7 +362,7 @@ public final class MapDb {
 
     public SearchResult getStartsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] lowerKey = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] lowerKey = getSanitizedByte(searchTerm);
         final byte[] upperKey = (searchTerm + NON_CHAR).getBytes(StandardCharsets.UTF_8);
         return getSearchResult(index.subSet(lowerKey, true, upperKey, false), limit);
     }
@@ -533,7 +533,7 @@ public final class MapDb {
 
     public SearchResult getEndsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] suffix = searchTerm.getBytes(StandardCharsets.UTF_8);
+        final byte[] suffix = getSanitizedByte(searchTerm);
         final byte[] suffixWithSep = ByteBuffer.allocate(suffix.length + 1)
                 .put(suffix).put(SEP).array();
         final String suffixWithSepStr = new String(suffixWithSep, StandardCharsets.UTF_8);
