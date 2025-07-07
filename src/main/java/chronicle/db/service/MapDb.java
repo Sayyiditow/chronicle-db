@@ -92,6 +92,9 @@ public final class MapDb {
                         .valueSerializer(Serializer.STRING)
                         .createOrOpen();
                 return new MapEntry((HTreeMap<String, String>) map);
+            } catch (final DBException.DataCorruption e) {
+                CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
+                return null;
             } catch (final Exception e) {
                 Logger.error("MapDB initialization failed for [{}]. {}", filePath, e);
                 return null;
@@ -195,13 +198,8 @@ public final class MapDb {
         return input.toString().replace((char) SEP, ' ');
     }
 
-    public byte[] getSanitizedByte(final Object value) {
+    private byte[] getSanitizedByte(final Object value) {
         return sanitize(value).getBytes(StandardCharsets.UTF_8);
-    }
-
-    public byte[] createIndexKey(final byte[] fieldBytes, final byte[] keyBytes) {
-        return ByteBuffer.allocate(fieldBytes.length + 1 + keyBytes.length)
-                .put(fieldBytes).put(SEP).put(keyBytes).array();
     }
 
     public byte[] createIndexKey(final Object fieldValue, final String primaryKey) {
@@ -209,44 +207,6 @@ public final class MapDb {
         final byte[] keyBytes = getSanitizedByte(primaryKey);
         return ByteBuffer.allocate(fieldBytes.length + 1 + keyBytes.length)
                 .put(fieldBytes).put(SEP).put(keyBytes).array();
-    }
-
-    public record KeyParts(byte[] fieldValue, byte[] primaryKey) {
-    }
-
-    public KeyParts splitCompositeKey(final byte[] compositeKey) {
-        for (int i = 0; i < compositeKey.length; i++) {
-            if (compositeKey[i] == SEP) {
-                final byte[] fieldValue = Arrays.copyOfRange(compositeKey, 0, i);
-                final byte[] primaryKey = Arrays.copyOfRange(compositeKey, i + 1, compositeKey.length);
-                return new KeyParts(fieldValue, primaryKey);
-            }
-        }
-        return null; // or throw exception if separator is required
-    }
-
-    public String[] decodeKey(final byte[] keyBytes) {
-        int sepIndex = -1;
-        for (int i = 0; i < keyBytes.length; i++) {
-            if (keyBytes[i] == SEP) {
-                sepIndex = i;
-                break;
-            }
-        }
-        if (sepIndex == -1) {
-            throw new IllegalArgumentException("Separator byte not found in key");
-        }
-
-        final String field = new String(keyBytes, 0, sepIndex, StandardCharsets.UTF_8);
-        final String primaryKey = new String(keyBytes, sepIndex + 1, keyBytes.length - sepIndex - 1,
-                StandardCharsets.UTF_8);
-
-        return new String[] { field, primaryKey };
-    }
-
-    public String extractIndexKeyFromCompositeKey(final byte[] indexKey) {
-        final int sepIndex = findSeparator(indexKey);
-        return new String(indexKey, sepIndex + 1, indexKey.length - sepIndex - 1, StandardCharsets.UTF_8);
     }
 
     public String extractIndexKey(final byte[] keyBytes) {
@@ -309,7 +269,7 @@ public final class MapDb {
         return new SearchResult(iterable);
     }
 
-    public NavigableSet<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
+    private NavigableSet<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
         final byte[] fieldBytes = getSanitizedByte(searchTerm);
         final byte[] lowerKey = ByteBuffer.allocate(fieldBytes.length + 1).put(fieldBytes).put(SEP).array();
         final byte[] upperKey = ByteBuffer.allocate(fieldBytes.length + 2).put(fieldBytes).put(SEP).put(upperByte)
