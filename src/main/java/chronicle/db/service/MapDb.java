@@ -193,9 +193,8 @@ public final class MapDb {
     private String sanitize(final Object input) {
         if (input == null)
             return "null";
-        if (input.toString().indexOf(SEP) == -1)
-            return input.toString();
-        return input.toString().replace((char) SEP, ' ');
+        final String str = input.toString();
+        return str.indexOf(SEP) >= 0 ? str.replace((char) SEP, ' ') : str;
     }
 
     private byte[] getSanitizedByte(final Object value) {
@@ -205,17 +204,24 @@ public final class MapDb {
     public byte[] createIndexKey(final Object fieldValue, final String primaryKey) {
         final byte[] fieldBytes = getSanitizedByte(fieldValue);
         final byte[] keyBytes = getSanitizedByte(primaryKey);
-        return ByteBuffer.allocate(fieldBytes.length + 1 + keyBytes.length)
-                .put(fieldBytes).put(SEP).put(keyBytes).array();
+        final byte[] result = new byte[fieldBytes.length + 1 + keyBytes.length];
+        System.arraycopy(fieldBytes, 0, result, 0, fieldBytes.length); // Copy 1st part
+        result[fieldBytes.length] = SEP; // Insert separator
+        System.arraycopy(keyBytes, 0, result, fieldBytes.length + 1, keyBytes.length); // Copy 2nd part
+        return result;
     }
 
     public String extractIndexKey(final byte[] keyBytes) {
         return new String(keyBytes, StandardCharsets.UTF_8);
     }
 
-    public String extractIndexValue(final byte[] indexKey) {
-        final int sepIndex = findSeparator(indexKey);
-        return new String(indexKey, 0, sepIndex, StandardCharsets.UTF_8);
+    public String extractIndexValue(final byte[] compositeKey) {
+        for (int i = 0; i < compositeKey.length; i++) {
+            if (compositeKey[i] == SEP) {
+                return new String(compositeKey, 0, i, StandardCharsets.UTF_8);
+            }
+        }
+        return new String(compositeKey, StandardCharsets.UTF_8); // fallback: no separator found
     }
 
     public byte[] extractIndexKeyBytes(final byte[] compositeKey) {
@@ -225,14 +231,6 @@ public final class MapDb {
             }
         }
         return compositeKey; // fallback: no separator found
-    }
-
-    private int findSeparator(final byte[] data) {
-        for (int i = 0; i < data.length; i++) {
-            if (data[i] == SEP)
-                return i;
-        }
-        throw new IllegalArgumentException("Separator byte not found in key");
     }
 
     public int fastCount(final Iterable<byte[]> result) {
