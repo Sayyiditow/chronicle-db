@@ -12,7 +12,7 @@ import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.mapdb.DB;
 import org.mapdb.DBException;
@@ -35,24 +35,22 @@ public final class MapDb {
     private static class TreeEntry {
         final DB db;
         final NavigableSet<byte[]> index;
-        final LongAdder refCount;
+        final AtomicInteger refCount;
 
         TreeEntry(final DB db, final NavigableSet<byte[]> index) {
             this.db = db;
             this.index = index;
-            this.refCount = new LongAdder();
-            this.refCount.increment(); // Start with a reference count of 1
+            this.refCount = new AtomicInteger(1); // Start with a reference count of 1
         }
     }
 
     private static class MapEntry {
         final HTreeMap<String, String> map;
-        final LongAdder refCount;
+        final AtomicInteger refCount;
 
         MapEntry(final HTreeMap<String, String> map) {
             this.map = map;
-            this.refCount = new LongAdder();
-            this.refCount.increment(); // Start with a reference count of 1
+            this.refCount = new AtomicInteger(1); // Start with a reference count of 1
         }
     }
 
@@ -69,7 +67,7 @@ public final class MapDb {
         final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 // Increment reference count for existing entry
-                existingEntry.refCount.increment();
+                existingEntry.refCount.incrementAndGet();
                 return existingEntry;
             }
 
@@ -113,13 +111,11 @@ public final class MapDb {
      */
     public void closeMap(final String filePath) {
         mapCache.computeIfPresent(filePath, (k, entry) -> {
-            entry.refCount.decrement();
-            if (entry.refCount.sum() == 0) {
-                // If the reference count reaches 0, close the map and remove the entry
+            if (entry.refCount.decrementAndGet() == 0) {
                 entry.map.close();
-                return null; // Remove the entry from the map
+                return null;
             }
-            return entry; // Otherwise, keep the entry
+            return entry; // Keep the entry
         });
     }
 
@@ -135,7 +131,7 @@ public final class MapDb {
         final var entry = treeCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 // Increment reference count for existing entry
-                existingEntry.refCount.increment();
+                existingEntry.refCount.incrementAndGet();
                 return existingEntry;
             }
 
@@ -178,13 +174,11 @@ public final class MapDb {
      */
     public void closeIndex(final String filePath) {
         treeCache.computeIfPresent(filePath, (k, entry) -> {
-            entry.refCount.decrement();
-            if (entry.refCount.sum() == 0) {
-                // If the reference count reaches 0, close the map and remove the entry
+            if (entry.refCount.decrementAndGet() == 0) {
                 entry.db.close();
-                return null; // Remove the entry from the map
+                return null;
             }
-            return entry; // Otherwise, keep the entry
+            return entry; // Keep the entry
         });
     }
 

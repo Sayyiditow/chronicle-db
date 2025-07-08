@@ -8,7 +8,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.tinylog.Logger;
 
@@ -29,12 +29,11 @@ public final class ChronicleDb {
 
     private static class MapEntry {
         final ChronicleMap<?, ?> map;
-        final LongAdder refCount;
+        final AtomicInteger refCount;
 
         MapEntry(final ChronicleMap<?, ?> map) {
             this.map = map;
-            this.refCount = new LongAdder();
-            this.refCount.increment(); // Start with a reference count of 1
+            this.refCount = new AtomicInteger(1);// Start with a reference count of 1
         }
     }
 
@@ -58,7 +57,7 @@ public final class ChronicleDb {
         final MapEntry entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 // Increment reference count for existing entry
-                existingEntry.refCount.increment();
+                existingEntry.refCount.incrementAndGet();
                 return existingEntry;
             }
 
@@ -96,11 +95,9 @@ public final class ChronicleDb {
      */
     public void close(final String filePath) {
         mapCache.computeIfPresent(filePath, (k, entry) -> {
-            entry.refCount.decrement();
-            if (entry.refCount.sum() == 0) {
-                // Last reference: close the map and remove the entry
+            if (entry.refCount.decrementAndGet() == 0) {
                 entry.map.close();
-                return null; // Remove from cache
+                return null;
             }
             return entry; // Keep the entry
         });
