@@ -173,6 +173,7 @@ public final class ChronicleUtils {
                 || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS)
                         ? setSearchTermNonIndexed((List<Object>) search.searchTerm(), fieldType)
                         : null;
+        final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
         final Object currentValue = fieldData.getterHandle.invoke(value);
         if (currentValue == null)
@@ -209,6 +210,8 @@ public final class ChronicleUtils {
                 String.valueOf(currentValue).toLowerCase().endsWith(String.valueOf(searchTerm).toLowerCase());
             case IN -> searchTermSet.contains(currentValue);
             case NOT_IN -> !searchTermSet.contains(currentValue);
+            case BETWEEN -> compare(currentValue, searchTermBetween.get(0)) >= 0
+                    && compare(currentValue, searchTermBetween.get(1)) <= 0;
             default -> false;
         };
     }
