@@ -280,7 +280,7 @@ public final class ChronicleUtils {
                 if (openIndexes.containsKey(indexPath)) {
                     fieldBatches.put(field, new HashSet<>(BATCH_SIZE));
                 } else {
-                    Logger.error("Skipping field [{}] due to missing index at [{}]", field, indexPath);
+                    Logger.warn("Skipping field [{}] due to missing index at [{}].", field, indexPath);
                 }
             }
 
