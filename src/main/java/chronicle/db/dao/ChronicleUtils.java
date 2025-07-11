@@ -328,7 +328,8 @@ public final class ChronicleUtils {
                         }
                     }
                 } catch (final Throwable e) {
-                    Logger.error("Error processing key [{}] for compound fields", key, e);
+                    Logger.error("Error processing key [{}] for fields {}", key, fields);
+                    Logger.error(e);
                 }
             });
 
@@ -343,7 +344,7 @@ public final class ChronicleUtils {
                     }
                 }
             }
-            Logger.info("Indexed [{}] records for compound fields: {}", recordCount.get(), indexFieldMap.keySet());
+            Logger.info("Indexed [{}] records for fields: {}", recordCount.get(), indexFieldMap.keySet());
         } finally {
             openIndexes.forEach((indexPath, indexDb) -> MAP_DB.closeIndex(indexPath));
         }
