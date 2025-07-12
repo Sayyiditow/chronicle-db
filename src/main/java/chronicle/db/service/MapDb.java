@@ -88,7 +88,7 @@ public final class MapDb {
                         .valueSerializer(Serializer.STRING)
                         .createOrOpen();
                 return new MapEntry((HTreeMap<String, String>) map);
-            } catch (final DBException.DataCorruption e) {
+            } catch (final DBException.DataCorruption | DBException.GetVoid e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 return null;
             } catch (final Exception e) {
@@ -151,7 +151,7 @@ public final class MapDb {
                         .serializer(Serializer.BYTE_ARRAY)
                         .createOrOpen();
                 return new TreeEntry(db, tree);
-            } catch (final DBException.DataCorruption e) {
+            } catch (final DBException.DataCorruption | DBException.GetVoid e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 return null;
             } catch (final Exception e) {
