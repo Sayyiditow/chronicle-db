@@ -389,7 +389,7 @@ public final class ChronicleUtils {
                     if (indexDb != null) {
                         openIndexes.put(indexPath, indexDb);
                     } else {
-                        Logger.error("Failed to open index for field [{}]", indexName);
+                        Logger.error("Failed to open index for field [{}] at [{}]", indexName, indexPath);
                     }
                 } else {
                     final String indexPath = dataPath + "/indexes/" + indexName;
@@ -472,7 +472,7 @@ public final class ChronicleUtils {
                     if (indexDb != null) {
                         openIndexes.put(indexPath, indexDb);
                     } else {
-                        Logger.error("Failed to open index for [{}]", indexName);
+                        Logger.error("Failed to open index for field [{}] at [{}]", indexName, indexPath);
                     }
                 } else {
                     deleteFileIfExists(dataPath + "/indexes/" + indexName);
