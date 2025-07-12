@@ -261,7 +261,7 @@ public final class ChronicleUtils {
         }
 
         if (db.isEmpty()) {
-            Logger.info("DB is empty. Index files created but skipping data indexing.");
+            Logger.info("DB is empty. Index files created but skipping data indexing at [{}].", indexDirPath);
             openIndexes.forEach((indexPath, indexDb) -> MAP_DB.closeIndex(indexPath));
             return;
         }
