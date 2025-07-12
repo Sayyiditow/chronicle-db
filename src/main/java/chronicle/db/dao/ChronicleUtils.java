@@ -227,31 +227,20 @@ public final class ChronicleUtils {
      * 
      */
     public <K, V> void index(final ChronicleMap<K, V> db, final String dbName, final Set<String> fields,
-            final String dataPath, final String indexDirPath) {
+            final String dataPath, final String indexDirPath, final Class<?> valueClass) {
         Logger.info("Indexing {} at [{}].", fields, dataPath);
-        if (db.isEmpty())
-            return;
 
         final int BATCH_SIZE = 100_000;
 
         // NEW: Parse fields with support for multi-fields
         final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
-        final Class<?>[] valueType = new Class<?>[1];
-
-        db.forEachEntryWhile(e -> {
-            if (valueType[0] == null && e.value() != null) {
-                valueType[0] = e.value().get().getClass();
-                return false; // stop iteration
-            }
-            return true; // continue
-        });
 
         for (final String rawField : fields) {
             final String[] parts = rawField.split("\\+");
             final List<FieldData> getters = new ArrayList<>();
 
             for (final String part : parts) {
-                getters.add(getFieldData(valueType[0], part));
+                getters.add(getFieldData(valueClass, part));
             }
 
             if (!getters.isEmpty()) {
@@ -261,17 +250,23 @@ public final class ChronicleUtils {
 
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
 
-        try {
-            for (final String field : indexFieldMap.keySet()) {
-                final String indexPath = indexDirPath + "/" + field;
-                final var indexDb = MAP_DB.openIndex(indexPath);
-                if (indexDb != null) {
-                    openIndexes.put(indexPath, indexDb);
-                } else {
-                    Logger.error("Failed to open index for field [{}] at [{}]", field, indexDirPath);
-                }
+        for (final String field : indexFieldMap.keySet()) {
+            final String indexPath = indexDirPath + "/" + field;
+            final var indexDb = MAP_DB.openIndex(indexPath);
+            if (indexDb != null) {
+                openIndexes.put(indexPath, indexDb);
+            } else {
+                Logger.error("Failed to open index for field [{}] at [{}]", field, indexDirPath);
             }
+        }
 
+        if (db.isEmpty()) {
+            Logger.info("DB is empty. Index files created but skipping data indexing.");
+            openIndexes.forEach((indexPath, indexDb) -> MAP_DB.closeIndex(indexPath));
+            return;
+        }
+
+        try {
             final Map<String, Set<byte[]>> fieldBatches = new HashMap<>();
             final AtomicInteger recordCount = new AtomicInteger(0);
 
@@ -351,27 +346,13 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void removeFromIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<K, V> values) {
+            final Map<K, V> values, final Class<?> valueClass) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
 
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
         try {
-            V sampleValue = null;
-            for (final V v : values.values()) {
-                if (v != null) {
-                    sampleValue = v;
-                    break;
-                }
-            }
-
-            if (sampleValue == null) {
-                Logger.warn("removeFromIndex(): All values are null. Skipping index removal. Keys: {}",
-                        values.keySet());
-                return;
-            }
-
             // Step 1: Parse all field getters (supporting compound fields)
             final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
             for (final String indexName : indexFileNames) {
@@ -379,7 +360,7 @@ public final class ChronicleUtils {
                 final List<FieldData> getters = new ArrayList<>();
 
                 for (final String part : parts) {
-                    getters.add(getFieldData(sampleValue.getClass(), part));
+                    getters.add(getFieldData(valueClass, part));
                 }
 
                 if (!getters.isEmpty()) {
@@ -443,7 +424,7 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<K, V> values, final Map<K, V> previousValues) {
+            final Map<K, V> values, final Map<K, V> previousValues, final Class<?> valueClass) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
@@ -452,9 +433,6 @@ public final class ChronicleUtils {
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
 
         try {
-            final V sampleValue = values.values().iterator().next();
-            final Class<?> sampleClass = sampleValue.getClass();
-
             // Step 1: Parse field getters
             final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
             for (final String indexName : indexFileNames) {
@@ -462,7 +440,7 @@ public final class ChronicleUtils {
                 final List<FieldData> getters = new ArrayList<>();
 
                 for (final String part : parts) {
-                    getters.add(getFieldData(sampleClass, part));
+                    getters.add(getFieldData(valueClass, part));
                 }
 
                 if (!getters.isEmpty()) {

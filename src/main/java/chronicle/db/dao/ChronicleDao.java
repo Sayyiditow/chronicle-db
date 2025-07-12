@@ -274,7 +274,7 @@ public interface ChronicleDao<V> {
      * 
      */
     private void initIndex(final ChronicleMap<String, V> db, final Set<String> fields, final String indexDirPath) {
-        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), indexDirPath);
+        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), indexDirPath, averageValue().getClass());
     }
 
     /**
@@ -704,13 +704,14 @@ public interface ChronicleDao<V> {
         }
 
         final var indexFileNames = indexFileNames();
-        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value));
+        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
+                averageValue().getClass());
         return true;
     }
 
     private void removeFromIndex(final Map<String, V> deletedMap) throws IOException {
         Logger.info("{} record(s) deleted at [{}].", deletedMap.size(), dataPath());
-        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap);
+        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap, averageValue().getClass());
     }
 
     /**
@@ -924,14 +925,14 @@ public interface ChronicleDao<V> {
         var status = PutStatus.INSERTED;
         if (prevValue != null) {
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                    Map.of(key, prevValue));
+                    Map.of(key, prevValue), averageValue().getClass());
             status = PutStatus.UPDATED;
         } else {
             if (getDataFiles().size() > 1) {
                 addToKeyMap(key, file);
             }
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                    Collections.emptyMap());
+                    Collections.emptyMap(), averageValue().getClass());
         }
         Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
         return status;
@@ -979,7 +980,7 @@ public interface ChronicleDao<V> {
 
         if (status == PutStatus.UPDATED) {
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                    Map.of(key, prevValue));
+                    Map.of(key, prevValue), averageValue().getClass());
         }
         Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
 
@@ -1032,7 +1033,8 @@ public interface ChronicleDao<V> {
         if (getDataFiles().size() > 1) {
             addToKeyMap(key, DATA_FILE);
         }
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap());
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap(),
+                averageValue().getClass());
         Logger.info("[{}] using key [{}] at [{}].", PutStatus.INSERTED, key, dataPath());
         return PutStatus.INSERTED;
     }
@@ -1111,7 +1113,7 @@ public interface ChronicleDao<V> {
             addToKeyMap(keyMapUpdate);
         }
 
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues, averageValue().getClass());
         Logger.info("Put {} records at [{}].", putSize, dataPath());
 
         return status;
@@ -1164,7 +1166,7 @@ public interface ChronicleDao<V> {
             status = prevValueSize == 0 ? PutStatus.FAILED : PutStatus.PARTIAL;
         }
 
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues);
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues, averageValue().getClass());
         Logger.info("Updated {} records at [{}].", prevValueSize, dataPath());
         return status;
     }
@@ -1207,7 +1209,8 @@ public interface ChronicleDao<V> {
             addToKeyMap(keyMapUpdate);
         }
 
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, Collections.emptyMap());
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, Collections.emptyMap(),
+                averageValue().getClass());
         Logger.info("Inserted {} records at [{}].", putSize, dataPath());
 
         return PutStatus.INSERTED;
