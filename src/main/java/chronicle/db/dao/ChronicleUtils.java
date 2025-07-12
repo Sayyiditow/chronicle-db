@@ -268,7 +268,7 @@ public final class ChronicleUtils {
                 if (indexDb != null) {
                     openIndexes.put(indexPath, indexDb);
                 } else {
-                    Logger.error("Failed to open index for field: [{}]", field);
+                    Logger.error("Failed to open index for field [{}] at [{}]", field, indexDirPath);
                 }
             }
 
