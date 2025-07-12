@@ -89,10 +89,13 @@ public final class MapDb {
                         .createOrOpen();
                 return new MapEntry((HTreeMap<String, String>) map);
             } catch (final DBException.DataCorruption | DBException.GetVoid e) {
+                Logger.warn("MapDB initialization failed for [{}]. Reindexing...", filePath);
+                Logger.warn(e);
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 return null;
             } catch (final Exception e) {
-                Logger.error("MapDB initialization failed for [{}]. {}", filePath, e);
+                Logger.error("MapDB initialization failed for [{}].", filePath);
+                Logger.error(e);
                 return null;
             }
         });
@@ -152,10 +155,13 @@ public final class MapDb {
                         .createOrOpen();
                 return new TreeEntry(db, tree);
             } catch (final DBException.DataCorruption | DBException.GetVoid e) {
+                Logger.warn("Index DB initialization failed for [{}]. Reindexing", filePath);
+                Logger.warn(e);
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 return null;
             } catch (final Exception e) {
-                Logger.error("Index DB initialization failed for [{}]. {}", filePath, e);
+                Logger.error("Index DB initialization failed for [{}].", filePath);
+                Logger.error(e);
                 return null;
             }
         });
