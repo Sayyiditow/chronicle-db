@@ -1279,8 +1279,7 @@ public interface ChronicleDao<V> {
         final var map = new ConcurrentHashMap<String, V>(10_000);
 
         // Determine minimum positive limit across all filters
-        final int minLimit = filters.stream().map(Search::limit).filter(l -> l > 0).min(Integer::compare)
-                .orElse(Integer.MAX_VALUE);
+        final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(Integer.MAX_VALUE);
 
         if (getDataFiles().size() <= 1) {
             final var db = openDb();
@@ -1288,7 +1287,7 @@ public interface ChronicleDao<V> {
                 final AtomicInteger count = new AtomicInteger();
                 try {
                     StreamSupport.stream(keys.spliterator(), true)
-                            .limit(minLimit)
+                            .limit(limit)
                             .forEach(key -> {
                                 final V value = db.getUsing(key, using());
                                 if (value == null)
@@ -1323,7 +1322,7 @@ public interface ChronicleDao<V> {
             final AtomicInteger count = new AtomicInteger();
 
             for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= minLimit)
+                if (count.get() >= limit)
                     break;
 
                 final var file = entry.getKey();
@@ -1333,7 +1332,7 @@ public interface ChronicleDao<V> {
                 if (db != null) {
                     try {
                         StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
-                                .limit(minLimit)
+                                .limit(limit)
                                 .forEach(key -> {
                                     final V value = db.getUsing(key, using());
                                     if (value == null)
@@ -1374,8 +1373,7 @@ public interface ChronicleDao<V> {
         Logger.info("Counting filtered keys at [{}] with [{}] remaining filters", dataPath(), filters.size());
 
         // Determine minimum positive limit across all filters
-        final int minLimit = filters.stream().map(Search::limit).filter(l -> l > 0).min(Integer::compare)
-                .orElse(Integer.MAX_VALUE);
+        final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(Integer.MAX_VALUE);
         final AtomicInteger count = new AtomicInteger();
 
         if (getDataFiles().size() <= 1) {
@@ -1383,7 +1381,7 @@ public interface ChronicleDao<V> {
             if (db != null) {
                 try {
                     StreamSupport.stream(keys.spliterator(), true)
-                            .limit(minLimit)
+                            .limit(limit)
                             .forEach(key -> {
                                 final V value = db.getUsing(key, using());
                                 if (value == null)
@@ -1415,7 +1413,7 @@ public interface ChronicleDao<V> {
 
         try (var grouped = getDbFiles(keys, getDataFiles())) {
             for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= minLimit)
+                if (count.get() >= limit)
                     break;
 
                 final var file = entry.getKey();
@@ -1425,7 +1423,7 @@ public interface ChronicleDao<V> {
                 if (db != null) {
                     try {
                         StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
-                                .limit(minLimit)
+                                .limit(limit)
                                 .forEach(key -> {
                                     final V value = db.getUsing(key, using());
                                     if (value == null)
@@ -1751,11 +1749,20 @@ public interface ChronicleDao<V> {
         try {
             if (searchResult == null) {
                 final Map<String, V> result = new HashMap<>();
+                final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
+                        .orElse(Integer.MAX_VALUE);
                 for (final String file : getDataFiles()) {
+                    if (result.size() >= limit)
+                        break;
                     final var db = openDb(file);
                     if (db != null) {
                         try {
-                            result.putAll(search(db, searches));
+                            final Map<String, V> partial = search(db, searches);
+                            for (final Map.Entry<String, V> entry : partial.entrySet()) {
+                                result.put(entry.getKey(), entry.getValue());
+                                if (result.size() >= limit)
+                                    break;
+                            }
                         } finally {
                             closeDb(file);
                         }
