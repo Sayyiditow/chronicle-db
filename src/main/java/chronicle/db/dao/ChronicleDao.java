@@ -674,18 +674,18 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
         Logger.info("Querying multiple keys at [{}].", dataPath());
-        final var map = new ConcurrentHashMap<String, V>(1000);
+        final var map = new HashMap<String, V>(1000);
 
         if (getDataFiles().size() <= 1) {
             final var db = openDb();
             if (db != null) {
                 try {
-                    StreamSupport.stream(keys.spliterator(), true) // true = parallel
-                            .forEach(key -> {
-                                final var value = db.getUsing(key, using());
-                                if (value != null)
-                                    map.put(key, value);
-                            });
+                    for (final var key : keys) {
+                        final var value = db.getUsing(key, using());
+                        if (value != null) {
+                            map.put(key, value);
+                        }
+                    }
                 } finally {
                     closeDb();
                 }
@@ -699,12 +699,12 @@ public interface ChronicleDao<V> {
                 final var db = openDb(file);
                 if (db != null) {
                     try {
-                        StreamSupport.stream(entry.getValue().spliterator(), true) // true = parallel
-                                .forEach(key -> {
-                                    final var value = db.getUsing(key, using());
-                                    if (value != null)
-                                        map.put(key, value); // this line isn't thread-safe!
-                                });
+                        for (final var key : entry.getValue()) {
+                            final var value = db.getUsing(key, using());
+                            if (value != null) {
+                                map.put(key, value);
+                            }
+                        }
                     } finally {
                         closeDb(file);
                     }
