@@ -1299,8 +1299,10 @@ public interface ChronicleDao<V> {
                 final AtomicInteger count = new AtomicInteger();
                 try {
                     StreamSupport.stream(keys.spliterator(), true)
-                            .limit(limit)
                             .forEach(key -> {
+                                if (count.get() >= limit)
+                                    return;
+
                                 final V value = db.getUsing(key, using());
                                 if (value == null)
                                     return;
@@ -1344,8 +1346,10 @@ public interface ChronicleDao<V> {
                 if (db != null) {
                     try {
                         StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
-                                .limit(limit)
                                 .forEach(key -> {
+                                    if (count.get() >= limit)
+                                        return;
+
                                     final V value = db.getUsing(key, using());
                                     if (value == null)
                                         return;
@@ -1394,8 +1398,10 @@ public interface ChronicleDao<V> {
             if (db != null) {
                 try {
                     StreamSupport.stream(keys.spliterator(), true)
-                            .limit(limit)
                             .forEach(key -> {
+                                if (count.get() >= limit)
+                                    return;
+
                                 final V value = db.getUsing(key, using());
                                 if (value == null)
                                     return;
@@ -1436,8 +1442,10 @@ public interface ChronicleDao<V> {
                 if (db != null) {
                     try {
                         StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
-                                .limit(limit)
                                 .forEach(key -> {
+                                    if (count.get() >= limit)
+                                        return;
+
                                     final V value = db.getUsing(key, using());
                                     if (value == null)
                                         return;
