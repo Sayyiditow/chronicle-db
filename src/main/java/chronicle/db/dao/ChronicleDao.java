@@ -1286,7 +1286,8 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters: ", dataPath(), filters);
+        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters. {}", dataPath(), filters.size(),
+                filters);
         final var map = new ConcurrentHashMap<String, V>(10_000);
 
         // Determine minimum positive limit across all filters
@@ -1381,7 +1382,8 @@ public interface ChronicleDao<V> {
             return 0;
         }
 
-        Logger.info("Counting filtered keys at [{}] with [{}] remaining filters", dataPath(), filters.size());
+        Logger.info("Counting filtered keys at [{}] with [{}] remaining filters. {}", dataPath(), filters.size(),
+                filters);
 
         // Determine minimum positive limit across all filters
         final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(Integer.MAX_VALUE);
