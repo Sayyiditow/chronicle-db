@@ -1857,7 +1857,7 @@ public interface ChronicleDao<V> {
 
                 return count;
             } else {
-                return search(toStringIterable(searchResult.results()), remainingSearches).size();
+                return searchCount(toStringIterable(searchResult.results()), remainingSearches);
             }
         } finally {
             if (indexDb != null) {
