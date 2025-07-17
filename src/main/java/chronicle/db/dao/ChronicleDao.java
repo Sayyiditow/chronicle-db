@@ -1300,9 +1300,6 @@ public interface ChronicleDao<V> {
                 try {
                     StreamSupport.stream(keys.spliterator(), true)
                             .forEach(key -> {
-                                if (count.get() >= limit)
-                                    return;
-
                                 final V value = db.getUsing(key, using());
                                 if (value == null)
                                     return;
@@ -1321,8 +1318,9 @@ public interface ChronicleDao<V> {
                                 }
 
                                 if (match) {
+                                    if (count.incrementAndGet() > limit)
+                                        return;
                                     map.put(key, value);
-                                    count.incrementAndGet();
                                 }
                             });
                 } finally {
@@ -1347,9 +1345,6 @@ public interface ChronicleDao<V> {
                     try {
                         StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
                                 .forEach(key -> {
-                                    if (count.get() >= limit)
-                                        return;
-
                                     final V value = db.getUsing(key, using());
                                     if (value == null)
                                         return;
@@ -1367,8 +1362,9 @@ public interface ChronicleDao<V> {
                                     }
 
                                     if (match) {
+                                        if (count.incrementAndGet() > limit)
+                                            return;
                                         map.put(key, value);
-                                        count.incrementAndGet();
                                     }
                                 });
                     } finally {
@@ -1399,9 +1395,6 @@ public interface ChronicleDao<V> {
                 try {
                     StreamSupport.stream(keys.spliterator(), true)
                             .forEach(key -> {
-                                if (count.get() >= limit)
-                                    return;
-
                                 final V value = db.getUsing(key, using());
                                 if (value == null)
                                     return;
@@ -1420,7 +1413,8 @@ public interface ChronicleDao<V> {
                                 }
 
                                 if (match) {
-                                    count.incrementAndGet();
+                                    if (count.incrementAndGet() > limit)
+                                        return;
                                 }
                             });
                 } finally {
@@ -1443,9 +1437,6 @@ public interface ChronicleDao<V> {
                     try {
                         StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
                                 .forEach(key -> {
-                                    if (count.get() >= limit)
-                                        return;
-
                                     final V value = db.getUsing(key, using());
                                     if (value == null)
                                         return;
@@ -1463,7 +1454,8 @@ public interface ChronicleDao<V> {
                                     }
 
                                     if (match) {
-                                        count.incrementAndGet();
+                                        if (count.incrementAndGet() > limit)
+                                            return;
                                     }
                                 });
                     } finally {
@@ -1521,10 +1513,6 @@ public interface ChronicleDao<V> {
 
         db.forEachEntryWhile(entry -> {
             try {
-                if (count.get() >= limit) {
-                    return false; // Early exit
-                }
-
                 final String key = entry.key().get();
                 final V value = entry.value().get();
                 if (value == null) {
@@ -1537,7 +1525,9 @@ public interface ChronicleDao<V> {
                     }
                 }
 
-                count.incrementAndGet();
+                if (count.incrementAndGet() > limit) {
+                    return false; // Strict limit enforcement
+                }
             } catch (final Throwable e) {
                 Logger.error("Search failed during multi-filter scan.");
                 Logger.error(e);
