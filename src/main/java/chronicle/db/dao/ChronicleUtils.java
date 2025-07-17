@@ -227,29 +227,24 @@ public final class ChronicleUtils {
      * 
      */
     public <K, V> void index(final ChronicleMap<K, V> db, final String dbName, final Set<String> fields,
-            final String dataPath, final String indexDirPath, final Class<?> valueClass) {
+            final String dataPath, final String indexDirPath, final Class<?> valueClass,
+            final Map<String, Set<Object>> exclusions) {
         Logger.info("Indexing {} at [{}].", fields, dataPath);
-
         final int BATCH_SIZE = 100_000;
 
-        // NEW: Parse fields with support for multi-fields
         final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
-
         for (final String rawField : fields) {
             final String[] parts = rawField.split("\\+");
             final List<FieldData> getters = new ArrayList<>();
-
             for (final String part : parts) {
                 getters.add(getFieldData(valueClass, part));
             }
-
             if (!getters.isEmpty()) {
                 indexFieldMap.put(rawField, getters);
             }
         }
 
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
-
         for (final String field : indexFieldMap.keySet()) {
             final String indexPath = indexDirPath + "/" + field;
             final var indexDb = MAP_DB.openIndex(indexPath);
@@ -274,8 +269,6 @@ public final class ChronicleUtils {
                 final String indexPath = indexDirPath + "/" + field;
                 if (openIndexes.containsKey(indexPath)) {
                     fieldBatches.put(field, new HashSet<>(BATCH_SIZE));
-                } else {
-                    Logger.warn("Skipping field [{}] due to missing index at [{}].", field, indexPath);
                 }
             }
 
@@ -292,14 +285,21 @@ public final class ChronicleUtils {
 
                         final List<FieldData> fieldDataList = fieldEntry.getValue();
                         final StringBuilder sb = new StringBuilder();
+                        boolean shouldSkip = false;
 
-                        for (final FieldData fd : fieldDataList) {
-                            final Object val = fd.getterHandle.invoke(value);
-                            if (val != null)
+                        for (int i = 0; i < fieldDataList.size(); i++) {
+                            final Object val = fieldDataList.get(i).getterHandle.invoke(value);
+                            if (val != null) {
+                                final Set<Object> excluded = exclusions.get(compoundField);
+                                if (excluded != null && excluded.contains(val)) {
+                                    shouldSkip = true;
+                                    break;
+                                }
                                 sb.append(val.toString());
+                            }
                         }
 
-                        if (sb.length() > 0) {
+                        if (!shouldSkip && sb.length() > 0) {
                             final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), key.toString());
                             batch.add(indexKey);
                         }
@@ -307,7 +307,6 @@ public final class ChronicleUtils {
 
                     recordCount.incrementAndGet();
 
-                    // Check if any batch is full
                     final boolean anyFull = fieldBatches.values().stream().anyMatch(b -> b.size() >= BATCH_SIZE);
                     if (anyFull) {
                         for (final Map.Entry<String, Set<byte[]>> batchEntry : fieldBatches.entrySet()) {
@@ -346,7 +345,7 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void removeFromIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<K, V> values, final Class<?> valueClass) {
+            final Map<K, V> values, final Class<?> valueClass, final Map<String, Set<Object>> exclusions) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
@@ -373,21 +372,21 @@ public final class ChronicleUtils {
                         Logger.error("Failed to open index for field [{}] at [{}]", indexName, indexPath);
                     }
                 } else {
-                    final String indexPath = dataPath + "/indexes/" + indexName;
-                    deleteFileIfExists(indexPath);
+                    deleteFileIfExists(dataPath + "/indexes/" + indexName);
                 }
             }
 
             // Step 2: Remove from each index
             for (final var entry : indexFieldMap.entrySet()) {
-                final String fieldName = entry.getKey();
+                final String compoundField = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
-                final String indexPath = dataPath + "/indexes/" + fieldName;
+                final String indexPath = dataPath + "/indexes/" + compoundField;
                 final NavigableSet<byte[]> indexDb = openIndexes.get(indexPath);
                 if (indexDb == null)
                     continue;
 
                 final Set<byte[]> keysToRemove = new HashSet<>(values.size());
+                final Set<Object> excludedSet = exclusions.getOrDefault(compoundField, Set.of());
 
                 for (final var e : values.entrySet()) {
                     final K key = e.getKey();
@@ -395,19 +394,26 @@ public final class ChronicleUtils {
 
                     try {
                         final StringBuilder sb = new StringBuilder();
+                        boolean shouldSkip = false;
+
                         for (final FieldData fd : fieldGetters) {
                             final Object val = fd.getterHandle.invoke(value);
                             if (val != null) {
+                                if (excludedSet.contains(val)) {
+                                    shouldSkip = true;
+                                    break;
+                                }
                                 sb.append(val.toString());
                             }
                         }
 
-                        if (sb.length() > 0) {
+                        if (!shouldSkip && sb.length() > 0) {
                             final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), key.toString());
                             keysToRemove.add(indexKey);
                         }
                     } catch (final Throwable t) {
-                        Logger.error("Failed to generate key for [{}] in [{}]: {}", key, fieldName, t.getMessage());
+                        Logger.error("Failed to generate key for [{}] in [{}]", key, compoundField);
+                        Logger.error(t);
                     }
                 }
 
@@ -424,12 +430,13 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<K, V> values, final Map<K, V> previousValues, final Class<?> valueClass) {
+            final Map<K, V> values, final Map<K, V> previousValues, final Class<?> valueClass,
+            final Map<String, Set<Object>> exclusions) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
 
-        final int BATCH_SIZE = 50_000;
+        final int BATCH_SIZE = 100_000;
         final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
 
         try {
@@ -471,41 +478,65 @@ public final class ChronicleUtils {
                 final Set<byte[]> removeBatch = new HashSet<>(BATCH_SIZE);
                 int recordCount = 0;
 
+                final Set<Object> excluded = exclusions.getOrDefault(indexName, Set.of());
+
                 for (final var valEntry : values.entrySet()) {
                     final K key = valEntry.getKey();
                     final V newVal = valEntry.getValue();
                     final V prevVal = previousValues.get(key);
 
                     try {
-                        final StringBuilder newSb = new StringBuilder();
-                        for (final FieldData fd : fieldGetters) {
-                            final Object value = fd.getterHandle.invoke(newVal);
-                            if (value != null)
-                                newSb.append(value.toString());
+                        String newValStr = "";
+                        boolean skipAdd = false;
+
+                        {
+                            final StringBuilder newSb = new StringBuilder();
+                            for (final FieldData fd : fieldGetters) {
+                                final Object value = fd.getterHandle.invoke(newVal);
+                                if (value != null) {
+                                    if (excluded != null && excluded.contains(value)) {
+                                        skipAdd = true;
+                                        break;
+                                    }
+                                    newSb.append(value.toString());
+                                }
+                            }
+                            newValStr = newSb.toString();
                         }
 
-                        if (prevVal == null) {
-                            if (newSb.length() > 0) {
-                                addBatch.add(MAP_DB.createIndexKey(newSb.toString(), key.toString()));
-                            }
-                        } else {
+                        String oldValStr = "";
+                        boolean skipRemove = false;
+
+                        if (prevVal != null) {
                             final StringBuilder oldSb = new StringBuilder();
                             for (final FieldData fd : fieldGetters) {
                                 final Object value = fd.getterHandle.invoke(prevVal);
-                                if (value != null)
+                                if (value != null) {
+                                    if (excluded != null && excluded.contains(value)) {
+                                        skipRemove = true;
+                                        break;
+                                    }
                                     oldSb.append(value.toString());
+                                }
                             }
+                            oldValStr = oldSb.toString();
+                        }
 
-                            final String oldVal = oldSb.toString();
-                            final String newValStr = newSb.toString();
+                        // If both skipped, continue
+                        if ((prevVal == null && skipAdd) || (prevVal != null && skipAdd && skipRemove)) {
+                            continue;
+                        }
 
-                            if (!Objects.equals(oldVal, newValStr)) {
-                                if (!oldVal.isEmpty()) {
-                                    removeBatch.add(MAP_DB.createIndexKey(oldVal, key.toString()));
-                                }
-                                if (!newValStr.isEmpty()) {
-                                    addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                                }
+                        if (prevVal == null) {
+                            if (!skipAdd && !newValStr.isEmpty()) {
+                                addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                            }
+                        } else if (!Objects.equals(oldValStr, newValStr)) {
+                            if (!skipRemove && !oldValStr.isEmpty()) {
+                                removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
+                            }
+                            if (!skipAdd && !newValStr.isEmpty()) {
+                                addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                             }
                         }
 
@@ -522,7 +553,8 @@ public final class ChronicleUtils {
                         }
 
                     } catch (final Throwable t) {
-                        Logger.error("Failed to update index [{}] for key [{}]: {}", indexName, key, t.getMessage());
+                        Logger.error("Failed to update index [{}] for key [{}]", indexName, key);
+                        Logger.error(t);
                     }
                 }
 
@@ -537,7 +569,6 @@ public final class ChronicleUtils {
 
                 Logger.info("Updated [{}] records for index: [{}]", recordCount, indexName);
             }
-
         } finally {
             openIndexes.forEach((path, db) -> MAP_DB.closeIndex(path));
         }
