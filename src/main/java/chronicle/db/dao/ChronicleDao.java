@@ -22,6 +22,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -1377,7 +1378,7 @@ public interface ChronicleDao<V> {
         return map;
     }
 
-    default int searchCount(final Iterable<String> keys, final List<Search> filters) throws Throwable {
+    default long searchCount(final Iterable<String> keys, final List<Search> filters) throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
             return 0;
         }
@@ -1387,7 +1388,7 @@ public interface ChronicleDao<V> {
 
         // Determine minimum positive limit across all filters
         final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(Integer.MAX_VALUE);
-        final AtomicInteger count = new AtomicInteger();
+        final var count = new LongAdder();
 
         if (getDataFiles().size() <= 1) {
             final var db = openDb();
@@ -1413,7 +1414,8 @@ public interface ChronicleDao<V> {
                                 }
 
                                 if (match) {
-                                    if (count.incrementAndGet() > limit)
+                                    count.increment();
+                                    if (count.sum() > limit)
                                         return;
                                 }
                             });
@@ -1421,12 +1423,12 @@ public interface ChronicleDao<V> {
                     closeDb();
                 }
             }
-            return count.get();
+            return count.sum();
         }
 
         try (var grouped = getDbFiles(keys, getDataFiles())) {
             for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
+                if (count.sum() > limit)
                     break;
 
                 final var file = entry.getKey();
@@ -1454,7 +1456,8 @@ public interface ChronicleDao<V> {
                                     }
 
                                     if (match) {
-                                        if (count.incrementAndGet() > limit)
+                                        count.increment();
+                                        if (count.sum() > limit)
                                             return;
                                     }
                                 });
@@ -1465,7 +1468,7 @@ public interface ChronicleDao<V> {
             }
         }
 
-        return count.get();
+        return count.sum();
     }
 
     /**
@@ -1509,7 +1512,7 @@ public interface ChronicleDao<V> {
     private int searchCount(final ChronicleMap<String, V> db, final List<Search> filters) {
         Logger.info("Counting DB at [{}] for {} filters.", dataPath(), filters.size());
         final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(Integer.MAX_VALUE);
-        final AtomicInteger count = new AtomicInteger();
+        final var count = new AtomicInteger();
 
         db.forEachEntryWhile(entry -> {
             try {
@@ -1805,7 +1808,7 @@ public interface ChronicleDao<V> {
         return search(matchingKeys, searches);
     }
 
-    default int multiSearchCount(final List<Search> searches) throws Throwable {
+    default long multiSearchCount(final List<Search> searches) throws Throwable {
         if (searches == null || searches.isEmpty()) {
             return 0;
         }
