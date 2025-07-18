@@ -1759,26 +1759,33 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final Map<String, V> result = new HashMap<>();
+                final Map<String, V> result = new ConcurrentHashMap<>();
                 final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
                         .orElse(Integer.MAX_VALUE);
-                for (final String file : getDataFiles()) {
-                    if (result.size() >= limit)
-                        break;
-                    final var db = openDb(file);
-                    if (db != null) {
-                        try {
-                            final Map<String, V> partial = search(db, searches);
-                            for (final Map.Entry<String, V> entry : partial.entrySet()) {
-                                result.put(entry.getKey(), entry.getValue());
-                                if (result.size() >= limit)
-                                    break;
+                final var count = new AtomicInteger(0);
+
+                getDataFiles().parallelStream().forEach(file -> {
+                    if (count.get() >= limit)
+                        return;
+                    try {
+                        final var db = openDb(file);
+                        if (db != null) {
+                            try {
+                                final Map<String, V> partial = search(db, searches);
+                                for (final Map.Entry<String, V> entry : partial.entrySet()) {
+                                    if (count.incrementAndGet() > limit)
+                                        break;
+                                    result.put(entry.getKey(), entry.getValue());
+                                }
+                            } finally {
+                                closeDb(file);
                             }
-                        } finally {
-                            closeDb(file);
                         }
+                    } catch (final IOException e) {
+                        Logger.error("Count not search db file at [{}], file [{}]", dataPath(), file);
                     }
-                }
+                });
+
                 return result;
             } else {
                 return search(toStringIterable(searchResult.results()), remainingSearches);
@@ -1842,20 +1849,23 @@ public interface ChronicleDao<V> {
 
         try {
             if (searchResult == null) {
-                int count = 0;
-
-                for (final String file : getDataFiles()) {
-                    final var db = openDb(file);
-                    if (db != null) {
-                        try {
-                            count += searchCount(db, searches);
-                        } finally {
-                            closeDb(file);
-                        }
-                    }
-                }
-
-                return count;
+                return getDataFiles().parallelStream()
+                        .mapToInt(file -> {
+                            try {
+                                final var db = openDb(file);
+                                if (db != null) {
+                                    try {
+                                        return searchCount(db, searches);
+                                    } finally {
+                                        closeDb(file);
+                                    }
+                                }
+                            } catch (final IOException e) {
+                                Logger.error("Could not count db file at [{}], file [{}]", dataPath(), file);
+                            }
+                            return 0;
+                        })
+                        .sum();
             } else {
                 return searchCount(toStringIterable(searchResult.results()), remainingSearches);
             }
