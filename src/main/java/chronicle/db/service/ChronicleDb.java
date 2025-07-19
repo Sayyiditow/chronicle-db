@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.tinylog.Logger;
 
 import chronicle.db.dao.ChronicleDao;
+import net.openhft.chronicle.hash.locks.InterProcessDeadLockException;
 import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
 
@@ -73,10 +74,20 @@ public final class ChronicleDb {
                 }
                 final ChronicleMap<K, V> map = builder.createPersistedTo(file);
                 return new MapEntry(map);
+            } catch (final InterProcessDeadLockException deadlockEx) {
+                Logger.warn("Deadlock detected when opening ChronicleMap [{}], attempting recovery.", filePath);
+                try {
+                    final ChronicleMap<K, V> recovered = recoverDb(name, entries, averageKey, averageValue, filePath,
+                            maxBloatFactor);
+                    return new MapEntry(recovered);
+                } catch (final IOException recoveryEx) {
+                    Logger.error("Failed to recover ChronicleMap [{}]. {}", filePath, recoveryEx);
+                }
             } catch (final IOException e) {
-                Logger.error("ChronicleMap initialization failed for [{}]. {}", filePath, e);
-                return null;
+                Logger.error("IOException for ChronicleMap initialization at [{}]. {}", filePath, e);
             }
+
+            return null; // Failed to open or recover
         });
 
         if (entry != null) {
