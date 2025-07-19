@@ -24,13 +24,10 @@ public final class SequenceDb {
         final var file = new File(filePath);
 
         if (file.exists()) {
-            return ChronicleMapBuilder.of(String.class, Long.class)
-                    .actualSegments(ChronicleDb.CHRONICLE_SEGMENTS).createPersistedTo(file);
+            return ChronicleMapBuilder.of(String.class, Long.class).createPersistedTo(file);
         } else {
-            return ChronicleMapBuilder.of(String.class, Long.class)
-                    .name(file.getName()).entries(entries).averageKey(UUID.randomUUID().toString())
-                    .actualSegments(ChronicleDb.CHRONICLE_SEGMENTS)
-                    .createPersistedTo(file);
+            return ChronicleMapBuilder.of(String.class, Long.class).name(file.getName()).entries(entries)
+                    .averageKey(UUID.randomUUID().toString()).createPersistedTo(file);
         }
     }
 
