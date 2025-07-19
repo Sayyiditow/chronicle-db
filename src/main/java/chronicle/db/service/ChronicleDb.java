@@ -24,7 +24,6 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
-    public static final int CHRONICLE_SEGMENTS = 2 * Runtime.getRuntime().availableProcessors();
     private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
 
@@ -68,7 +67,7 @@ public final class ChronicleDb {
                 final Class<K> keyClass = (Class<K>) averageKey.getClass();
                 final Class<V> valueClass = (Class<V>) averageValue.getClass();
                 final ChronicleMapBuilder<K, V> builder = ChronicleMapBuilder.of(keyClass, valueClass)
-                        .maxBloatFactor(maxBloatFactor).actualSegments(CHRONICLE_SEGMENTS);
+                        .maxBloatFactor(maxBloatFactor);
                 if (!file.exists()) {
                     builder.name(name).entries(entries).averageKey(averageKey).averageValue(averageValue);
                 }
