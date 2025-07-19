@@ -1337,8 +1337,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters. {}", dataPath(), filters.size(),
-                filters);
+        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, V>(10_000);
 
         // Determine minimum positive limit across all filters
@@ -1434,8 +1433,8 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys. {}", dataPath(),
-                filters.size(), excludedKeys.size(), filters);
+        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
+                filters.size(), excludedKeys.size());
         final var map = new ConcurrentHashMap<String, V>(10_000);
 
         // Determine minimum positive limit across all filters
@@ -1534,8 +1533,7 @@ public interface ChronicleDao<V> {
             return 0;
         }
 
-        Logger.info("Counting filtered keys at [{}] with [{}] remaining filters. {}", dataPath(), filters.size(),
-                filters);
+        Logger.info("Counting filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
 
         // Determine minimum positive limit across all filters
         final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(Integer.MAX_VALUE);
@@ -1697,8 +1695,8 @@ public interface ChronicleDao<V> {
      */
     private Map<String, V> search(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Filters: {}", dataPath(),
-                filters.size(), excludedKeys.size(), filters);
+        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys.", dataPath(),
+                filters.size(), excludedKeys.size());
         final Map<String, V> result = new HashMap<>(10_000);
         final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
@@ -1737,9 +1735,8 @@ public interface ChronicleDao<V> {
 
     private Map<String, V> search(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final int limit) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Filters: {}, Limit [{}]",
-                dataPath(),
-                filters.size(), excludedKeys.size(), filters, limit);
+        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+                dataPath(), filters.size(), excludedKeys.size(), limit);
         final Map<String, V> result = new HashMap<>(10_000);
 
         db.forEachEntryWhile(entry -> {
@@ -1851,7 +1848,7 @@ public interface ChronicleDao<V> {
      * @param index
      */
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index) {
-        Logger.info("Index searching at [{}] for {}.", dataPath(), search);
+        Logger.info("Index searching at [{}] for {}.", dataPath(), search.field());
         if (index == null || index.isEmpty()) {
             return new SearchResult(Collections.emptyList());
         }
@@ -1913,7 +1910,8 @@ public interface ChronicleDao<V> {
 
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index,
             final Set<String> excludedKeys) {
-        Logger.info("Index searching at [{}] with [{}] excluded keys for {}.", dataPath(), excludedKeys.size(), search);
+        Logger.info("Index searching at [{}] with [{}] excluded keys for {}.", dataPath(), excludedKeys.size(),
+                search.field());
         if (index == null || index.isEmpty()) {
             return new SearchResult(Collections.emptyList());
         }
