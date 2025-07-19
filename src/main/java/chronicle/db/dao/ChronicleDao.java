@@ -8,6 +8,7 @@ import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -371,15 +372,16 @@ public interface ChronicleDao<V> {
      */
     default void recoverData(final String dataFileName) throws IOException {
         final var dataFileStr = dataPath() + DATA_DIR + dataFileName;
+        final var dataFilePath = Path.of(dataFileStr);
+
+        // 1. Make a backup before recovery
+        final var backupPath = Path.of(dataPath() + BACKUP_DIR + CORRUPTED_FILE);
+        Files.copy(dataFilePath, backupPath, StandardCopyOption.REPLACE_EXISTING);
+        Logger.info("Backed up file to {}", backupPath);
         try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
                 dataFileStr, bloatFactor())) {
-            final var dbRecovery = openDb(RECOVER_FILE);
-            dbRecovery.putAll(db);
-            closeDb(RECOVER_FILE);
+            Logger.info("Recovered ChronicleMap [{}] with {} entries", dataFileName, db.size());
         }
-        final var dataFilePath = Path.of(dataFileStr);
-        Files.move(dataFilePath, Path.of(dataPath() + BACKUP_DIR + CORRUPTED_FILE), REPLACE_EXISTING);
-        Files.move(Path.of(dataPath() + DATA_DIR + RECOVER_FILE), dataFilePath, REPLACE_EXISTING);
     }
 
     /**
