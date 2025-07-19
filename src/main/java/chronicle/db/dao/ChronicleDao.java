@@ -424,7 +424,6 @@ public interface ChronicleDao<V> {
      * @throws IOException
      */
     default Set<String> fetchKeys() throws IOException {
-        Logger.info("Fetching all data at [{}].", dataPath());
         final Set<String> result = new HashSet<>();
         if (getDataFiles().size() > 1) {
             return getKeyMapKeys();
@@ -437,6 +436,7 @@ public interface ChronicleDao<V> {
                 closeDb();
             }
         }
+        Logger.info("Fetched [{}] keys at [{}].", result.size(), dataPath());
         return result;
     }
 
