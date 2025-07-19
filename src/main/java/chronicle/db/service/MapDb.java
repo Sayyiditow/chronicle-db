@@ -123,6 +123,20 @@ public final class MapDb {
     }
 
     /**
+     * Use this only when jvm hangs on shutdown
+     */
+    public void closeAllMaps() {
+        for (final var entry : mapCache.entrySet()) {
+            final String filePath = entry.getKey();
+            final MapEntry mapEntry = entry.getValue();
+            mapEntry.map.close();
+            Logger.info("Closed KeyMap at [{}]", filePath);
+        }
+        mapCache.clear(); // Clear all cached entries
+        Logger.info("All KeyMaps have been closed and mapCache cleared.");
+    }
+
+    /**
      * Opens a shared MapDB TreeSet instance. Call close(filePath) to release it.
      * Do not use try-with-resources as it will prematurely close the shared
      * instance.
@@ -186,6 +200,20 @@ public final class MapDb {
             }
             return entry; // Keep the entry
         });
+    }
+
+    /**
+     * Use this only when jvm hangs on shutdown
+     */
+    public void closeAllIndexes() {
+        for (final var entry : treeCache.entrySet()) {
+            final String filePath = entry.getKey();
+            final var treeEntry = entry.getValue();
+            treeEntry.db.close();
+            Logger.info("Closed Index at [{}]", filePath);
+        }
+        treeCache.clear(); // Clear all cached entries
+        Logger.info("All Indexes have been closed and treeCache cleared.");
     }
 
     private String sanitize(final Object input) {

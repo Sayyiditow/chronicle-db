@@ -115,6 +115,20 @@ public final class ChronicleDb {
     }
 
     /**
+     * Use this only when jvm hangs on shutdown
+     */
+    public void closeAll() {
+        for (final var entry : mapCache.entrySet()) {
+            final String filePath = entry.getKey();
+            final MapEntry mapEntry = entry.getValue();
+            mapEntry.map.close();
+            Logger.info("Closed ChronicleMap for [{}]", filePath);
+        }
+        mapCache.clear(); // Clear all cached entries
+        Logger.info("All ChronicleMaps have been closed and mapCache cleared.");
+    }
+
+    /**
      * Run this on app startup to check and fix if there were any abnormal
      * terminations
      * 
