@@ -1017,7 +1017,7 @@ public interface ChronicleDao<V> {
                         shared = checkAndRotate(shared, keyMapUpdate);
                         shared.map.put(key, value);
                         if (getDataFiles().size() > 1) {
-                            keyMapUpdate.put(key, DATA_FILE);
+                            keyMapUpdate.put(key, getCurrentFile());
                         }
                     }
                 } finally {
@@ -1109,7 +1109,7 @@ public interface ChronicleDao<V> {
                     shared = checkAndRotate(shared, keyMapUpdate);
                     shared.map.put(key, value);
                     if (getDataFiles().size() > 1) {
-                        keyMapUpdate.put(key, DATA_FILE);
+                        keyMapUpdate.put(key, getCurrentFile());
                     }
                 }
             } finally {
