@@ -784,11 +784,8 @@ public interface ChronicleDao<V> {
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared)
             throws IOException {
         if (shared.map.size() >= entries()) {
-            // Reinitialize DATA_FILE_CACHE
-            DATA_FILE_CACHE.remove(dataPath()); // Clear existing cache entry
-            final var currentFiles = getDataFiles(); // Rebuild cache by scanning DATA_DIR
             final String currentFile = getCurrentFile();
-            final String newFile = "data-" + (currentFiles.size() + 1);
+            final String newFile = "data-" + (getDataFiles().size() + 1);
             // Update key map using the provided ChronicleMap
             try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
                 shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), currentFile));
@@ -804,11 +801,8 @@ public interface ChronicleDao<V> {
             final Map<String, String> keyMapUpdate)
             throws IOException {
         if (shared.map.size() >= entries()) {
-            // Reinitialize DATA_FILE_CACHE
-            DATA_FILE_CACHE.remove(dataPath()); // Clear existing cache entry
-            final var currentFiles = getDataFiles(); // Rebuild cache by scanning DATA_DIR
             final String currentFile = getCurrentFile();
-            final String newFile = "data-" + (currentFiles.size() + 1);
+            final String newFile = "data-" + (getDataFiles().size() + 1);
             // Update key map using the provided ChronicleMap
             try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
                 shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), currentFile));
