@@ -784,6 +784,7 @@ public interface ChronicleDao<V> {
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared)
             throws IOException {
         if (shared.map.size() >= entries()) {
+            final var currentFiles = getDataFiles();
             final String currentFile = getCurrentFile();
             final String newFile = "data-" + (getDataFiles().size() + 1);
             // Update key map using the provided ChronicleMap
@@ -791,6 +792,7 @@ public interface ChronicleDao<V> {
                 shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), currentFile));
             }
             shared.close(); // close after rotation
+            currentFiles.add(newFile);
             Logger.info("Rotated file [{}] at [{}].", currentFile, dataPath());
             return openDb(newFile); // open new db
         }
@@ -801,6 +803,7 @@ public interface ChronicleDao<V> {
             final Map<String, String> keyMapUpdate)
             throws IOException {
         if (shared.map.size() >= entries()) {
+            final var currentFiles = getDataFiles();
             final String currentFile = getCurrentFile();
             final String newFile = "data-" + (getDataFiles().size() + 1);
             // Update key map using the provided ChronicleMap
@@ -808,6 +811,7 @@ public interface ChronicleDao<V> {
                 shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), currentFile));
             }
             shared.close(); // close after rotation
+            currentFiles.add(newFile);
             Logger.info("Rotated file [{}] at [{}].", currentFile, dataPath());
             keyMapUpdate.clear();
             return openDb(newFile); // open new db
