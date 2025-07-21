@@ -785,8 +785,8 @@ public interface ChronicleDao<V> {
             throws IOException {
         if (shared.map.size() >= entries()) {
             final var currentFiles = getDataFiles();
+            final String newFile = "data-" + (currentFiles.size() + 1);
             final String currentFile = getCurrentFile();
-            final String newFile = "data-" + (getDataFiles().size() + 1);
             // Update key map using the provided ChronicleMap
             try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
                 shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), currentFile));
@@ -804,8 +804,8 @@ public interface ChronicleDao<V> {
             throws IOException {
         if (shared.map.size() >= entries()) {
             final var currentFiles = getDataFiles();
+            final String newFile = "data-" + (currentFiles.size() + 1);
             final String currentFile = getCurrentFile();
-            final String newFile = "data-" + (getDataFiles().size() + 1);
             // Update key map using the provided ChronicleMap
             try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
                 shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), currentFile));
