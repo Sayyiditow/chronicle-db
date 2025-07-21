@@ -793,6 +793,7 @@ public interface ChronicleDao<V> {
                 shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), currentFile));
             }
             shared.close(); // close after rotation
+            Logger.info("Rotated file [{}] at [{}].", currentFile, dataPath());
             return openDb(newFile); // open new db
         }
         return shared;
@@ -812,6 +813,7 @@ public interface ChronicleDao<V> {
                 shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), currentFile));
             }
             shared.close(); // close after rotation
+            Logger.info("Rotated file [{}] at [{}].", currentFile, dataPath());
             keyMapUpdate.clear();
             return openDb(newFile); // open new db
         }
