@@ -861,7 +861,7 @@ public interface ChronicleDao<V> {
             status = PutStatus.UPDATED;
         } else {
             if (getDataFiles().size() > 1) {
-                addToKeyMap(key, file);
+                addToKeyMap(key, getCurrentFile());
             }
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                     Collections.emptyMap(), averageValue().getClass(), indexExclusions());
@@ -955,7 +955,7 @@ public interface ChronicleDao<V> {
         }
 
         if (getDataFiles().size() > 1) {
-            addToKeyMap(key, DATA_FILE);
+            addToKeyMap(key, getCurrentFile());
         }
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap(),
                 averageValue().getClass(), indexExclusions());
