@@ -21,7 +21,6 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NavigableSet;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.PriorityQueue;
@@ -36,6 +35,7 @@ import org.tinylog.Logger;
 import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
+import chronicle.db.service.MapDb.SharedIndexMap;
 import net.openhft.chronicle.map.ChronicleMap;
 
 @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -244,20 +244,19 @@ public final class ChronicleUtils {
             }
         }
 
-        final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
+        final Map<String, SharedIndexMap> openIndexes = new HashMap<>();
         for (final String field : indexFieldMap.keySet()) {
             final String indexPath = indexDirPath + "/" + field;
-            final var indexDb = MAP_DB.openIndex(indexPath);
-            if (indexDb != null) {
-                openIndexes.put(indexPath, indexDb);
-            } else {
-                Logger.error("Failed to open index for field [{}] at [{}]", field, indexDirPath);
+            try {
+                openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
+            } catch (final RuntimeException e) {
+                Logger.warn("Skipping indexing for [{}]: {}", indexPath, e.getMessage());
             }
         }
 
         if (db.isEmpty()) {
             Logger.info("DB is empty. Index files created at [{}].", indexDirPath);
-            openIndexes.forEach((indexPath, indexDb) -> MAP_DB.closeIndex(indexPath));
+            openIndexes.forEach((indexPath, sharedIndexMap) -> sharedIndexMap.close());
             return;
         }
 
@@ -313,10 +312,8 @@ public final class ChronicleUtils {
                             final String field = batchEntry.getKey();
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
-                                final NavigableSet<byte[]> indexDb = openIndexes.get(indexDirPath + "/" + field);
-                                if (indexDb != null) {
-                                    indexDb.addAll(batch);
-                                }
+                                final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
+                                sharedIndexMap.index.addAll(batch);
                                 batch.clear();
                             }
                         }
@@ -332,15 +329,13 @@ public final class ChronicleUtils {
                 final String field = batchEntry.getKey();
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
-                    final NavigableSet<byte[]> indexDb = openIndexes.get(indexDirPath + "/" + field);
-                    if (indexDb != null) {
-                        indexDb.addAll(batch);
-                    }
+                    final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
+                    sharedIndexMap.index.addAll(batch);
                 }
             }
             Logger.info("Indexed [{}] records for fields: {}", recordCount.get(), indexFieldMap.keySet());
         } finally {
-            openIndexes.forEach((indexPath, indexDb) -> MAP_DB.closeIndex(indexPath));
+            openIndexes.forEach((indexPath, sharedIndexMap) -> sharedIndexMap.close());
         }
     }
 
@@ -350,7 +345,7 @@ public final class ChronicleUtils {
             return;
         }
 
-        final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
+        final Map<String, SharedIndexMap> openIndexes = new HashMap<>();
         try {
             // Step 1: Parse all field getters (supporting compound fields)
             final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -361,18 +356,12 @@ public final class ChronicleUtils {
                 for (final String part : parts) {
                     getters.add(getFieldData(valueClass, part));
                 }
-
-                if (!getters.isEmpty()) {
-                    indexFieldMap.put(indexName, getters);
-                    final String indexPath = dataPath + "/indexes/" + indexName;
-                    final var indexDb = MAP_DB.openIndex(indexPath);
-                    if (indexDb != null) {
-                        openIndexes.put(indexPath, indexDb);
-                    } else {
-                        Logger.error("Failed to open index for field [{}] at [{}]", indexName, indexPath);
-                    }
-                } else {
-                    deleteFileIfExists(dataPath + "/indexes/" + indexName);
+                indexFieldMap.put(indexName, getters);
+                final String indexPath = dataPath + "/indexes/" + indexName;
+                try {
+                    openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
+                } catch (final RuntimeException e) {
+                    Logger.warn("Skipping index removal for [{}]: {}", indexPath, e.getMessage());
                 }
             }
 
@@ -381,9 +370,7 @@ public final class ChronicleUtils {
                 final String compoundField = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = dataPath + "/indexes/" + compoundField;
-                final NavigableSet<byte[]> indexDb = openIndexes.get(indexPath);
-                if (indexDb == null)
-                    continue;
+                final var sharedIndexMap = openIndexes.get(indexPath);
 
                 final Set<byte[]> keysToRemove = new HashSet<>(values.size());
                 final Set<Object> excludedSet = exclusions.getOrDefault(compoundField, Set.of());
@@ -420,12 +407,12 @@ public final class ChronicleUtils {
                 if (!keysToRemove.isEmpty()) {
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
-                        indexDb.removeAll(keysToRemove);
+                        sharedIndexMap.index.removeAll(keysToRemove);
                     }
                 }
             }
         } finally {
-            openIndexes.forEach((path, index) -> MAP_DB.closeIndex(path));
+            openIndexes.forEach((path, sharedIndexMap) -> sharedIndexMap.close());
         }
     }
 
@@ -437,7 +424,7 @@ public final class ChronicleUtils {
         }
 
         final int BATCH_SIZE = 100_000;
-        final Map<String, NavigableSet<byte[]>> openIndexes = new HashMap<>();
+        final Map<String, SharedIndexMap> openIndexes = new HashMap<>();
 
         try {
             // Step 1: Parse field getters
@@ -449,18 +436,12 @@ public final class ChronicleUtils {
                 for (final String part : parts) {
                     getters.add(getFieldData(valueClass, part));
                 }
-
-                if (!getters.isEmpty()) {
-                    indexFieldMap.put(indexName, getters);
-                    final String indexPath = dataPath + "/indexes/" + indexName;
-                    final var indexDb = MAP_DB.openIndex(indexPath);
-                    if (indexDb != null) {
-                        openIndexes.put(indexPath, indexDb);
-                    } else {
-                        Logger.error("Failed to open index for field [{}] at [{}]", indexName, indexPath);
-                    }
-                } else {
-                    deleteFileIfExists(dataPath + "/indexes/" + indexName);
+                indexFieldMap.put(indexName, getters);
+                final String indexPath = dataPath + "/indexes/" + indexName;
+                try {
+                    openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
+                } catch (final RuntimeException e) {
+                    Logger.warn("Skipping index update for [{}]: {}", indexPath, e.getMessage());
                 }
             }
 
@@ -469,9 +450,7 @@ public final class ChronicleUtils {
                 final String indexName = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = dataPath + "/indexes/" + indexName;
-                final NavigableSet<byte[]> indexDb = openIndexes.get(indexPath);
-                if (indexDb == null)
-                    continue;
+                final var sharedIndexMap = openIndexes.get(indexPath);
 
                 Logger.info("Updating index: [{}]", indexName);
                 final Set<byte[]> addBatch = new HashSet<>(BATCH_SIZE);
@@ -545,8 +524,8 @@ public final class ChronicleUtils {
                         if (addBatch.size() >= BATCH_SIZE || removeBatch.size() >= BATCH_SIZE) {
                             final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                             synchronized (lock) {
-                                indexDb.removeAll(removeBatch);
-                                indexDb.addAll(addBatch);
+                                sharedIndexMap.index.removeAll(removeBatch);
+                                sharedIndexMap.index.addAll(addBatch);
                                 removeBatch.clear();
                                 addBatch.clear();
                             }
@@ -562,15 +541,15 @@ public final class ChronicleUtils {
                 if (!addBatch.isEmpty() || !removeBatch.isEmpty()) {
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
-                        indexDb.removeAll(removeBatch);
-                        indexDb.addAll(addBatch);
+                        sharedIndexMap.index.removeAll(removeBatch);
+                        sharedIndexMap.index.addAll(addBatch);
                     }
                 }
 
                 Logger.info("Updated [{}] records for index: [{}]", recordCount, indexName);
             }
         } finally {
-            openIndexes.forEach((path, db) -> MAP_DB.closeIndex(path));
+            openIndexes.forEach((path, sharedIndexMap) -> sharedIndexMap.close());
         }
     }
 

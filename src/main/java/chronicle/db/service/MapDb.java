@@ -26,30 +26,68 @@ public final class MapDb {
     }
 
     public static final MapDb MAP_DB = new MapDb();
-    private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, TreeEntry> treeCache = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, SharedKeyMap> mapCache = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, SharedIndexMap> treeCache = new ConcurrentHashMap<>();
     private static final byte indexSep = 0x1F;
     private static final byte upperByte = (byte) 0xFF;
 
-    private static class TreeEntry {
-        final DB db;
-        final NavigableSet<byte[]> index;
-        final AtomicInteger refCount;
+    public static class SharedKeyMap implements AutoCloseable {
+        public final HTreeMap<String, String> map;
+        private final AtomicInteger refCount;
+        private final String filePath; // Track file path for cleanup
 
-        TreeEntry(final DB db, final NavigableSet<byte[]> index) {
-            this.db = db;
-            this.index = index;
-            this.refCount = new AtomicInteger(1); // Start with a reference count of 1
+        SharedKeyMap(final HTreeMap<String, String> map, final String filePath) {
+            this.map = map;
+            this.filePath = filePath;
+            this.refCount = new AtomicInteger(1);
+        }
+
+        // Increment reference count when sharing this entry
+        SharedKeyMap retain() {
+            refCount.incrementAndGet();
+            return this;
+        }
+
+        @Override
+        public void close() {
+            mapCache.computeIfPresent(filePath, (k, entry) -> {
+                if (entry.refCount.decrementAndGet() == 0) {
+                    entry.map.close();
+                    return null;
+                }
+                return entry; // Keep the entry
+            });
         }
     }
 
-    private static class MapEntry {
-        final HTreeMap<String, String> map;
-        final AtomicInteger refCount;
+    public static class SharedIndexMap implements AutoCloseable {
+        public final NavigableSet<byte[]> index;
+        private final DB db;
+        private final AtomicInteger refCount;
+        private final String filePath; // Track file path for cleanup
 
-        MapEntry(final HTreeMap<String, String> map) {
-            this.map = map;
+        SharedIndexMap(final DB db, final NavigableSet<byte[]> index, final String filePath) {
+            this.db = db;
+            this.index = index;
+            this.filePath = filePath;
             this.refCount = new AtomicInteger(1); // Start with a reference count of 1
+        }
+
+        // Increment reference count when sharing this entry
+        SharedIndexMap retain() {
+            refCount.incrementAndGet();
+            return this;
+        }
+
+        @Override
+        public void close() {
+            treeCache.computeIfPresent(filePath, (k, entry) -> {
+                if (entry.refCount.decrementAndGet() == 0) {
+                    entry.db.close();
+                    return null;
+                }
+                return entry; // Keep the entry
+            });
         }
     }
 
@@ -62,17 +100,15 @@ public final class MapDb {
      * 
      * @return HTreeMap or null, if null do not run close()
      */
-    public HTreeMap<String, String> openMap(final String filePath) {
+    public SharedKeyMap openMap(final String filePath) {
         final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
-                // Increment reference count for existing entry
-                existingEntry.refCount.incrementAndGet();
-                return existingEntry;
+                return existingEntry.retain();
             }
 
             // Create a new entry
             try {
-                final var map = DBMaker.fileDB(filePath)
+                final HTreeMap<String, String> map = DBMaker.fileDB(filePath)
                         .allocateStartSize(128 * 1024 * 1024) // initial size
                         .allocateIncrement(48 * 1024 * 1024) // Grow by 48 MB
                         .closeOnJvmShutdown()
@@ -85,39 +121,16 @@ public final class MapDb {
                         .keySerializer(Serializer.STRING)
                         .valueSerializer(Serializer.STRING)
                         .createOrOpen();
-                return new MapEntry((HTreeMap<String, String>) map);
+                return new SharedKeyMap(map, filePath);
             } catch (final DBException.DataCorruption | DBException.GetVoid e) {
-                Logger.warn("MapDB initialization failed for [{}]. Reindexing...", filePath);
-                Logger.warn(e);
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
-                return null;
+                throw new RuntimeException("Reinitializing KeyMap at [{}]. {}" + filePath, e);
             } catch (final Exception e) {
-                Logger.error("MapDB initialization failed for [{}].", filePath);
-                Logger.error(e);
-                return null;
+                throw new RuntimeException("Failed to open KeyMap at [{}]. {}" + filePath, e);
             }
         });
 
-        if (entry != null) {
-            return entry.map;
-        }
-
-        return null;
-    }
-
-    /**
-     * Closes the MapDB instance for the given filePath when no longer in use.
-     * 
-     * @param filePath filepath to close
-     */
-    public void closeMap(final String filePath) {
-        mapCache.computeIfPresent(filePath, (k, entry) -> {
-            if (entry.refCount.decrementAndGet() == 0) {
-                entry.map.close();
-                return null;
-            }
-            return entry; // Keep the entry
-        });
+        return entry;
     }
 
     /**
@@ -126,7 +139,7 @@ public final class MapDb {
     public void closeAllMaps() {
         for (final var entry : mapCache.entrySet()) {
             final String filePath = entry.getKey();
-            final MapEntry mapEntry = entry.getValue();
+            final SharedKeyMap mapEntry = entry.getValue();
             mapEntry.map.close();
             Logger.info("Closed KeyMap at [{}]", filePath);
         }
@@ -142,12 +155,10 @@ public final class MapDb {
      * @param filePath filepath to create
      * @return NavigableSet or null, if null do not run close()
      */
-    public NavigableSet<byte[]> openIndex(final String filePath) {
+    public SharedIndexMap openIndex(final String filePath) {
         final var entry = treeCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
-                // Increment reference count for existing entry
-                existingEntry.refCount.incrementAndGet();
-                return existingEntry;
+                return existingEntry.retain();
             }
 
             // Create a new entry
@@ -164,39 +175,16 @@ public final class MapDb {
                 final var tree = db.treeSet("index")
                         .serializer(Serializer.BYTE_ARRAY)
                         .createOrOpen();
-                return new TreeEntry(db, tree);
+                return new SharedIndexMap(db, tree, filePath);
             } catch (final DBException.DataCorruption | DBException.GetVoid e) {
-                Logger.warn("Index DB initialization failed for [{}]. Reindexing", filePath);
-                Logger.warn(e);
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
-                return null;
+                throw new RuntimeException("Reinitializing IndexMap at [{}]. {}" + filePath, e);
             } catch (final Exception e) {
-                Logger.error("Index DB initialization failed for [{}].", filePath);
-                Logger.error(e);
-                return null;
+                throw new RuntimeException("Failed to open IndexMap at [{}]. {}" + filePath, e);
             }
         });
 
-        if (entry != null) {
-            return entry.index;
-        }
-
-        return null;
-    }
-
-    /**
-     * Closes the MapDB instance for the given filePath when no longer in use.
-     *
-     * @param filePath filepath to close
-     */
-    public void closeIndex(final String filePath) {
-        treeCache.computeIfPresent(filePath, (k, entry) -> {
-            if (entry.refCount.decrementAndGet() == 0) {
-                entry.db.close();
-                return null;
-            }
-            return entry; // Keep the entry
-        });
+        return entry;
     }
 
     /**

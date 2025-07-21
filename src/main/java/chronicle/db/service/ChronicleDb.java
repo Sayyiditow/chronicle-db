@@ -2,6 +2,7 @@ package chronicle.db.service;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.util.HashMap;
@@ -24,16 +25,35 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
-    private static final ConcurrentMap<String, MapEntry> mapCache = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, SharedChronicleMap> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
 
-    private static class MapEntry {
-        final ChronicleMap<?, ?> map;
-        final AtomicInteger refCount;
+    public static class SharedChronicleMap<K, V> implements AutoCloseable {
+        public final ChronicleMap<K, V> map;
+        private final AtomicInteger refCount;
+        private final String filePath; // Track file path for cleanup
 
-        MapEntry(final ChronicleMap<?, ?> map) {
+        SharedChronicleMap(final ChronicleMap<K, V> map, final String filePath) {
             this.map = map;
-            this.refCount = new AtomicInteger(1);// Start with a reference count of 1
+            this.filePath = filePath;
+            this.refCount = new AtomicInteger(1);
+        }
+
+        // Increment reference count when sharing this entry
+        SharedChronicleMap retain() {
+            refCount.incrementAndGet();
+            return this;
+        }
+
+        @Override
+        public void close() {
+            mapCache.computeIfPresent(filePath, (k, entry) -> {
+                if (entry.refCount.decrementAndGet() == 0) {
+                    entry.map.close();
+                    return null;
+                }
+                return entry; // Keep the entry
+            });
         }
     }
 
@@ -48,17 +68,13 @@ public final class ChronicleDb {
      * @param keyClass   the class of the key
      * @param valueClass the class of the value (best to implement Value interface
      *                   for complex structures)
-     * @throws IOException
      * @return ChronicleMap or null, if null do not run close()
      */
-    public <K, V> ChronicleMap<K, V> open(final String name, final long entries,
-            final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
-            throws IOException {
-        final MapEntry entry = mapCache.compute(filePath, (k, existingEntry) -> {
+    public <K, V> SharedChronicleMap open(final String name, final long entries,
+            final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor) {
+        final SharedChronicleMap entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
-                // Increment reference count for existing entry
-                existingEntry.refCount.incrementAndGet();
-                return existingEntry;
+                return existingEntry.retain();
             }
 
             // Create a new entry
@@ -72,45 +88,22 @@ public final class ChronicleDb {
                     builder.name(name).entries(entries).averageKey(averageKey).averageValue(averageValue);
                 }
                 final ChronicleMap<K, V> map = builder.createPersistedTo(file);
-                return new MapEntry(map);
+                return new SharedChronicleMap(map, filePath);
             } catch (final InterProcessDeadLockException deadlockEx) {
                 Logger.warn("Deadlock detected when opening ChronicleMap [{}], attempting recovery.", filePath);
                 try {
                     final ChronicleMap<K, V> recovered = recoverDb(name, entries, averageKey, averageValue, filePath,
                             maxBloatFactor);
-                    return new MapEntry(recovered);
+                    return new SharedChronicleMap(recovered, filePath);
                 } catch (final IOException recoveryEx) {
-                    Logger.error("Failed to recover ChronicleMap [{}]. {}", filePath, recoveryEx);
+                    throw new UncheckedIOException("Failed to recover ChronicleMap at [{}]. {}" + filePath, recoveryEx);
                 }
             } catch (final IOException e) {
-                Logger.error("IOException for ChronicleMap initialization at [{}]. {}", filePath, e);
+                throw new UncheckedIOException("Failed to open ChronicleMap at [{}]. {}" + filePath, e);
             }
-
-            return null; // Failed to open or recover
         });
 
-        if (entry != null) {
-            return (ChronicleMap<K, V>) entry.map;
-        }
-
-        return null;
-    }
-
-    /**
-     * Releases a reference to the ChronicleMap for the given filePath.
-     * Closes the map and removes it from the cache when the last reference is
-     * released.
-     * 
-     * @param filePath the path to the file to close
-     */
-    public void close(final String filePath) {
-        mapCache.computeIfPresent(filePath, (k, entry) -> {
-            if (entry.refCount.decrementAndGet() == 0) {
-                entry.map.close();
-                return null;
-            }
-            return entry; // Keep the entry
-        });
+        return entry;
     }
 
     /**
@@ -119,7 +112,7 @@ public final class ChronicleDb {
     public void closeAll() {
         for (final var entry : mapCache.entrySet()) {
             final String filePath = entry.getKey();
-            final MapEntry mapEntry = entry.getValue();
+            final SharedChronicleMap mapEntry = entry.getValue();
             mapEntry.map.close();
             Logger.info("Closed ChronicleMap for [{}]", filePath);
         }
