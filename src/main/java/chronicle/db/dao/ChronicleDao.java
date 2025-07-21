@@ -186,6 +186,7 @@ public interface ChronicleDao<V> {
         synchronized (lock) {
             final var dataFiles = getDataFiles();
             if (dataFiles.size() > 1 && !Files.exists(Path.of(getKeyMapPath()))) {
+                Logger.info("Populating KeyMap at [{}]", dataFiles);
                 try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
                     if (sharedKeyMap.map.isEmpty()) {
                         populateKeyMap(dataFiles, sharedKeyMap.map);
