@@ -1153,14 +1153,12 @@ public interface ChronicleDao<V> {
                         key -> {
                             final V value = shared.map.getUsing(key, using());
                             if (value == null)
-                                return;
+                                return false;
 
-                            boolean match = true;
                             for (final var search : filters) {
                                 try {
                                     if (!CHRONICLE_UTILS.search(search, key, value)) {
-                                        match = false;
-                                        break;
+                                        return false;
                                     }
                                 } catch (final Throwable e) {
                                     Logger.error("Search failed for key [{}]: {}", key);
@@ -1168,9 +1166,8 @@ public interface ChronicleDao<V> {
                                 }
                             }
 
-                            if (match) {
-                                map.put(key, value);
-                            }
+                            map.put(key, value);
+                            return true;
                         });
             }
             return map;
@@ -1186,27 +1183,23 @@ public interface ChronicleDao<V> {
                 final var keysForFile = entry.getValue(); // Iterable<String>
 
                 try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), key -> {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
                         final V value = shared.map.getUsing(key, using());
                         if (value == null)
-                            return;
+                            return false;
 
-                        boolean match = true;
                         for (final var search : filters) {
                             try {
                                 if (!CHRONICLE_UTILS.search(search, key, value)) {
-                                    match = false;
-                                    break;
+                                    return false;
                                 }
                             } catch (final Throwable e) {
                                 Logger.error("Search failed for key [{}]: {}", key, e.toString());
                             }
                         }
 
-                        if (match) {
-                            if (count.incrementAndGet() <= limit)
-                                map.put(key, value);
-                        }
+                        map.put(key, value);
+                        return true;
                     });
                 }
             }
@@ -1232,28 +1225,26 @@ public interface ChronicleDao<V> {
             try (final var shared = openDb()) {
                 CHRONICLE_UTILS.parallelIterable(keys, limit,
                         key -> {
-                            if (!excludedKeys.contains(key)) {
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
-                                    return;
+                            if (excludedKeys.contains(key))
+                                return false;
 
-                                boolean match = true;
-                                for (final var search : filters) {
-                                    try {
-                                        if (!CHRONICLE_UTILS.search(search, key, value)) {
-                                            match = false;
-                                            break;
-                                        }
-                                    } catch (final Throwable e) {
-                                        Logger.error("Search failed for key [{}]: {}", key);
-                                        Logger.error(e);
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                try {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
                                     }
-                                }
-
-                                if (match) {
-                                    map.put(key, value);
+                                } catch (final Throwable e) {
+                                    Logger.error("Search failed for key [{}]: {}", key);
+                                    Logger.error(e);
                                 }
                             }
+
+                            map.put(key, value);
+                            return true;
                         });
             }
             return map;
@@ -1269,30 +1260,27 @@ public interface ChronicleDao<V> {
                 final var keysForFile = entry.getValue(); // Iterable<String>
 
                 try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit,
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
                             key -> {
-                                if (!excludedKeys.contains(key)) {
-                                    final V value = shared.map.getUsing(key, using());
-                                    if (value == null)
-                                        return;
+                                if (excludedKeys.contains(key))
+                                    return false;
 
-                                    boolean match = true;
-                                    for (final var search : filters) {
-                                        try {
-                                            if (!CHRONICLE_UTILS.search(search, key, value)) {
-                                                match = false;
-                                                break;
-                                            }
-                                        } catch (final Throwable e) {
-                                            Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : filters) {
+                                    try {
+                                        if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                            return false;
                                         }
-                                    }
-
-                                    if (match) {
-                                        if (count.incrementAndGet() <= limit)
-                                            map.put(key, value);
+                                    } catch (final Throwable e) {
+                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
                                     }
                                 }
+
+                                map.put(key, value);
+                                return true;
                             });
                 }
             }
@@ -1318,14 +1306,12 @@ public interface ChronicleDao<V> {
                         key -> {
                             final V value = shared.map.getUsing(key, using());
                             if (value == null)
-                                return;
+                                return false;
 
-                            boolean match = true;
                             for (final var search : filters) {
                                 try {
                                     if (!CHRONICLE_UTILS.search(search, key, value)) {
-                                        match = false;
-                                        break;
+                                        return false;
                                     }
                                 } catch (final Throwable e) {
                                     Logger.error("Search failed for key [{}]: {}", key);
@@ -1333,14 +1319,14 @@ public interface ChronicleDao<V> {
                                 }
                             }
 
-                            if (match) {
-                                count.increment();
-                            }
+                            count.increment();
+                            return true;
                         });
             }
             return count.sum();
         }
 
+        final AtomicInteger counter = new AtomicInteger(0);
         try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.sum() > limit)
@@ -1350,29 +1336,24 @@ public interface ChronicleDao<V> {
                 final var keysForFile = entry.getValue(); // Iterable<String>
 
                 try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit,
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - counter.get(), counter,
                             key -> {
                                 final V value = shared.map.getUsing(key, using());
                                 if (value == null)
-                                    return;
+                                    return false;
 
-                                boolean match = true;
                                 for (final var search : filters) {
                                     try {
                                         if (!CHRONICLE_UTILS.search(search, key, value)) {
-                                            match = false;
-                                            break;
+                                            return false;
                                         }
                                     } catch (final Throwable e) {
                                         Logger.error("Search failed for key [{}]: {}", key, e.toString());
                                     }
                                 }
 
-                                if (match) {
-                                    count.increment();
-                                    if (count.sum() > limit)
-                                        return;
-                                }
+                                count.increment();
+                                return true;
                             });
                 }
             }

@@ -24,14 +24,14 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.tinylog.Logger;
@@ -807,52 +807,66 @@ public final class ChronicleUtils {
         return limitedSet;
     }
 
-    public void parallelIterable(final Iterable<String> iterable, final int limit,
-            final Consumer<String> action) throws InterruptedException {
+    public void parallelIterable(final Iterable<String> iterable, final int limit, final Predicate<String> action)
+            throws InterruptedException {
+        final AtomicInteger matchCounter = new AtomicInteger(0);
+        parallelIterable(iterable, limit, matchCounter, action);
+    }
+
+    public void parallelIterable(final Iterable<String> iterable, final int limit, final AtomicInteger matchCounter,
+            final Predicate<String> action)
+            throws InterruptedException {
         if (limit <= 0 || iterable == null) {
-            return; // Early exit for invalid inputs
+            return;
         }
 
         final ExecutorService executor = Executors.newFixedThreadPool(processors);
-        final AtomicInteger matchCounter = new AtomicInteger(0);
         final AtomicBoolean done = new AtomicBoolean(false);
-        final List<CompletableFuture<Void>> futures = new ArrayList<>();
+        final Iterator<String> iterator = iterable.iterator();
+        final Object iteratorLock = new Object();
+        final List<Future<?>> futures = new ArrayList<>();
 
         try {
-            final Iterator<String> iterator = iterable.iterator();
-            while (iterator.hasNext() && !done.get() && matchCounter.get() < limit) {
-                final String item = iterator.next();
-                final CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    if (done.get() || matchCounter.get() >= limit) {
-                        return; // Skip if limit reached
-                    }
-                    try {
-                        action.accept(item); // Process item; match if no early return
-                        if (matchCounter.incrementAndGet() >= limit) {
-                            done.set(true); // Signal to stop
+            // Spawn consumer threads
+            final int consumerThreads = Math.min(processors, 4); // Limit to reduce contention
+            for (int i = 0; i < consumerThreads; i++) {
+                futures.add(executor.submit(() -> {
+                    while (!done.get() && matchCounter.get() < limit) {
+                        String item;
+                        synchronized (iteratorLock) {
+                            if (!iterator.hasNext())
+                                return;
+                            item = iterator.next();
                         }
-                    } catch (final Exception e) {
-                        Logger.error("Error processing item [{}]: {}", item, e.getMessage());
-                        // Don’t rethrow to allow other tasks to complete
+                        try {
+                            if (action.test(item)) {
+                                if (matchCounter.incrementAndGet() >= limit) {
+                                    done.set(true);
+                                }
+                            }
+                        } catch (final Exception e) {
+                            Logger.error("Error processing item [{}]: {}", item, e.getMessage());
+                            throw e;
+                        }
                     }
-                }, executor);
-                futures.add(future);
+                }));
             }
 
-            // Cancel all tasks as soon as limit is reached
-            if (done.get()) {
-                executor.shutdownNow(); // Cancel pending/running tasks
-            } else {
-                // Wait for submitted tasks if limit not reached
-                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-                executor.shutdownNow(); // Ensure cleanup
+            // Wait for consumer threads until limit reached
+            for (final Iterator<Future<?>> it = futures.iterator(); it.hasNext() && !done.get();) {
+                final Future<?> future = it.next();
+                try {
+                    future.get();
+                    it.remove();
+                } catch (final Exception e) {
+                    Logger.error("Consumer thread failed: {}", e.getMessage());
+                }
             }
         } catch (final Exception e) {
             Logger.error("Processing failed: {}", e.getMessage());
-            executor.shutdownNow(); // Ensure cleanup on error
             throw new InterruptedException("Processing failed: " + e.getMessage());
         } finally {
-            executor.shutdownNow(); // Final cleanup
+            executor.shutdownNow(); // Cancel all tasks
         }
     }
 
