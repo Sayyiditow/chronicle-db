@@ -23,11 +23,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
-import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import org.tinylog.Logger;
@@ -42,6 +46,7 @@ import net.openhft.chronicle.map.ChronicleMap;
 public final class ChronicleUtils {
     private static final ConcurrentMap<String, Object> indexWriteLocks = new ConcurrentHashMap<>();
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
+    private static final int processors = Runtime.getRuntime().availableProcessors();
 
     private static class FieldData {
         final Field field;
@@ -802,55 +807,53 @@ public final class ChronicleUtils {
         return limitedSet;
     }
 
-    /**
-     * Paginate a map using a time field field such as createdAt (must use long)
-     * 
-     * @param data
-     * @param limit
-     * @param page
-     * @param orderByField
-     */
-    public Map<String, Object> setPages(final Map<String, Map<String, Object>> data, final int limit, final int page,
-            final String orderByField) {
-        if (data == null || data.isEmpty() || limit <= 0 || page < 0) {
-            return Map.of("totalPages", 0, "page", page, "data", Collections.emptyMap());
+    public void parallelIterable(final Iterable<String> iterable, final int limit,
+            final Consumer<String> action) throws InterruptedException {
+        if (limit <= 0 || iterable == null) {
+            return; // Early exit for invalid inputs
         }
 
-        // Calculate total pages
-        final int totalPages = (int) Math.ceil((double) data.size() / limit);
+        final ExecutorService executor = Executors.newFixedThreadPool(processors);
+        final AtomicInteger matchCounter = new AtomicInteger(0);
+        final AtomicBoolean done = new AtomicBoolean(false);
+        final List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-        // Create a PriorityQueue to get the required range of entries sorted by
-        // orderByField
-        final PriorityQueue<Map.Entry<String, Map<String, Object>>> queue = new PriorityQueue<>(
-                (e1, e2) -> {
-                    final var e1Value = e1.getValue();
-                    final var valueClass = e1Value.getClass();
-                    final var fieldData = getFieldData(valueClass, orderByField);
-                    try {
-                        final Object value1 = fieldData.getterHandle.invoke(e1Value);
-                        final Object value2 = fieldData.getterHandle.invoke(e2.getValue());
-                        return Long.compare((long) value1, (long) value2);
-                    } catch (final Throwable t) {
-                        return 0;
+        try {
+            final Iterator<String> iterator = iterable.iterator();
+            while (iterator.hasNext() && !done.get() && matchCounter.get() < limit) {
+                final String item = iterator.next();
+                final CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                    if (done.get() || matchCounter.get() >= limit) {
+                        return; // Skip if limit reached
                     }
-                });
-        queue.addAll(data.entrySet());
-
-        // Extract entries for the requested page
-        final Map<String, Map<String, Object>> resultData = new HashMap<>();
-        final int start = page * limit;
-        final int end = Math.min(start + limit, data.size());
-        int index = 0;
-
-        while (!queue.isEmpty() && index < end) {
-            final Map.Entry<String, Map<String, Object>> entry = queue.poll();
-            if (index >= start) {
-                resultData.put(entry.getKey(), entry.getValue());
+                    try {
+                        action.accept(item); // Process item; match if no early return
+                        if (matchCounter.incrementAndGet() >= limit) {
+                            done.set(true); // Signal to stop
+                        }
+                    } catch (final Exception e) {
+                        Logger.error("Error processing item [{}]: {}", item, e.getMessage());
+                        // Don’t rethrow to allow other tasks to complete
+                    }
+                }, executor);
+                futures.add(future);
             }
-            index++;
-        }
 
-        return Map.of("totalPages", totalPages, "page", page, "data", resultData);
+            // Cancel all tasks as soon as limit is reached
+            if (done.get()) {
+                executor.shutdownNow(); // Cancel pending/running tasks
+            } else {
+                // Wait for submitted tasks if limit not reached
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                executor.shutdownNow(); // Ensure cleanup
+            }
+        } catch (final Exception e) {
+            Logger.error("Processing failed: {}", e.getMessage());
+            executor.shutdownNow(); // Ensure cleanup on error
+            throw new InterruptedException("Processing failed: " + e.getMessage());
+        } finally {
+            executor.shutdownNow(); // Final cleanup
+        }
     }
 
     public <T> Iterable<T> concatIterable(final Iterable<T> first, final Iterable<T> second, final int limit) {

@@ -1148,10 +1148,9 @@ public interface ChronicleDao<V> {
         final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         if (getDataFileState().fileNames().size() <= 1) {
-            final AtomicInteger count = new AtomicInteger();
             try (final var shared = openDb()) {
-                StreamSupport.stream(keys.spliterator(), true)
-                        .forEach(key -> {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
                             final V value = shared.map.getUsing(key, using());
                             if (value == null)
                                 return;
@@ -1170,8 +1169,6 @@ public interface ChronicleDao<V> {
                             }
 
                             if (match) {
-                                if (count.incrementAndGet() > limit)
-                                    return;
                                 map.put(key, value);
                             }
                         });
@@ -1179,8 +1176,8 @@ public interface ChronicleDao<V> {
             return map;
         }
 
+        final AtomicInteger count = new AtomicInteger();
         try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            final AtomicInteger count = new AtomicInteger();
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -1189,30 +1186,28 @@ public interface ChronicleDao<V> {
                 final var keysForFile = entry.getValue(); // Iterable<String>
 
                 try (final var shared = openDb(file)) {
-                    StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
-                            .forEach(key -> {
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
-                                    return;
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), key -> {
+                        final V value = shared.map.getUsing(key, using());
+                        if (value == null)
+                            return;
 
-                                boolean match = true;
-                                for (final var search : filters) {
-                                    try {
-                                        if (!CHRONICLE_UTILS.search(search, key, value)) {
-                                            match = false;
-                                            break;
-                                        }
-                                    } catch (final Throwable e) {
-                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
-                                    }
+                        boolean match = true;
+                        for (final var search : filters) {
+                            try {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                    match = false;
+                                    break;
                                 }
+                            } catch (final Throwable e) {
+                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            }
+                        }
 
-                                if (match) {
-                                    if (count.incrementAndGet() > limit)
-                                        return;
-                                    map.put(key, value);
-                                }
-                            });
+                        if (match) {
+                            if (count.incrementAndGet() <= limit)
+                                map.put(key, value);
+                        }
+                    });
                 }
             }
         }
@@ -1234,10 +1229,9 @@ public interface ChronicleDao<V> {
         final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         if (getDataFileState().fileNames().size() <= 1) {
-            final AtomicInteger count = new AtomicInteger();
             try (final var shared = openDb()) {
-                StreamSupport.stream(keys.spliterator(), true)
-                        .forEach(key -> {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
                             if (!excludedKeys.contains(key)) {
                                 final V value = shared.map.getUsing(key, using());
                                 if (value == null)
@@ -1257,8 +1251,6 @@ public interface ChronicleDao<V> {
                                 }
 
                                 if (match) {
-                                    if (count.incrementAndGet() > limit)
-                                        return;
                                     map.put(key, value);
                                 }
                             }
@@ -1267,9 +1259,8 @@ public interface ChronicleDao<V> {
             return map;
         }
 
+        final AtomicInteger count = new AtomicInteger();
         try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            final AtomicInteger count = new AtomicInteger();
-
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -1278,8 +1269,8 @@ public interface ChronicleDao<V> {
                 final var keysForFile = entry.getValue(); // Iterable<String>
 
                 try (final var shared = openDb(file)) {
-                    StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
-                            .forEach(key -> {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit,
+                            key -> {
                                 if (!excludedKeys.contains(key)) {
                                     final V value = shared.map.getUsing(key, using());
                                     if (value == null)
@@ -1298,9 +1289,8 @@ public interface ChronicleDao<V> {
                                     }
 
                                     if (match) {
-                                        if (count.incrementAndGet() > limit)
-                                            return;
-                                        map.put(key, value);
+                                        if (count.incrementAndGet() <= limit)
+                                            map.put(key, value);
                                     }
                                 }
                             });
@@ -1324,8 +1314,8 @@ public interface ChronicleDao<V> {
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
-                StreamSupport.stream(keys.spliterator(), true)
-                        .forEach(key -> {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
                             final V value = shared.map.getUsing(key, using());
                             if (value == null)
                                 return;
@@ -1345,8 +1335,6 @@ public interface ChronicleDao<V> {
 
                             if (match) {
                                 count.increment();
-                                if (count.sum() > limit)
-                                    return;
                             }
                         });
             }
@@ -1362,8 +1350,8 @@ public interface ChronicleDao<V> {
                 final var keysForFile = entry.getValue(); // Iterable<String>
 
                 try (final var shared = openDb(file)) {
-                    StreamSupport.stream(keysForFile.spliterator(), true) // true = parallel
-                            .forEach(key -> {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit,
+                            key -> {
                                 final V value = shared.map.getUsing(key, using());
                                 if (value == null)
                                     return;
