@@ -613,13 +613,12 @@ public interface ChronicleDao<V> {
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
-                StreamSupport.stream(keys.spliterator(), true)
-                        .forEach(key -> {
-                            final var value = shared.map.getUsing(key, using());
-                            if (value != null) {
-                                map.put(key, value);
-                            }
-                        });
+                for (final var key : keys) {
+                    final var value = shared.map.getUsing(key, using());
+                    if (value != null) {
+                        map.put(key, value);
+                    }
+                }
             }
             return map;
         }
@@ -629,13 +628,12 @@ public interface ChronicleDao<V> {
                 final var file = entry.getKey();
 
                 try (final var shared = openDb(file)) {
-                    StreamSupport.stream(keys.spliterator(), true)
-                            .forEach(key -> {
-                                final var value = shared.map.getUsing(key, using());
-                                if (value != null) {
-                                    map.put(key, value);
-                                }
-                            });
+                    for (final var key : keys) {
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null) {
+                            map.put(key, value);
+                        }
+                    }
                 }
             }
         }
