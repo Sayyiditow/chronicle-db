@@ -546,7 +546,8 @@ public final class ChronicleUtils {
                     }
                 }
 
-                Logger.info("Updated [{}] records for index: [{}]", recordCount, indexName);
+                if (recordCount != 0)
+                    Logger.info("Updated [{}] records for index: [{}]", recordCount, indexName);
             }
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> sharedIndexMap.close());
