@@ -245,7 +245,7 @@ public interface ChronicleDao<V> {
 
                 final int size = dataFiles.size();
                 String currentFile = DATA_FILE;
-                if (size == 0) {
+                if (size <= 1) {
                     dataFiles.add(DATA_FILE);
                 } else {
                     currentFile = DATA_FILE + "-" + size;
@@ -843,15 +843,16 @@ public interface ChronicleDao<V> {
         V prevValue = null;
         var file = DATA_FILE;
         synchronized (lock) {
-            file = getDbFile(key, getDataFileState().fileNames());
+            final var dataFileState = getDataFileState();
+            file = getDbFile(key, dataFileState.fileNames());
             if (file == null) {
-                file = DATA_FILE;
+                file = dataFileState.currentFile();
             }
 
             var shared = openDb(file); // no try with resource here for rotation
             // only rotate if current file is full and insert mode
             try {
-                if (DATA_FILE.equals(file) && !shared.map.containsKey(key)) {
+                if (dataFileState.currentFile().equals(file) && !shared.map.containsKey(key)) {
                     shared = checkAndRotate(shared);
                 }
                 prevValue = shared.map.put(key, value);
@@ -943,12 +944,15 @@ public interface ChronicleDao<V> {
         var file = DATA_FILE;
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            file = getDbFile(key, getDataFileState().fileNames());
-            if (file == null) {
-                file = DATA_FILE;
-            }
+            final var dataFileState = getDataFileState();
+            file = getDbFile(key, dataFileState.fileNames());
+
             if (file != null && !DATA_FILE.equals(file)) {
                 return PutStatus.FAILED; // already exists
+            }
+
+            if (file == null) {
+                file = dataFileState.currentFile();
             }
 
             var shared = openDb();
@@ -1391,18 +1395,13 @@ public interface ChronicleDao<V> {
         return count.sum();
     }
 
-    /**
-     * When no db provided, use forEachEntry
-     */
-    private Map<String, V> search(final ChronicleMap<String, V> db, final List<Search> filters) {
+    private void search(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
+            final Map<String, V> result, final AtomicInteger counter) {
         Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
-        final Map<String, V> result = new HashMap<>(10_000);
-        final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
-
         db.forEachEntryWhile(entry -> {
             try {
-                if (result.size() >= limit) {
-                    return false; // Early exit
+                if (counter.get() >= limit) {
+                    return false;
                 }
 
                 final String key = entry.key().get();
@@ -1417,27 +1416,22 @@ public interface ChronicleDao<V> {
                     }
                 }
 
-                result.put(key, db.getUsing(key, using()));
+                if (counter.incrementAndGet() <= limit) {
+                    result.put(key, db.getUsing(key, using()));
+                }
             } catch (final Throwable e) {
                 Logger.error("Search failed during multi-filter scan.");
                 Logger.error(e);
             }
             return true;
         });
-
-        return result;
     }
 
-    private Map<String, V> search(final ChronicleMap<String, V> db, final List<Search> filters, final int limit) {
-        Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
-        final Map<String, V> result = new HashMap<>(10_000);
+    private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters, final List<String> result) {
+        Logger.info("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
 
         db.forEachEntryWhile(entry -> {
             try {
-                if (result.size() >= limit) {
-                    return false; // Early exit
-                }
-
                 final String key = entry.key().get();
                 final V value = entry.value().get();
                 if (value == null) {
@@ -1450,69 +1444,23 @@ public interface ChronicleDao<V> {
                     }
                 }
 
-                result.put(key, db.getUsing(key, using()));
+                result.add(key);
             } catch (final Throwable e) {
-                Logger.error("Search failed during multi-filter scan.");
+                Logger.error("Search failed during key scan.");
                 Logger.error(e);
             }
             return true;
         });
-
-        return result;
     }
 
-    /**
-     * Same as above, just has excluded keys
-     */
-    private Map<String, V> search(final ChronicleMap<String, V> db, final List<Search> filters,
-            final Set<String> excludedKeys) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys.", dataPath(),
-                filters.size(), excludedKeys.size());
-        final Map<String, V> result = new HashMap<>(10_000);
-        final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
-
-        db.forEachEntryWhile(entry -> {
-            try {
-                if (result.size() >= limit) {
-                    return false; // Early exit
-                }
-
-                final String key = entry.key().get();
-                if (excludedKeys.contains(key)) {
-                    return true;
-                }
-
-                final V value = entry.value().get();
-                if (value == null) {
-                    return true;
-                }
-
-                for (final Search search : filters) {
-                    if (!CHRONICLE_UTILS.search(search, key, value)) {
-                        return true;
-                    }
-                }
-
-                result.put(key, db.getUsing(key, using()));
-            } catch (final Throwable e) {
-                Logger.error("Search failed during multi-filter scan.");
-                Logger.error(e);
-            }
-            return true;
-        });
-
-        return result;
-    }
-
-    private Map<String, V> search(final ChronicleMap<String, V> db, final List<Search> filters,
-            final Set<String> excludedKeys, final int limit) {
+    private void search(final ChronicleMap<String, V> db, final List<Search> filters, final Set<String> excludedKeys,
+            final int limit, final Map<String, V> result, final AtomicInteger counter) {
         Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
-        final Map<String, V> result = new HashMap<>(10_000);
 
         db.forEachEntryWhile(entry -> {
             try {
-                if (result.size() >= limit) {
+                if (counter.get() >= limit) {
                     return false; // Early exit
                 }
 
@@ -1532,7 +1480,41 @@ public interface ChronicleDao<V> {
                     }
                 }
 
-                result.put(key, db.getUsing(key, using()));
+                if (counter.incrementAndGet() <= limit) {
+                    result.put(key, db.getUsing(key, using()));
+                }
+            } catch (final Throwable e) {
+                Logger.error("Search failed during multi-filter scan.");
+                Logger.error(e);
+            }
+            return true;
+        });
+    }
+
+    private List<String> searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
+            final Set<String> excludedKeys, final List<String> result) {
+        Logger.info("Searching DB keys at [{}] using [{}] filters and [{}] excluded keys.",
+                dataPath(), filters.size(), excludedKeys.size());
+
+        db.forEachEntryWhile(entry -> {
+            try {
+                final String key = entry.key().get();
+                if (excludedKeys.contains(key)) {
+                    return true;
+                }
+
+                final V value = entry.value().get();
+                if (value == null) {
+                    return true;
+                }
+
+                for (final Search search : filters) {
+                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                        return true;
+                    }
+                }
+
+                result.add(key);
             } catch (final Throwable e) {
                 Logger.error("Search failed during multi-filter scan.");
                 Logger.error(e);
@@ -1577,14 +1559,14 @@ public interface ChronicleDao<V> {
 
     private Map<String, V> search(final Map<String, V> db, final List<Search> filters) {
         Logger.info("Searching in-memory map with [{}] filters.", filters.size());
-        final Map<String, V> result = new HashMap<>(Math.min(db.size(), 10_000));
+        final Map<String, V> result = new ConcurrentHashMap<>(Math.min(db.size(), 10_000));
 
-        for (final Map.Entry<String, V> entry : db.entrySet()) {
+        db.entrySet().parallelStream().forEach(entry -> {
             final String key = entry.getKey();
             final V value = entry.getValue();
 
             if (value == null) {
-                continue;
+                return;
             }
 
             boolean match = true;
@@ -1605,7 +1587,7 @@ public interface ChronicleDao<V> {
             if (match) {
                 result.put(key, value);
             }
-        }
+        });
 
         return result;
     }
@@ -1758,6 +1740,12 @@ public interface ChronicleDao<V> {
         };
     }
 
+    default List<String> toListOfKeys(final Iterable<byte[]> byteKeys) {
+        return StreamSupport.stream(byteKeys.spliterator(), true)
+                .map(bytes -> MAP_DB.extractIndexKey(bytes))
+                .collect(Collectors.toList());
+    }
+
     private <T> boolean isResultEmpty(final Iterable<T> result) {
         return result == null || !result.iterator().hasNext();
     }
@@ -1773,6 +1761,17 @@ public interface ChronicleDao<V> {
         }
     }
 
+    default List<String> indexedSearchKeys(final Search search) throws Exception {
+        final String indexPath = getIndexPath(search.field());
+        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
+            final var searchResult = indexedSearch(search, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                return Collections.emptyList();
+            }
+            return toListOfKeys(searchResult.results());
+        }
+    }
+
     default Map<String, V> indexedSearch(final Search search, final Set<String> excludedKeys) throws Exception {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
@@ -1780,8 +1779,18 @@ public interface ChronicleDao<V> {
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyMap();
             }
-
             return get(toStringIterable(searchResult.results()));
+        }
+    }
+
+    default List<String> indexedSearchKeys(final Search search, final Set<String> excludedKeys) throws Exception {
+        final String indexPath = getIndexPath(search.field());
+        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
+            final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
+            if (isResultEmpty(searchResult.results())) {
+                return Collections.emptyList();
+            }
+            return toListOfKeys(searchResult.results());
         }
     }
 
@@ -1803,32 +1812,54 @@ public interface ChronicleDao<V> {
     default Map<String, V> search(final Search search) throws IOException {
         final Map<String, V> result = new ConcurrentHashMap<>();
         final int limit = search.limit() == -1 ? HARD_LIMIT : search.limit();
+        final AtomicInteger counter = new AtomicInteger(0);
 
         getDataFileState().fileNames().parallelStream().forEach(file -> {
-            if (result.size() >= limit) {
+            if (counter.get() >= limit) {
                 return;
             }
             try (final var shared = openDb(file)) {
-                result.putAll(search(shared.map, List.of(search), limit));
+                search(shared.map, List.of(search), limit, result, counter);
             }
         });
 
         return result;
     }
 
+    default List<String> searchKeys(final List<Search> searches) throws IOException {
+        final List<String> result = Collections.synchronizedList(new ArrayList<>());
+        getDataFileState().fileNames().parallelStream().forEach(file -> {
+            try (final var shared = openDb(file)) {
+                searchKeys(shared.map, searches, result);
+            }
+        });
+        return result;
+    }
+
     default Map<String, V> search(final Search search, final Set<String> excludedKeys) throws IOException {
         final Map<String, V> result = new ConcurrentHashMap<>();
         final int limit = search.limit() == -1 ? HARD_LIMIT : search.limit();
+        final AtomicInteger counter = new AtomicInteger(0);
 
         getDataFileState().fileNames().parallelStream().forEach(file -> {
-            if (result.size() >= limit) {
+            if (counter.get() >= limit) {
                 return;
             }
             try (final var shared = openDb(file)) {
-                result.putAll(search(shared.map, List.of(search), excludedKeys, limit));
+                search(shared.map, List.of(search), excludedKeys, limit, result, counter);
             }
         });
 
+        return result;
+    }
+
+    default List<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) throws IOException {
+        final List<String> result = Collections.synchronizedList(new ArrayList<>());
+        getDataFileState().fileNames().parallelStream().forEach(file -> {
+            try (final var shared = openDb(file)) {
+                searchKeys(shared.map, searches, excludedKeys, result);
+            }
+        });
         return result;
     }
 
@@ -1879,18 +1910,13 @@ public interface ChronicleDao<V> {
                 final Map<String, V> result = new ConcurrentHashMap<>();
                 final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
                         .orElse(HARD_LIMIT);
-                final var count = new AtomicInteger(0);
-
+                final var counter = new AtomicInteger();
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
-                    if (count.get() >= limit)
+                    if (counter.get() >= limit) {
                         return;
+                    }
                     try (final var shared = openDb(file)) {
-                        final Map<String, V> partial = search(shared.map, searches);
-                        for (final Map.Entry<String, V> entry : partial.entrySet()) {
-                            if (count.incrementAndGet() > limit)
-                                break;
-                            result.put(entry.getKey(), entry.getValue());
-                        }
+                        search(shared.map, searches, limit, result, counter);
                     }
                 });
 
@@ -1952,18 +1978,13 @@ public interface ChronicleDao<V> {
                 final Map<String, V> result = new ConcurrentHashMap<>();
                 final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
                         .orElse(HARD_LIMIT);
-                final var count = new AtomicInteger(0);
-
+                final var counter = new AtomicInteger(0);
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
-                    if (count.get() >= limit)
+                    if (counter.get() >= limit) {
                         return;
+                    }
                     try (final var shared = openDb(file)) {
-                        final Map<String, V> partial = search(shared.map, searches, excludedKeys);
-                        for (final Map.Entry<String, V> entry : partial.entrySet()) {
-                            if (count.incrementAndGet() > limit)
-                                break;
-                            result.put(entry.getKey(), entry.getValue());
-                        }
+                        search(shared.map, searches, excludedKeys, limit, result, counter);
                     }
                 });
 
