@@ -26,7 +26,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -813,40 +812,50 @@ public final class ChronicleUtils {
         parallelIterable(iterable, limit, matchCounter, action);
     }
 
-    public void parallelIterable(final Iterable<String> iterable, final int limit, final AtomicInteger matchCounter,
-            final Predicate<String> action)
+    public <T> void parallelIterable(final Iterable<T> iterable, final int limit, final AtomicInteger matchCounter,
+            final Predicate<T> action)
             throws InterruptedException {
         if (limit <= 0 || iterable == null) {
             return;
         }
 
-        final ExecutorService executor = Executors.newFixedThreadPool(processors);
-        final AtomicBoolean done = new AtomicBoolean(false);
-        final Iterator<String> iterator = iterable.iterator();
-        final Object iteratorLock = new Object();
-        final List<Future<?>> futures = new ArrayList<>();
+        final var executor = Executors.newFixedThreadPool(processors);
+        final var done = new AtomicBoolean(false);
+        final var iterator = iterable.iterator();
+        final var iteratorLock = new Object();
+        final var futures = new ArrayList<Future<?>>();
 
         try {
             // Spawn consumer threads
             final int consumerThreads = Math.min(processors, 4); // Limit to reduce contention
             for (int i = 0; i < consumerThreads; i++) {
                 futures.add(executor.submit(() -> {
+                    final var batch = new ArrayList<T>(100);
                     while (!done.get() && matchCounter.get() < limit) {
-                        String item;
+                        batch.clear();
                         synchronized (iteratorLock) {
-                            if (!iterator.hasNext())
-                                return;
-                            item = iterator.next();
-                        }
-                        try {
-                            if (action.test(item)) {
-                                if (matchCounter.incrementAndGet() >= limit) {
-                                    done.set(true);
-                                }
+                            for (int j = 0; j < 100 && iterator.hasNext(); j++) {
+                                batch.add(iterator.next());
                             }
-                        } catch (final Exception e) {
-                            Logger.error("Error processing item [{}]: {}", item, e.getMessage());
-                            throw e;
+                        }
+
+                        if (batch.isEmpty())
+                            return;
+
+                        for (final T item : batch) {
+                            if (done.get() || matchCounter.get() >= limit)
+                                return;
+                            try {
+                                if (action.test(item)) {
+                                    if (matchCounter.incrementAndGet() >= limit) {
+                                        done.set(true);
+                                        return;
+                                    }
+                                }
+                            } catch (final Exception e) {
+                                Logger.error("Error processing item [{}]: {}", item, e.getMessage());
+                                throw e;
+                            }
                         }
                     }
                 }));
