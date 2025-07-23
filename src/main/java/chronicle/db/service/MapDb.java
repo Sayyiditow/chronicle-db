@@ -124,9 +124,11 @@ public final class MapDb {
                 return new SharedKeyMap(map, filePath);
             } catch (final DBException.DataCorruption | DBException.GetVoid e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
-                throw new RuntimeException("Reinitializing KeyMap at [{}]. {}" + filePath, e);
+                Logger.info("Reinitializing KeyMap at [{}]", filePath);
+                throw new RuntimeException(e);
             } catch (final Exception e) {
-                throw new RuntimeException("Failed to open KeyMap at [{}]. {}" + filePath, e);
+                Logger.error("Failed to open KeyMap at [{}]", filePath);
+                throw new RuntimeException(e);
             }
         });
 
@@ -178,9 +180,11 @@ public final class MapDb {
                 return new SharedIndexMap(db, tree, filePath);
             } catch (final DBException.DataCorruption | DBException.GetVoid e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
-                throw new RuntimeException("Reinitializing IndexMap at [{}]. {}" + filePath, e);
+                Logger.error("Reinitializing IndexMap at [{}]", filePath);
+                throw new RuntimeException(e);
             } catch (final Exception e) {
-                throw new RuntimeException("Failed to open IndexMap at [{}]. {}" + filePath, e);
+                Logger.error("Failed to open IndexMap at [{}]", filePath);
+                throw new RuntimeException(e);
             }
         });
 

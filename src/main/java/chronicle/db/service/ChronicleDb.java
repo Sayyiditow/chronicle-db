@@ -5,6 +5,9 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -91,15 +94,26 @@ public final class ChronicleDb {
                 return new SharedChronicleMap(map, filePath);
             } catch (final InterProcessDeadLockException deadlockEx) {
                 Logger.warn("Deadlock detected when opening ChronicleMap [{}], attempting recovery.", filePath);
+                // Backup the ChronicleMap file
+                final var filePathPath = Path.of(filePath);
+                final var backupFolder = filePathPath.getParent().resolveSibling("backup");
+                final var backupFile = backupFolder.resolve(filePathPath.getFileName());
+
                 try {
+                    Files.createDirectories(backupFolder); // ensure backup folder exists
+                    Files.copy(filePathPath, backupFile, StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.COPY_ATTRIBUTES);
+                    Logger.warn("Backed up ChronicleMap file to [{}] before recovery.", backupFile);
                     final ChronicleMap<K, V> recovered = recoverDb(name, entries, averageKey, averageValue, filePath,
                             maxBloatFactor);
                     return new SharedChronicleMap(recovered, filePath);
                 } catch (final IOException recoveryEx) {
-                    throw new UncheckedIOException("Failed to recover ChronicleMap at [{}]. {}" + filePath, recoveryEx);
+                    Logger.error("Failed to recover ChronicleMap at [{}]", filePath);
+                    throw new UncheckedIOException(recoveryEx);
                 }
             } catch (final IOException e) {
-                throw new UncheckedIOException("Failed to open ChronicleMap at [{}]. {}" + filePath, e);
+                Logger.error("Failed to open ChronicleMap at [{}]", filePath);
+                throw new UncheckedIOException(e);
             }
         });
 
