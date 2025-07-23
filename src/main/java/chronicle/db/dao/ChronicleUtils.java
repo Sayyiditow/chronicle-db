@@ -164,8 +164,9 @@ public final class ChronicleUtils {
         return searchTerm;
     }
 
-    public <K, V> boolean search(final Search search, final K key, final V value) throws Throwable {
-        final FieldData fieldData = getFieldData(value.getClass(), search.field());
+    public <K, V> boolean search(final Search search, final K key, final V value, final Class<?> valueClass)
+            throws Throwable {
+        final FieldData fieldData = getFieldData(valueClass, search.field());
         if (fieldData == null) {
             return false;
         }
@@ -584,14 +585,13 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void subsetOfValues(final String[] fields, final Map.Entry<K, V> entry,
-            final Map<K, LinkedHashMap<String, Object>> map, final String objectName) {
+            final Map<K, LinkedHashMap<String, Object>> map, final String objectName, final Class<?> valueClas) {
         final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
         final K key = entry.getKey();
         final V value = entry.getValue();
-        final var valueClass = value.getClass();
 
         for (final String f : fields) {
-            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, f);
+            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClas, f);
             if (methodHandle != null) {
                 try {
                     valueMap.put(f, methodHandle.invoke(value));
