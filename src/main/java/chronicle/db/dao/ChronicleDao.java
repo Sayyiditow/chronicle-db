@@ -1136,7 +1136,8 @@ public interface ChronicleDao<V> {
         return PutStatus.INSERTED;
     }
 
-    default Map<String, V> search(final Iterable<String> keys, final List<Search> filters) throws Throwable {
+    default Map<String, V> search(final Iterable<String> keys, final List<Search> filters, final int limit)
+            throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
             return Collections.emptyMap();
         }
@@ -1144,9 +1145,6 @@ public interface ChronicleDao<V> {
         Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, V>(10_000);
         final var valueClass = averageValue().getClass();
-
-        // Determine minimum positive limit across all filters
-        final int limit = filters.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
@@ -1717,6 +1715,27 @@ public interface ChronicleDao<V> {
         };
     }
 
+    default Iterable<String> toStringIterable(final Iterable<byte[]> byteKeys, final int limit) {
+        return () -> new Iterator<>() {
+            final Iterator<byte[]> it = byteKeys.iterator();
+            int count = 0;
+
+            @Override
+            public boolean hasNext() {
+                return count < limit && it.hasNext();
+            }
+
+            @Override
+            public String next() {
+                if (!hasNext()) {
+                    throw new NoSuchElementException();
+                }
+                count++;
+                return MAP_DB.extractIndexKey(it.next());
+            }
+        };
+    }
+
     default List<String> toListOfKeys(final Iterable<byte[]> byteKeys) {
         return StreamSupport.stream(byteKeys.spliterator(), true)
                 .map(bytes -> MAP_DB.extractIndexKey(bytes))
@@ -1775,8 +1794,9 @@ public interface ChronicleDao<V> {
         if (matchingKeys == null || matchingKeys.isEmpty()) {
             return Collections.emptyMap();
         }
+        final int limit = search.limit() != -1 ? search.limit() : HARD_LIMIT;
 
-        return search(matchingKeys, List.of(search));
+        return search(matchingKeys, List.of(search), limit);
     }
 
     default Map<String, V> search(final Map<String, V> db, final Search search) throws IOException {
@@ -1858,6 +1878,8 @@ public interface ChronicleDao<V> {
                 remainingSearches.add(s);
             }
         }
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
+                .orElse(HARD_LIMIT);
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -1874,7 +1896,7 @@ public interface ChronicleDao<V> {
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return get(toStringIterable(searchResult.results()));
+                    return get(toStringIterable(searchResult.results(), limit));
                 } finally {
                     sharedIndexMap.close();
                 }
@@ -1885,8 +1907,6 @@ public interface ChronicleDao<V> {
         try {
             if (searchResult == null) {
                 final Map<String, V> result = new ConcurrentHashMap<>();
-                final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
-                        .orElse(HARD_LIMIT);
                 final var counter = new AtomicInteger();
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
                     if (counter.get() >= limit) {
@@ -1899,7 +1919,7 @@ public interface ChronicleDao<V> {
 
                 return result;
             } else {
-                return search(toStringIterable(searchResult.results()), remainingSearches);
+                return search(toStringIterable(searchResult.results()), remainingSearches, limit);
             }
         } finally {
             if (sharedIndexMap != null) {
@@ -1981,7 +2001,9 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        return search(matchingKeys, searches);
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+
+        return search(matchingKeys, searches, limit);
     }
 
     default long multiSearchCount(final List<Search> searches) throws Throwable {
