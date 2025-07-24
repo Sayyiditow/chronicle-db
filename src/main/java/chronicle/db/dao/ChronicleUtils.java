@@ -853,7 +853,7 @@ public final class ChronicleUtils {
                             return;
 
                         for (final T item : batch) {
-                            if (done.get() || matchCounter.get() >= limit)
+                            if (Thread.currentThread().isInterrupted() || done.get() || matchCounter.get() >= limit)
                                 return;
                             try {
                                 if (action.test(item)) {
@@ -863,8 +863,8 @@ public final class ChronicleUtils {
                                     }
                                 }
                             } catch (final Exception e) {
-                                Logger.error("Error processing item [{}]: {}", item, e.getMessage());
-                                throw e;
+                                Logger.error("[Parallel Iterable] - Error processing item [{}]", item);
+                                Logger.error(e);
                             }
                         }
                     }
@@ -878,12 +878,10 @@ public final class ChronicleUtils {
                     future.get();
                     it.remove();
                 } catch (final Exception e) {
-                    Logger.error("Consumer thread failed: {}", e.getMessage());
+                    Logger.error("[Parallel Iterable] - Consumer thread failed.");
+                    Logger.error(e);
                 }
             }
-        } catch (final Exception e) {
-            Logger.error("Processing failed: {}", e.getMessage());
-            throw new InterruptedException("Processing failed: " + e.getMessage());
         } finally {
             executor.shutdownNow(); // Cancel all tasks
         }
