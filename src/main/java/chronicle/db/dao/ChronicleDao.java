@@ -1006,7 +1006,6 @@ public interface ChronicleDao<V> {
                             final V prevValue = shared.map.put(key, map.get(key));
                             if (prevValue != null) {
                                 prevValues.put(key, prevValue);
-                                keysToInsert.remove(key); // Optional: only if needed for downstream
                             }
                         }
                     }
@@ -1015,6 +1014,7 @@ public interface ChronicleDao<V> {
 
             if (!prevValues.isEmpty()) {
                 status = PutStatus.UPDATED;
+                keysToInsert.removeAll(prevValues.keySet());
             }
             if (!keysToInsert.isEmpty()) {
                 // Insert new records (only keys in keysToInsert)
