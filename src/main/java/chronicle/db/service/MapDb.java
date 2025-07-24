@@ -248,11 +248,14 @@ public final class MapDb {
         return compositeKey; // fallback: no separator found
     }
 
-    public int fastCount(final Iterable<byte[]> result) {
+    public int fastCount(final Iterable<byte[]> result, final int limit) {
         int count = 0;
         for (@SuppressWarnings("unused")
         final byte[] ignored : result) {
             count++;
+            if (count == limit) {
+                break;
+            }
         }
         return count;
     }
