@@ -299,10 +299,8 @@ public final class MapDb {
             @Override
             public byte[] next() {
                 while (hasNext()) {
-                    final byte[] rawKey = it.next();
-                    final byte[] key = extractIndexKeyBytes(rawKey);
-                    final var primary = extractIndexKey(key);
-                    if (!excludedKeys.contains(primary)) {
+                    final byte[] key = extractIndexKeyBytes(it.next());
+                    if (!excludedKeys.contains(extractIndexKey(key))) {
                         remaining--;
                         return key;
                     }
@@ -643,7 +641,7 @@ public final class MapDb {
 
                         @Override
                         public byte[] next() {
-                            return MAP_DB.extractIndexKeyBytes(it.next());
+                            return extractIndexKeyBytes(it.next());
                         }
                     };
 
@@ -690,10 +688,8 @@ public final class MapDb {
                         @Override
                         public byte[] next() {
                             while (it.hasNext()) {
-                                final byte[] rawKey = it.next();
-                                final byte[] keyBytes = MAP_DB.extractIndexKeyBytes(rawKey);
-                                final String primary = extractIndexKey(keyBytes);
-                                if (!excludedKeys.contains(primary)) {
+                                final byte[] keyBytes = extractIndexKeyBytes(it.next());
+                                if (!excludedKeys.contains(extractIndexKey(keyBytes))) {
                                     return keyBytes;
                                 }
                             }
@@ -781,8 +777,7 @@ public final class MapDb {
                     final String fieldValue = extractIndexValue(rawKey);
                     if (!searchTerms.contains(fieldValue)) {
                         final byte[] keyBytes = extractIndexKeyBytes(rawKey);
-                        final String primary = extractIndexKey(keyBytes);
-                        if (!excludedKeys.contains(primary)) {
+                        if (!excludedKeys.contains(extractIndexKey(keyBytes))) {
                             nextValid = keyBytes;
                             hasNextComputed = true;
                             return true;
