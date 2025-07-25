@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.NavigableSet;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -237,6 +238,17 @@ public final class MapDb {
             }
         }
         return new String(compositeKey, StandardCharsets.UTF_8); // fallback: no separator found
+    }
+
+    public Map<String, byte[]> extractIndexKeyAndValue(final byte[] compositeKey) {
+        for (int i = 0; i < compositeKey.length; i++) {
+            if (compositeKey[i] == indexSep) {
+                final String value = new String(compositeKey, 0, i, StandardCharsets.UTF_8);
+                final byte[] key = Arrays.copyOfRange(compositeKey, i + 1, compositeKey.length);
+                return Map.of(value, key);
+            }
+        }
+        return Map.of(new String(compositeKey, StandardCharsets.UTF_8), compositeKey);
     }
 
     public byte[] extractIndexKeyBytes(final byte[] compositeKey) {
@@ -511,7 +523,7 @@ public final class MapDb {
 
                     final var fieldValue = extractIndexValue(key);
                     if (CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
-                        nextMatch = extractIndexKeyBytes(key);
+                        nextMatch = keyBytes;
                         return true;
                     }
                 }
@@ -594,7 +606,7 @@ public final class MapDb {
 
                     final var fieldValue = extractIndexValue(key);
                     if (!CHRONICLE_UTILS.containsIgnoreCase(fieldValue, searchTerm)) {
-                        nextMatch = extractIndexKeyBytes(key);
+                        nextMatch = keyBytes;
                         return true;
                     }
                 }
