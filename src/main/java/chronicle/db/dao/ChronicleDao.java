@@ -641,6 +641,49 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    default Map<String, V> get(final Iterable<String> keys, final int limit) throws Exception {
+        if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, V>(Math.min(1000, limit));
+        final var count = new AtomicInteger(0);
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                for (final var key : keys) {
+                    if (count.get() >= limit)
+                        break;
+                    final var value = shared.map.getUsing(key, using());
+                    if (value != null && count.incrementAndGet() <= limit) {
+                        map.put(key, value);
+                    }
+                }
+            }
+            return map;
+        }
+
+        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
+            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+
+                try (final var shared = openDb(file)) {
+                    for (final var key : keys) {
+                        if (count.get() >= limit)
+                            break outer;
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null && count.incrementAndGet() <= limit) {
+                            map.put(key, value);
+                        }
+                    }
+                }
+            }
+        }
+
+        return map;
+    }
+
     /**
      * Remove a value using key
      * 
@@ -1697,46 +1740,8 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Iterable<String> toStringIterable(final Iterable<byte[]> byteKeys) {
-        return () -> new Iterator<>() {
-            final Iterator<byte[]> it = byteKeys.iterator();
-
-            @Override
-            public boolean hasNext() {
-                return it.hasNext();
-            }
-
-            @Override
-            public String next() {
-                return MAP_DB.extractIndexKey(it.next());
-            }
-        };
-    }
-
-    default Iterable<String> toStringIterable(final Iterable<byte[]> byteKeys, final int limit) {
-        return () -> new Iterator<>() {
-            final Iterator<byte[]> it = byteKeys.iterator();
-            int count = 0;
-
-            @Override
-            public boolean hasNext() {
-                return count < limit && it.hasNext();
-            }
-
-            @Override
-            public String next() {
-                if (!hasNext()) {
-                    throw new NoSuchElementException();
-                }
-                count++;
-                return MAP_DB.extractIndexKey(it.next());
-            }
-        };
-    }
-
-    default List<String> toListOfKeys(final Iterable<byte[]> byteKeys) {
-        return StreamSupport.stream(byteKeys.spliterator(), true)
-                .map(bytes -> MAP_DB.extractIndexKey(bytes))
+    default List<String> toListOfKeys(final Iterable<String> keys) {
+        return StreamSupport.stream(keys.spliterator(), true)
                 .collect(Collectors.toList());
     }
 
@@ -1751,7 +1756,7 @@ public interface ChronicleDao<V> {
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyMap();
             }
-            return get(toStringIterable(searchResult.results()));
+            return get(searchResult.results());
         }
     }
 
@@ -1773,7 +1778,7 @@ public interface ChronicleDao<V> {
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyMap();
             }
-            return get(toStringIterable(searchResult.results()));
+            return get(searchResult.results());
         }
     }
 
@@ -1894,7 +1899,7 @@ public interface ChronicleDao<V> {
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return get(toStringIterable(searchResult.results(), limit));
+                    return get(searchResult.results(), limit);
                 } finally {
                     sharedIndexMap.close();
                 }
@@ -1917,7 +1922,7 @@ public interface ChronicleDao<V> {
 
                 return result;
             } else {
-                return search(toStringIterable(searchResult.results()), remainingSearches, limit);
+                return search(searchResult.results(), remainingSearches, limit);
             }
         } finally {
             if (sharedIndexMap != null) {
@@ -1961,7 +1966,7 @@ public interface ChronicleDao<V> {
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return get(toStringIterable(searchResult.results(), limit));
+                    return get(searchResult.results(), limit);
                 } finally {
                     sharedIndexMap.close();
                 }
@@ -1984,7 +1989,7 @@ public interface ChronicleDao<V> {
 
                 return result;
             } else {
-                return search(toStringIterable(searchResult.results()), remainingSearches, excludedKeys, limit);
+                return search(searchResult.results(), remainingSearches, excludedKeys, limit);
             }
         } finally {
             if (sharedIndexMap != null) {
@@ -2053,7 +2058,7 @@ public interface ChronicleDao<V> {
                         })
                         .sum();
             } else {
-                return searchCount(toStringIterable(searchResult.results()), remainingSearches, limit);
+                return searchCount(searchResult.results(), remainingSearches, limit);
             }
         } finally {
             if (sharedIndexMap != null) {
