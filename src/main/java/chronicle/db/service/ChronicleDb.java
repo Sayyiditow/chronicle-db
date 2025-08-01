@@ -91,6 +91,8 @@ public final class ChronicleDb {
                     builder.name(name).entries(entries).averageKey(averageKey).averageValue(averageValue);
                 }
                 final ChronicleMap<K, V> map = builder.createPersistedTo(file);
+                // check for locks early
+                map.size();
                 return new SharedChronicleMap(map, filePath);
             } catch (final InterProcessDeadLockException deadlockEx) {
                 Logger.warn("Deadlock detected when opening ChronicleMap [{}], attempting recovery.", filePath);
