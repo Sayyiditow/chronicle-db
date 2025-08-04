@@ -2106,10 +2106,15 @@ public interface ChronicleDao<V> {
     }
 
     default void deleteDataFiles() throws IOException {
-        Logger.info("Truncating database at [{}].", dataPath());
+        Logger.info("Dropping database at [{}].", dataPath());
         for (final var file : getDataFileState().fileNames()) {
             CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
         }
+    }
+
+    default void truncate() throws IOException {
+        deleteDataFiles();
+        deleteDataFiles();
     }
 
     default boolean exists(final String key) throws IOException {
