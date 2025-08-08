@@ -348,7 +348,8 @@ public final class ChronicleUtils {
                     sharedIndexMap.index.addAll(batch);
                 }
             }
-            Logger.info("Indexed [{}] records for fields: {}", recordCount.get(), indexFieldMap.keySet());
+            Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
+                    dataPath);
         } finally {
             openIndexes.forEach((indexPath, sharedIndexMap) -> sharedIndexMap.close());
         }
