@@ -1958,7 +1958,10 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index, excludedKeys);
+            if (remainingSearches.isEmpty())
+                searchResult = indexedSearch(indexedSearch, sharedIndexMap.index, excludedKeys);
+            else
+                searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexMap.close();
                 return Collections.emptyMap();
