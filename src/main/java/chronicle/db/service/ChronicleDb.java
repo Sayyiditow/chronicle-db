@@ -5,13 +5,18 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.tinylog.Logger;
@@ -30,6 +35,15 @@ public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
     private static final ConcurrentMap<String, SharedChronicleMap> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService syncScheduler; // Scheduler for periodic sync
+
+    // Private constructor to initialize the scheduler
+    private ChronicleDb() {
+        // Initialize scheduler with a single thread
+        syncScheduler = Executors.newScheduledThreadPool(1);
+        // Start periodic sync task
+        startPeriodicSync();
+    }
 
     public static class SharedChronicleMap<K, V> implements AutoCloseable {
         public final ChronicleMap<K, V> map;
@@ -58,6 +72,30 @@ public final class ChronicleDb {
                 return entry; // Keep the entry
             });
         }
+    }
+
+    // Your sync method to flush a specific file to disk
+    private void sync(final String file) throws IOException {
+        try (FileChannel fc = FileChannel.open(Path.of(file), StandardOpenOption.WRITE)) {
+            fc.force(true); // Flush data and metadata
+        }
+    }
+
+    // Start periodic sync for all open Chronicle Maps
+    private void startPeriodicSync() {
+        final Runnable syncTask = () -> {
+            mapCache.forEach((filePath, entry) -> {
+                try {
+                    sync(filePath);
+                    Logger.info("Synced ChronicleMap at [{}]", filePath);
+                } catch (final IOException e) {
+                    Logger.error("Failed to sync ChronicleMap at [{}]", filePath, e);
+                }
+            });
+        };
+
+        // Schedule sync every 60 seconds
+        syncScheduler.scheduleAtFixedRate(syncTask, 0, 60, TimeUnit.SECONDS);
     }
 
     /**
