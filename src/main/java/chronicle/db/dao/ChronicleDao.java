@@ -688,6 +688,54 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    default Map<String, V> get(final Iterable<String> keys, final int limit, final Set<String> excludedKeys)
+            throws Exception {
+        if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, V>(Math.min(1000, limit));
+        final var count = new AtomicInteger(0);
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                for (final var key : keys) {
+                    if (count.get() >= limit)
+                        break;
+                    if (!excludedKeys.contains(key)) {
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null && count.incrementAndGet() <= limit) {
+                            map.put(key, value);
+                        }
+                    }
+                }
+            }
+            return map;
+        }
+
+        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
+            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+
+                try (final var shared = openDb(file)) {
+                    for (final var key : keys) {
+                        if (count.get() >= limit)
+                            break outer;
+                        if (!excludedKeys.contains(key)) {
+                            final var value = shared.map.getUsing(key, using());
+                            if (value != null && count.incrementAndGet() <= limit) {
+                                map.put(key, value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return map;
+    }
+
     /**
      * Remove a value using key
      * 
@@ -1972,10 +2020,7 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexMap = MAP_DB.openIndex(indexPath);
-            if (remainingSearches.isEmpty())
-                searchResult = indexedSearch(indexedSearch, sharedIndexMap.index, excludedKeys);
-            else
-                searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexMap.close();
                 return Collections.emptyMap();
@@ -1983,7 +2028,7 @@ public interface ChronicleDao<V> {
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return get(searchResult.results(), limit);
+                    return get(searchResult.results(), limit, excludedKeys);
                 } finally {
                     sharedIndexMap.close();
                 }
