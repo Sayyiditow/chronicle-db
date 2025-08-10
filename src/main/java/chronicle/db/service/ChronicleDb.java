@@ -75,9 +75,13 @@ public final class ChronicleDb {
     }
 
     // Your sync method to flush a specific file to disk
-    private void sync(final String file) throws IOException {
+    public void sync(final String file) {
         try (FileChannel fc = FileChannel.open(Path.of(file), StandardOpenOption.WRITE)) {
             fc.force(true); // Flush data and metadata
+            Logger.info("Synced ChronicleMap at [{}]", file);
+        } catch (final IOException e) {
+            Logger.error("Sync failed for ChronicleMap [{}].", file);
+            Logger.error(e);
         }
     }
 
@@ -85,12 +89,7 @@ public final class ChronicleDb {
     private void startPeriodicSync() {
         final Runnable syncTask = () -> {
             mapCache.forEach((filePath, entry) -> {
-                try {
-                    sync(filePath);
-                    Logger.info("Synced ChronicleMap at [{}]", filePath);
-                } catch (final IOException e) {
-                    Logger.error("Failed to sync ChronicleMap at [{}]", filePath, e);
-                }
+                sync(filePath);
             });
         };
 

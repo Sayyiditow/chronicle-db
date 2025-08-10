@@ -2,8 +2,12 @@ package chronicle.db.service;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
@@ -12,6 +16,9 @@ import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.mapdb.DB;
@@ -22,14 +29,45 @@ import org.mapdb.Serializer;
 import org.tinylog.Logger;
 
 public final class MapDb {
-    private MapDb() {
-    }
-
     public static final MapDb MAP_DB = new MapDb();
     private static final ConcurrentMap<String, SharedKeyMap> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, SharedIndexMap> treeCache = new ConcurrentHashMap<>();
     private static final byte indexSep = 0x1F;
     private static final byte upperByte = (byte) 0xFF;
+    private final ScheduledExecutorService syncScheduler; // Scheduler for periodic sync
+
+    private MapDb() {
+        // Initialize scheduler with a single thread
+        syncScheduler = Executors.newScheduledThreadPool(1);
+        // Start periodic sync task
+        startPeriodicSync();
+    }
+
+    // Your sync method to flush a specific file to disk
+    public void sync(final String file) {
+        try (FileChannel fc = FileChannel.open(Path.of(file), StandardOpenOption.WRITE)) {
+            fc.force(true); // Flush data and metadata
+            Logger.info("Synced MapDb at [{}]", file);
+        } catch (final IOException e) {
+            Logger.error("Sync failed for MapDb at [{}].", file);
+            Logger.error(e);
+        }
+    }
+
+    // Start periodic sync for all open Chronicle Maps
+    private void startPeriodicSync() {
+        final Runnable syncTask = () -> {
+            mapCache.forEach((filePath, entry) -> {
+                sync(filePath);
+            });
+            treeCache.forEach((filePath, entry) -> {
+                sync(filePath);
+            });
+        };
+
+        // Schedule sync every 60 seconds
+        syncScheduler.scheduleAtFixedRate(syncTask, 0, 60, TimeUnit.SECONDS);
+    }
 
     public static class SharedKeyMap implements AutoCloseable {
         public final HTreeMap<String, String> map;

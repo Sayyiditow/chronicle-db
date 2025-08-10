@@ -271,7 +271,10 @@ public final class ChronicleUtils {
 
         if (db.isEmpty()) {
             Logger.info("DB is empty. Index files created at [{}].", indexDirPath);
-            openIndexes.forEach((indexPath, sharedIndexMap) -> sharedIndexMap.close());
+            openIndexes.forEach((indexPath, sharedIndexMap) -> {
+                MAP_DB.sync(indexPath);
+                sharedIndexMap.close();
+            });
             return;
         }
 
@@ -351,7 +354,10 @@ public final class ChronicleUtils {
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
                     dataPath);
         } finally {
-            openIndexes.forEach((indexPath, sharedIndexMap) -> sharedIndexMap.close());
+            openIndexes.forEach((indexPath, sharedIndexMap) -> {
+                MAP_DB.sync(indexPath);
+                sharedIndexMap.close();
+            });
         }
     }
 
@@ -428,7 +434,10 @@ public final class ChronicleUtils {
                 }
             }
         } finally {
-            openIndexes.forEach((path, sharedIndexMap) -> sharedIndexMap.close());
+            openIndexes.forEach((path, sharedIndexMap) -> {
+                MAP_DB.sync(path);
+                sharedIndexMap.close();
+            });
         }
     }
 
@@ -566,7 +575,10 @@ public final class ChronicleUtils {
                     Logger.info("Updated [{}] records for index: [{}]", recordCount, indexName);
             }
         } finally {
-            openIndexes.forEach((path, sharedIndexMap) -> sharedIndexMap.close());
+            openIndexes.forEach((path, sharedIndexMap) -> {
+                MAP_DB.sync(path);
+                sharedIndexMap.close();
+            });
         }
     }
 
