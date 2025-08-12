@@ -2176,7 +2176,7 @@ public interface ChronicleDao<V> {
 
     default void truncate() throws IOException {
         deleteDataFiles();
-        deleteDataFiles();
+        deleteIndexes();
     }
 
     default boolean exists(final String key) throws IOException {
