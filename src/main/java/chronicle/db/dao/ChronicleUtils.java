@@ -244,7 +244,6 @@ public final class ChronicleUtils {
     public <K, V> void index(final ChronicleMap<K, V> db, final String dbName, final Set<String> fields,
             final String dataPath, final String indexDirPath, final Class<?> valueClass,
             final Map<String, Set<Object>> exclusions) {
-        Logger.info("Indexing {} at [{}].", fields, dataPath);
         final int BATCH_SIZE = 100_000;
 
         final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -358,6 +357,7 @@ public final class ChronicleUtils {
                 MAP_DB.sync(indexPath);
                 sharedIndexMap.close();
             });
+            Logger.info("Indexing {} at [{}] complete.", fields, dataPath);
         }
     }
 
