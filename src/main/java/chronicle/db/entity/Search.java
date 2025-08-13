@@ -54,4 +54,8 @@ public record Search(String field, SearchType searchType, Object searchTerm, int
     public Search withSkipIndex(final boolean skip) {
         return new Search(this.field, this.searchType, this.searchTerm, this.limit, skip);
     }
+
+    public Search withLimit(final int limit) {
+        return new Search(this.field, this.searchType, this.searchTerm, limit, this.skipIndex);
+    }
 }
