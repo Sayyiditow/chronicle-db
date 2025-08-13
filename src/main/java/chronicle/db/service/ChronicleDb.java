@@ -14,9 +14,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.tinylog.Logger;
@@ -35,14 +32,8 @@ public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
     private static final ConcurrentMap<String, SharedChronicleMap> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService syncScheduler; // Scheduler for periodic sync
 
-    // Private constructor to initialize the scheduler
     private ChronicleDb() {
-        // Initialize scheduler with a single thread
-        syncScheduler = Executors.newScheduledThreadPool(1);
-        // Start periodic sync task
-        startPeriodicSync();
     }
 
     public static class SharedChronicleMap<K, V> implements AutoCloseable {
@@ -83,18 +74,6 @@ public final class ChronicleDb {
             Logger.error("Sync failed for ChronicleMap [{}].", file);
             Logger.error(e);
         }
-    }
-
-    // Start periodic sync for all open Chronicle Maps
-    private void startPeriodicSync() {
-        final Runnable syncTask = () -> {
-            mapCache.forEach((filePath, entry) -> {
-                sync(filePath);
-            });
-        };
-
-        // Schedule sync every 60 seconds
-        syncScheduler.scheduleAtFixedRate(syncTask, 0, 60, TimeUnit.SECONDS);
     }
 
     /**

@@ -16,9 +16,6 @@ import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.mapdb.DB;
@@ -34,13 +31,8 @@ public final class MapDb {
     private static final ConcurrentMap<String, SharedIndexMap> treeCache = new ConcurrentHashMap<>();
     private static final byte indexSep = 0x1F;
     private static final byte upperByte = (byte) 0xFF;
-    private final ScheduledExecutorService syncScheduler; // Scheduler for periodic sync
 
     private MapDb() {
-        // Initialize scheduler with a single thread
-        syncScheduler = Executors.newScheduledThreadPool(1);
-        // Start periodic sync task
-        startPeriodicSync();
     }
 
     // Your sync method to flush a specific file to disk
@@ -52,21 +44,6 @@ public final class MapDb {
             Logger.error("Sync failed for MapDb at [{}].", file);
             Logger.error(e);
         }
-    }
-
-    // Start periodic sync for all open Chronicle Maps
-    private void startPeriodicSync() {
-        final Runnable syncTask = () -> {
-            mapCache.forEach((filePath, entry) -> {
-                sync(filePath);
-            });
-            treeCache.forEach((filePath, entry) -> {
-                sync(filePath);
-            });
-        };
-
-        // Schedule sync every 60 seconds
-        syncScheduler.scheduleAtFixedRate(syncTask, 0, 60, TimeUnit.SECONDS);
     }
 
     public static class SharedKeyMap implements AutoCloseable {
