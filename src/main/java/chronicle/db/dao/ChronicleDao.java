@@ -849,11 +849,11 @@ public interface ChronicleDao<V> {
         return true;
     }
 
-    default void resizeDb(final long newSize) throws IOException {
+    default void resizeDb(final String fileName, final long newSize) throws IOException {
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var dataFilePath = dataPath() + DATA_DIR + DATA_FILE;
-            final var backupDataFilePath = dataPath() + BACKUP_DIR + DATA_FILE;
+            final var dataFilePath = dataPath() + DATA_DIR + fileName;
+            final var backupDataFilePath = dataPath() + BACKUP_DIR + fileName;
             final var tempFileName = "data.tmp";
             final var tempFilePath = dataPath() + DATA_DIR + tempFileName;
             long currentEntrySize = 0;
@@ -867,7 +867,7 @@ public interface ChronicleDao<V> {
                     return;
                 }
 
-                try (final var newShared = openDb(tempFileName, newSize)) {
+                try (final var newShared = openDb(tempFilePath, newSize)) {
                     newShared.map.putAll(shared.map);
                     success = true;
                 }
