@@ -867,7 +867,7 @@ public interface ChronicleDao<V> {
                     return;
                 }
 
-                try (final var newShared = openDb(tempFilePath, newSize)) {
+                try (final var newShared = openDb(tempFileName, newSize)) {
                     newShared.map.putAll(shared.map);
                     success = true;
                 }
