@@ -493,55 +493,39 @@ public final class ChronicleUtils {
                         String newValStr = "";
                         boolean skipAdd = false;
 
-                        {
-                            final StringBuilder newSb = new StringBuilder();
-                            for (final FieldData fd : fieldGetters) {
-                                final Object value = fd.getterHandle.invoke(newVal);
-                                if (value != null) {
-                                    if (excluded != null && excluded.contains(value)) {
-                                        skipAdd = true;
-                                        break;
-                                    }
-                                    newSb.append(value.toString());
+                        final StringBuilder newSb = new StringBuilder();
+                        for (final FieldData fd : fieldGetters) {
+                            final Object value = fd.getterHandle.invoke(newVal);
+                            if (value != null) {
+                                if (excluded != null && excluded.contains(value)) {
+                                    skipAdd = true;
+                                    break;
                                 }
+                                newSb.append(value.toString());
                             }
-                            newValStr = newSb.toString();
                         }
+                        newValStr = newSb.toString();
 
                         String oldValStr = "";
-                        boolean skipRemove = false;
-
                         if (prevVal != null) {
                             final StringBuilder oldSb = new StringBuilder();
                             for (final FieldData fd : fieldGetters) {
                                 final Object value = fd.getterHandle.invoke(prevVal);
                                 if (value != null) {
-                                    if (excluded != null && excluded.contains(value)) {
-                                        skipRemove = true;
-                                        break;
-                                    }
                                     oldSb.append(value.toString());
                                 }
                             }
                             oldValStr = oldSb.toString();
-                        }
 
-                        // If both skipped, continue
-                        if ((prevVal == null && skipAdd) || (prevVal != null && skipAdd && skipRemove)) {
-                            continue;
-                        }
-
-                        if (prevVal == null) {
-                            if (!skipAdd && !newValStr.isEmpty()) {
-                                addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                            }
-                        } else if (!Objects.equals(oldValStr, newValStr)) {
-                            if (!skipRemove && !oldValStr.isEmpty()) {
+                            // Always remove if changed (regardless of exclusion)
+                            if (!Objects.equals(oldValStr, newValStr) && !oldValStr.isEmpty()) {
                                 removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
                             }
-                            if (!skipAdd && !newValStr.isEmpty()) {
-                                addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                            }
+                        }
+
+                        // Add new value only if not excluded
+                        if (!skipAdd && !newValStr.isEmpty()) {
+                            addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                         }
 
                         recordCount++;
