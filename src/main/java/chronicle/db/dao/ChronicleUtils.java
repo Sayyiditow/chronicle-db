@@ -315,7 +315,7 @@ public final class ChronicleUtils {
                             }
                         }
 
-                        if (!shouldSkip && sb.length() > 0) {
+                        if (!shouldSkip) {
                             final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), key.toString());
                             batch.add(indexKey);
                         }
@@ -502,43 +502,36 @@ public final class ChronicleUtils {
 
                         for (final FieldData fd : fieldGetters) {
                             final Object value = fd.getterHandle.invoke(newVal);
-                            if (value != null) {
-                                if (excluded.contains(value)) {
-                                    skipAdd = true;
-                                    break;
-                                }
-                                sb.append(value.toString());
+                            if (excluded.contains(value)) {
+                                skipAdd = true;
+                                break;
                             }
+                            sb.append(String.valueOf(value));
                         }
                         newValStr = sb.toString();
-                        final var newValStrIsNotEmpty = !newValStr.isEmpty();
 
                         String oldValStr = "";
                         if (prevVal != null) {
                             sb.setLength(0);
                             for (final FieldData fd : fieldGetters) {
                                 final Object value = fd.getterHandle.invoke(prevVal);
-                                if (value != null) {
-                                    sb.append(value.toString());
-                                }
+                                sb.append(String.valueOf(value));
                             }
                             oldValStr = sb.toString();
                             final var oldNotSameAsNew = !Objects.equals(oldValStr, newValStr);
 
                             if (oldNotSameAsNew) {
                                 // Always remove if changed (regardless of exclusion)
-                                if (!oldValStr.isEmpty()) {
-                                    removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
-                                }
+                                removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
                                 // Add new value only if not excluded and not empty
-                                if (!skipAdd && newValStrIsNotEmpty) {
+                                if (!skipAdd) {
                                     addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                                 }
                                 recordCount++;
                             }
                         } else {
                             // Add new value only if not excluded
-                            if (!skipAdd && newValStrIsNotEmpty) {
+                            if (!skipAdd) {
                                 addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                                 recordCount++;
                             }
