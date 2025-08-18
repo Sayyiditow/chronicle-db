@@ -2192,7 +2192,7 @@ public interface ChronicleDao<V> {
     }
 
     default Map<String, Boolean> existsMultiple(final Set<String> keys) throws IOException {
-        Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
+        Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
             return getKeyMapExists(keys);
@@ -2212,7 +2212,7 @@ public interface ChronicleDao<V> {
      * Returns only the keys that exist
      */
     default List<String> existsList(final Set<String> keys) throws IOException {
-        Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
+        Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
             return getKeyMapExistsList(keys);
@@ -2234,7 +2234,7 @@ public interface ChronicleDao<V> {
      * Returns only the keys that dont exist
      */
     default List<String> notExistsList(final Set<String> keys) throws IOException {
-        Logger.info("Checking [{}] key(s) existence at [{}].", keys.size(), dataPath());
+        Logger.info("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
             return getKeyMapNotExistsList(keys);
