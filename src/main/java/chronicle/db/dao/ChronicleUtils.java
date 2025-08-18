@@ -511,6 +511,7 @@ public final class ChronicleUtils {
                             }
                         }
                         newValStr = sb.toString();
+                        final var newValStrIsNotEmpty = !newValStr.isEmpty();
 
                         String oldValStr = "";
                         if (prevVal != null) {
@@ -522,19 +523,20 @@ public final class ChronicleUtils {
                                 }
                             }
                             oldValStr = sb.toString();
+                            final var oldNotSameAsNew = !Objects.equals(oldValStr, newValStr);
 
                             // Always remove if changed (regardless of exclusion)
-                            if (!Objects.equals(oldValStr, newValStr) && !oldValStr.isEmpty()) {
+                            if (!oldValStr.isEmpty() && (oldNotSameAsNew || skipAdd)) {
                                 removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
-                                // Add new value only if not excluded
-                                if (!skipAdd && !newValStr.isEmpty()) {
-                                    addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                                }
-                                recordCount++;
                             }
+                            // Add new value only if not excluded and not empty
+                            if (oldNotSameAsNew && !skipAdd && newValStrIsNotEmpty) {
+                                addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                            }
+                            recordCount++;
                         } else {
                             // Add new value only if not excluded
-                            if (!skipAdd && !newValStr.isEmpty()) {
+                            if (!skipAdd && newValStrIsNotEmpty) {
                                 addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                                 recordCount++;
                             }
