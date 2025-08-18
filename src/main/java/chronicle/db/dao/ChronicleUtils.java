@@ -304,8 +304,8 @@ public final class ChronicleUtils {
                         sb.setLength(0);
                         boolean shouldSkip = false;
 
-                        for (int i = 0; i < fieldDataList.size(); i++) {
-                            final Object val = fieldDataList.get(i).getterHandle.invoke(value);
+                        for (final FieldData fd : fieldDataList) {
+                            final Object val = fd.getterHandle.invoke(value);
                             if (val != null) {
                                 if (excluded.contains(val)) {
                                     shouldSkip = true;
