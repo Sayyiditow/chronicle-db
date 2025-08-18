@@ -299,6 +299,8 @@ public final class ChronicleUtils {
                         if (batch == null)
                             continue;
 
+                        final Set<Object> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
+
                         final List<FieldData> fieldDataList = fieldEntry.getValue();
                         final StringBuilder sb = new StringBuilder();
                         boolean shouldSkip = false;
@@ -306,8 +308,7 @@ public final class ChronicleUtils {
                         for (int i = 0; i < fieldDataList.size(); i++) {
                             final Object val = fieldDataList.get(i).getterHandle.invoke(value);
                             if (val != null) {
-                                final Set<Object> excluded = exclusions.get(compoundField);
-                                if (excluded != null && excluded.contains(val)) {
+                                if (excluded.contains(val)) {
                                     shouldSkip = true;
                                     break;
                                 }
@@ -395,7 +396,7 @@ public final class ChronicleUtils {
                 final var sharedIndexMap = openIndexes.get(indexPath);
 
                 final Set<byte[]> keysToRemove = new HashSet<>(values.size());
-                final Set<Object> excludedSet = exclusions.getOrDefault(compoundField, Set.of());
+                final Set<Object> excludedSet = exclusions.getOrDefault(compoundField, Collections.emptySet());
 
                 for (final var e : values.entrySet()) {
                     final K key = e.getKey();
@@ -497,7 +498,7 @@ public final class ChronicleUtils {
                         for (final FieldData fd : fieldGetters) {
                             final Object value = fd.getterHandle.invoke(newVal);
                             if (value != null) {
-                                if (excluded != null && excluded.contains(value)) {
+                                if (excluded.contains(value)) {
                                     skipAdd = true;
                                     break;
                                 }
