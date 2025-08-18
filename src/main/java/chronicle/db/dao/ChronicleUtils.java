@@ -288,6 +288,7 @@ public final class ChronicleUtils {
                 }
             }
 
+            final StringBuilder sb = new StringBuilder();
             db.forEachEntry(entry -> {
                 final K key = entry.key().get();
                 final V value = entry.value().get();
@@ -301,7 +302,7 @@ public final class ChronicleUtils {
 
                         final Set<Object> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
                         final List<FieldData> fieldDataList = fieldEntry.getValue();
-                        final StringBuilder sb = new StringBuilder();
+                        sb.setLength(0);
                         boolean shouldSkip = false;
 
                         for (int i = 0; i < fieldDataList.size(); i++) {
@@ -396,13 +397,14 @@ public final class ChronicleUtils {
 
                 final Set<byte[]> keysToRemove = new HashSet<>(values.size());
                 final Set<Object> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
+                final StringBuilder sb = new StringBuilder();
 
                 for (final var e : values.entrySet()) {
                     final K key = e.getKey();
                     final V value = e.getValue();
 
                     try {
-                        final StringBuilder sb = new StringBuilder();
+                        sb.setLength(0);
                         boolean shouldSkip = false;
 
                         for (final FieldData fd : fieldGetters) {
@@ -482,6 +484,7 @@ public final class ChronicleUtils {
                 int recordCount = 0;
 
                 final Set<Object> excluded = exclusions.getOrDefault(indexName, Set.of());
+                final StringBuilder sb = new StringBuilder();
 
                 for (final var valEntry : values.entrySet()) {
                     final K key = valEntry.getKey();
@@ -489,10 +492,10 @@ public final class ChronicleUtils {
                     final V prevVal = previousValues.get(key);
 
                     try {
+                        sb.setLength(0);
                         String newValStr = "";
                         boolean skipAdd = false;
 
-                        final var sb = new StringBuilder();
                         for (final FieldData fd : fieldGetters) {
                             final Object value = fd.getterHandle.invoke(newVal);
                             if (value != null) {
