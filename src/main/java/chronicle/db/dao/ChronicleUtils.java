@@ -525,15 +525,17 @@ public final class ChronicleUtils {
                             oldValStr = sb.toString();
                             final var oldNotSameAsNew = !Objects.equals(oldValStr, newValStr);
 
-                            // Always remove if changed (regardless of exclusion)
-                            if (!oldValStr.isEmpty() && (oldNotSameAsNew || skipAdd)) {
-                                removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
+                            if (oldNotSameAsNew) {
+                                // Always remove if changed (regardless of exclusion)
+                                if (!oldValStr.isEmpty()) {
+                                    removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
+                                }
+                                // Add new value only if not excluded and not empty
+                                if (!skipAdd && newValStrIsNotEmpty) {
+                                    addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                                }
+                                recordCount++;
                             }
-                            // Add new value only if not excluded and not empty
-                            if (oldNotSameAsNew && !skipAdd && newValStrIsNotEmpty) {
-                                addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                            }
-                            recordCount++;
                         } else {
                             // Add new value only if not excluded
                             if (!skipAdd && newValStrIsNotEmpty) {
