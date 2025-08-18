@@ -271,7 +271,6 @@ public final class ChronicleUtils {
         if (db.isEmpty()) {
             Logger.info("DB is empty. Index files created at [{}].", indexDirPath);
             openIndexes.forEach((indexPath, sharedIndexMap) -> {
-                MAP_DB.sync(indexPath);
                 sharedIndexMap.close();
             });
             return;
@@ -369,6 +368,7 @@ public final class ChronicleUtils {
         }
 
         final Map<String, SharedIndexMap> openIndexes = new HashMap<>();
+        final var pathsToSync = new HashSet<String>();
         try {
             // Step 1: Parse all field getters (supporting compound fields)
             final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -429,6 +429,7 @@ public final class ChronicleUtils {
                 }
 
                 if (!keysToRemove.isEmpty()) {
+                    pathsToSync.add(indexPath);
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
                         sharedIndexMap.index.removeAll(keysToRemove);
@@ -438,7 +439,9 @@ public final class ChronicleUtils {
             }
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
-                MAP_DB.sync(path);
+                if (pathsToSync.contains(path)) {
+                    MAP_DB.sync(path);
+                }
                 sharedIndexMap.close();
             });
         }
@@ -453,6 +456,7 @@ public final class ChronicleUtils {
 
         final int BATCH_SIZE = 100_000;
         final Map<String, SharedIndexMap> openIndexes = new HashMap<>();
+        final var pathsToSync = new HashSet<String>();
 
         try {
             // Step 1: Parse field getters
@@ -526,17 +530,18 @@ public final class ChronicleUtils {
                                 if (!skipAdd && !newValStr.isEmpty()) {
                                     addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                                 }
+                                recordCount++;
                             }
                         } else {
                             // Add new value only if not excluded
                             if (!skipAdd && !newValStr.isEmpty()) {
                                 addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                                recordCount++;
                             }
                         }
 
-                        recordCount++;
-
                         if (addBatch.size() >= BATCH_SIZE || removeBatch.size() >= BATCH_SIZE) {
+                            pathsToSync.add(indexPath);
                             final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                             synchronized (lock) {
                                 sharedIndexMap.index.removeAll(removeBatch);
@@ -545,7 +550,6 @@ public final class ChronicleUtils {
                                 addBatch.clear();
                             }
                         }
-
                     } catch (final Throwable t) {
                         Logger.error("Failed to update index [{}] for key [{}]", indexName, key);
                         Logger.error(t);
@@ -554,6 +558,7 @@ public final class ChronicleUtils {
 
                 // Final flush
                 if (!addBatch.isEmpty() || !removeBatch.isEmpty()) {
+                    pathsToSync.add(indexPath);
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
                         sharedIndexMap.index.removeAll(removeBatch);
@@ -566,7 +571,9 @@ public final class ChronicleUtils {
             }
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
-                MAP_DB.sync(path);
+                if (pathsToSync.contains(path)) {
+                    MAP_DB.sync(path);
+                }
                 sharedIndexMap.close();
             });
         }
