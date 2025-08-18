@@ -300,7 +300,6 @@ public final class ChronicleUtils {
                             continue;
 
                         final Set<Object> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
-
                         final List<FieldData> fieldDataList = fieldEntry.getValue();
                         final StringBuilder sb = new StringBuilder();
                         boolean shouldSkip = false;
@@ -396,7 +395,7 @@ public final class ChronicleUtils {
                 final var sharedIndexMap = openIndexes.get(indexPath);
 
                 final Set<byte[]> keysToRemove = new HashSet<>(values.size());
-                final Set<Object> excludedSet = exclusions.getOrDefault(compoundField, Collections.emptySet());
+                final Set<Object> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
 
                 for (final var e : values.entrySet()) {
                     final K key = e.getKey();
@@ -409,7 +408,7 @@ public final class ChronicleUtils {
                         for (final FieldData fd : fieldGetters) {
                             final Object val = fd.getterHandle.invoke(value);
                             if (val != null) {
-                                if (excludedSet.contains(val)) {
+                                if (excluded.contains(val)) {
                                     shouldSkip = true;
                                     break;
                                 }
@@ -432,6 +431,7 @@ public final class ChronicleUtils {
                     synchronized (lock) {
                         sharedIndexMap.index.removeAll(keysToRemove);
                     }
+                    Logger.info("Removed [{}] records from index: [{}]", keysToRemove.size(), compoundField);
                 }
             }
         } finally {
@@ -477,8 +477,6 @@ public final class ChronicleUtils {
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = dataPath + "/indexes/" + indexName;
                 final var sharedIndexMap = openIndexes.get(indexPath);
-
-                Logger.info("Updating index: [{}]", indexName);
                 final Set<byte[]> addBatch = new HashSet<>(BATCH_SIZE);
                 final Set<byte[]> removeBatch = new HashSet<>(BATCH_SIZE);
                 int recordCount = 0;
@@ -494,7 +492,7 @@ public final class ChronicleUtils {
                         String newValStr = "";
                         boolean skipAdd = false;
 
-                        final StringBuilder newSb = new StringBuilder();
+                        final var sb = new StringBuilder();
                         for (final FieldData fd : fieldGetters) {
                             final Object value = fd.getterHandle.invoke(newVal);
                             if (value != null) {
@@ -502,31 +500,35 @@ public final class ChronicleUtils {
                                     skipAdd = true;
                                     break;
                                 }
-                                newSb.append(value.toString());
+                                sb.append(value.toString());
                             }
                         }
-                        newValStr = newSb.toString();
+                        newValStr = sb.toString();
 
                         String oldValStr = "";
                         if (prevVal != null) {
-                            final StringBuilder oldSb = new StringBuilder();
+                            sb.setLength(0);
                             for (final FieldData fd : fieldGetters) {
                                 final Object value = fd.getterHandle.invoke(prevVal);
                                 if (value != null) {
-                                    oldSb.append(value.toString());
+                                    sb.append(value.toString());
                                 }
                             }
-                            oldValStr = oldSb.toString();
+                            oldValStr = sb.toString();
 
                             // Always remove if changed (regardless of exclusion)
                             if (!Objects.equals(oldValStr, newValStr) && !oldValStr.isEmpty()) {
                                 removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
+                                // Add new value only if not excluded
+                                if (!skipAdd && !newValStr.isEmpty()) {
+                                    addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                                }
                             }
-                        }
-
-                        // Add new value only if not excluded
-                        if (!skipAdd && !newValStr.isEmpty()) {
-                            addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                        } else {
+                            // Add new value only if not excluded
+                            if (!skipAdd && !newValStr.isEmpty()) {
+                                addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                            }
                         }
 
                         recordCount++;
