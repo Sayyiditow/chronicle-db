@@ -255,7 +255,7 @@ public final class ChronicleUtils {
             }
         }
 
-        final Map<String, SharedIndexMap> openIndexes = new HashMap<>();
+        final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
         for (final String field : indexFieldMap.keySet()) {
             final String indexPath = indexDirPath + "/" + field;
             try {
@@ -274,13 +274,13 @@ public final class ChronicleUtils {
         }
 
         try {
-            final Map<String, Set<byte[]>> fieldBatches = new HashMap<>();
+            final Map<String, Set<byte[]>> fieldBatches = new ConcurrentHashMap<>();
             final AtomicInteger recordCount = new AtomicInteger(0);
 
             for (final String field : indexFieldMap.keySet()) {
                 final String indexPath = indexDirPath + "/" + field;
                 if (openIndexes.containsKey(indexPath)) {
-                    fieldBatches.put(field, new HashSet<>(BATCH_SIZE));
+                    fieldBatches.put(field, ConcurrentHashMap.newKeySet(BATCH_SIZE));
                 }
             }
 
@@ -316,19 +316,17 @@ public final class ChronicleUtils {
                         }
                     }
 
-                    recordCount.incrementAndGet();
-
-                    final boolean anyFull = fieldBatches.values().stream().anyMatch(b -> b.size() >= BATCH_SIZE);
-                    if (anyFull) {
-                        for (final Map.Entry<String, Set<byte[]>> batchEntry : fieldBatches.entrySet()) {
+                    if (recordCount.incrementAndGet() % BATCH_SIZE == 0) {
+                        fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
                             final String field = batchEntry.getKey();
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
                                 final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
-                                sharedIndexMap.index.addAll(batch);
+                                final var batchCopy = new HashSet<>(batch); // Snapshot
+                                sharedIndexMap.index.addAll(batchCopy);
                                 batch.clear();
                             }
-                        }
+                        });
                     }
                 } catch (final Throwable e) {
                     Logger.error("Error processing key [{}] for fields {}", key, fields);
@@ -337,14 +335,14 @@ public final class ChronicleUtils {
             });
 
             // Flush remaining
-            for (final Map.Entry<String, Set<byte[]>> batchEntry : fieldBatches.entrySet()) {
+            fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
                 final String field = batchEntry.getKey();
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
                     final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
                     sharedIndexMap.index.addAll(batch);
                 }
-            }
+            });
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
                     dataPath);
         } finally {
@@ -362,8 +360,8 @@ public final class ChronicleUtils {
             return;
         }
 
-        final Map<String, SharedIndexMap> openIndexes = new HashMap<>();
-        final var pathsToSync = new HashSet<String>();
+        final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
+        final var pathsToSync = ConcurrentHashMap.newKeySet();
         try {
             // Step 1: Parse all field getters (supporting compound fields)
             final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -384,7 +382,7 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Remove from each index
-            for (final var entry : indexFieldMap.entrySet()) {
+            indexFieldMap.entrySet().parallelStream().forEach(entry -> {
                 final String compoundField = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = dataPath + "/indexes/" + compoundField;
@@ -429,7 +427,7 @@ public final class ChronicleUtils {
                     }
                     Logger.info("Removed [{}] records from index: [{}]", keysToRemove.size(), compoundField);
                 }
-            }
+            });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
                 if (pathsToSync.contains(path)) {
@@ -448,8 +446,8 @@ public final class ChronicleUtils {
         }
 
         final int BATCH_SIZE = 100_000;
-        final Map<String, SharedIndexMap> openIndexes = new HashMap<>();
-        final var pathsToSync = new HashSet<String>();
+        final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
+        final var pathsToSync = ConcurrentHashMap.newKeySet();
 
         try {
             // Step 1: Parse field getters
@@ -471,7 +469,7 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Update indexes
-            for (final var entry : indexFieldMap.entrySet()) {
+            indexFieldMap.entrySet().parallelStream().forEach(entry -> {
                 final String indexName = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = dataPath + "/indexes/" + indexName;
@@ -558,7 +556,7 @@ public final class ChronicleUtils {
 
                 if (recordCount != 0)
                     Logger.info("Updated [{}] records for index: [{}]", recordCount, indexName);
-            }
+            });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
                 if (pathsToSync.contains(path)) {
