@@ -183,7 +183,7 @@ public final class ChronicleUtils {
                             : null;
             final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
-            final Object currentValue = String.valueOf(fieldData.getterHandle.invoke(value));
+            final Object currentValue = fieldData.getterHandle.invoke(value);
             final boolean match = switch (searchType) {
                 case EQUAL -> currentValue.equals(searchTerm);
                 case NOT_EQUAL -> !currentValue.equals(searchTerm);
