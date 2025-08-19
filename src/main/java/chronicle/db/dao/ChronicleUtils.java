@@ -185,8 +185,8 @@ public final class ChronicleUtils {
 
             final Object currentValue = fieldData.getterHandle.invoke(value);
             final boolean match = switch (searchType) {
-                case EQUAL -> currentValue.equals(searchTerm);
-                case NOT_EQUAL -> !currentValue.equals(searchTerm);
+                case EQUAL -> Objects.equals(currentValue, searchTerm);
+                case NOT_EQUAL -> !Objects.equals(currentValue, searchTerm);
                 case LESS -> compare(currentValue, searchTerm) < 0;
                 case GREATER -> compare(currentValue, searchTerm) > 0;
                 case LESS_OR_EQUAL -> compare(currentValue, searchTerm) <= 0;
