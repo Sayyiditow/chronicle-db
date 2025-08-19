@@ -183,10 +183,7 @@ public final class ChronicleUtils {
                             : null;
             final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
-            final Object currentValue = fieldData.getterHandle.invoke(value);
-            if (currentValue == null)
-                continue;
-
+            final Object currentValue = String.valueOf(fieldData.getterHandle.invoke(value));
             final boolean match = switch (searchType) {
                 case EQUAL -> currentValue.equals(searchTerm);
                 case NOT_EQUAL -> !currentValue.equals(searchTerm);
@@ -305,14 +302,12 @@ public final class ChronicleUtils {
                         boolean shouldSkip = false;
 
                         for (final FieldData fd : fieldDataList) {
-                            final Object val = fd.getterHandle.invoke(value);
-                            if (val != null) {
-                                if (excluded != null && excluded.contains(val)) {
-                                    shouldSkip = true;
-                                    break;
-                                }
-                                sb.append(val.toString());
+                            final var val = String.valueOf(fd.getterHandle.invoke(value));
+                            if (excluded.contains(val)) {
+                                shouldSkip = true;
+                                break;
                             }
+                            sb.append(val.toString());
                         }
 
                         if (!shouldSkip) {
@@ -408,14 +403,12 @@ public final class ChronicleUtils {
                         boolean shouldSkip = false;
 
                         for (final FieldData fd : fieldGetters) {
-                            final Object val = fd.getterHandle.invoke(value);
-                            if (val != null) {
-                                if (excluded != null && excluded.contains(val)) {
-                                    shouldSkip = true;
-                                    break;
-                                }
-                                sb.append(val.toString());
+                            final var val = String.valueOf(fd.getterHandle.invoke(value));
+                            if (excluded.contains(val)) {
+                                shouldSkip = true;
+                                break;
                             }
+                            sb.append(val.toString());
                         }
 
                         if (!shouldSkip && sb.length() > 0) {
@@ -487,7 +480,7 @@ public final class ChronicleUtils {
                 final Set<byte[]> removeBatch = new HashSet<>(BATCH_SIZE);
                 int recordCount = 0;
 
-                final Set<Object> excluded = exclusions.getOrDefault(indexName, Set.of());
+                final Set<Object> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
                 final StringBuilder sb = new StringBuilder();
 
                 for (final var valEntry : values.entrySet()) {
@@ -501,8 +494,8 @@ public final class ChronicleUtils {
                         boolean skipAdd = false;
 
                         for (final FieldData fd : fieldGetters) {
-                            final Object value = fd.getterHandle.invoke(newVal);
-                            if (excluded != null && excluded.contains(value)) {
+                            final var value = String.valueOf(fd.getterHandle.invoke(newVal));
+                            if (excluded.contains(value)) {
                                 skipAdd = true;
                                 break;
                             }
@@ -514,7 +507,7 @@ public final class ChronicleUtils {
                         if (prevVal != null) {
                             sb.setLength(0);
                             for (final FieldData fd : fieldGetters) {
-                                final Object value = fd.getterHandle.invoke(prevVal);
+                                final var value = String.valueOf(fd.getterHandle.invoke(prevVal));
                                 sb.append(String.valueOf(value));
                             }
                             oldValStr = sb.toString();
