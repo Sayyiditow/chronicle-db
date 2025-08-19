@@ -307,7 +307,7 @@ public final class ChronicleUtils {
                         for (final FieldData fd : fieldDataList) {
                             final Object val = fd.getterHandle.invoke(value);
                             if (val != null) {
-                                if (excluded.contains(val)) {
+                                if (excluded != null && excluded.contains(val)) {
                                     shouldSkip = true;
                                     break;
                                 }
@@ -410,7 +410,7 @@ public final class ChronicleUtils {
                         for (final FieldData fd : fieldGetters) {
                             final Object val = fd.getterHandle.invoke(value);
                             if (val != null) {
-                                if (excluded.contains(val)) {
+                                if (excluded != null && excluded.contains(val)) {
                                     shouldSkip = true;
                                     break;
                                 }
@@ -502,7 +502,7 @@ public final class ChronicleUtils {
 
                         for (final FieldData fd : fieldGetters) {
                             final Object value = fd.getterHandle.invoke(newVal);
-                            if (excluded.contains(value)) {
+                            if (excluded != null && excluded.contains(value)) {
                                 skipAdd = true;
                                 break;
                             }
