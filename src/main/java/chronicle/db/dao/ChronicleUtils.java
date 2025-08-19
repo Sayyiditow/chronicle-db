@@ -307,7 +307,7 @@ public final class ChronicleUtils {
                                 shouldSkip = true;
                                 break;
                             }
-                            sb.append(val.toString());
+                            sb.append(val);
                         }
 
                         if (!shouldSkip) {
@@ -408,7 +408,7 @@ public final class ChronicleUtils {
                                 shouldSkip = true;
                                 break;
                             }
-                            sb.append(val.toString());
+                            sb.append(val);
                         }
 
                         if (!shouldSkip && sb.length() > 0) {
@@ -499,7 +499,7 @@ public final class ChronicleUtils {
                                 skipAdd = true;
                                 break;
                             }
-                            sb.append(String.valueOf(value));
+                            sb.append(value);
                         }
                         newValStr = sb.toString();
 
@@ -508,7 +508,7 @@ public final class ChronicleUtils {
                             sb.setLength(0);
                             for (final FieldData fd : fieldGetters) {
                                 final var value = String.valueOf(fd.getterHandle.invoke(prevVal));
-                                sb.append(String.valueOf(value));
+                                sb.append(value);
                             }
                             oldValStr = sb.toString();
                             final var oldNotSameAsNew = !Objects.equals(oldValStr, newValStr);
