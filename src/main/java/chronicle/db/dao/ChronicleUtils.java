@@ -322,8 +322,7 @@ public final class ChronicleUtils {
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
                                 final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
-                                final var batchCopy = new HashSet<>(batch); // Snapshot
-                                sharedIndexMap.index.addAll(batchCopy);
+                                sharedIndexMap.index.addAll(batch);
                                 batch.clear();
                             }
                         });
@@ -412,7 +411,9 @@ public final class ChronicleUtils {
                     pathsToSync.add(indexPath);
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
-                        sharedIndexMap.index.removeAll(keysToRemove);
+                        keysToRemove.parallelStream().forEach(key -> {
+                            sharedIndexMap.index.remove(key);
+                        });
                     }
                     Logger.info("Removed [{}] records from index: [{}]", keysToRemove.size(), compoundField);
                 }
@@ -517,7 +518,9 @@ public final class ChronicleUtils {
                             pathsToSync.add(indexPath);
                             final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                             synchronized (lock) {
-                                sharedIndexMap.index.removeAll(removeBatch);
+                                removeBatch.parallelStream().forEach(remove -> {
+                                    sharedIndexMap.index.remove(remove);
+                                });
                                 sharedIndexMap.index.addAll(addBatch);
                                 removeBatch.clear();
                                 addBatch.clear();
@@ -534,7 +537,9 @@ public final class ChronicleUtils {
                     pathsToSync.add(indexPath);
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
-                        sharedIndexMap.index.removeAll(removeBatch);
+                        removeBatch.parallelStream().forEach(remove -> {
+                            sharedIndexMap.index.remove(remove);
+                        });
                         sharedIndexMap.index.addAll(addBatch);
                     }
                 }
