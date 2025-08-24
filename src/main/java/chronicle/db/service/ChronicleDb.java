@@ -5,11 +5,9 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
-import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -62,17 +60,6 @@ public final class ChronicleDb {
                 }
                 return entry; // Keep the entry
             });
-        }
-    }
-
-    // Your sync method to flush a specific file to disk
-    public void sync(final String file) {
-        try (FileChannel fc = FileChannel.open(Path.of(file), StandardOpenOption.WRITE)) {
-            fc.force(true); // Flush data and metadata
-            Logger.info("Synced ChronicleMap at [{}]", file);
-        } catch (final IOException e) {
-            Logger.error("Sync failed for ChronicleMap [{}].", file);
-            Logger.error(e);
         }
     }
 

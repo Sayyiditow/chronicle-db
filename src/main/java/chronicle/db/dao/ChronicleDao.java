@@ -453,28 +453,24 @@ public interface ChronicleDao<V> {
     private void removeFromKeyMap(final String key) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.remove(key);
-            CHRONICLE_DB.sync(getKeyMapPath());
         }
     }
 
     private void removeAllFromKeyMap(final Set<String> keys) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.keySet().removeAll(keys);
-            CHRONICLE_DB.sync(getKeyMapPath());
         }
     }
 
     private void addToKeyMap(final String key, final String file) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.put(key, file);
-            CHRONICLE_DB.sync(getKeyMapPath());
         }
     }
 
     private void addToKeyMap(final Map<String, String> map) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.putAll(map);
-            CHRONICLE_DB.sync(getKeyMapPath());
         }
     }
 
@@ -759,7 +755,6 @@ public interface ChronicleDao<V> {
         synchronized (keyLock) {
             try (final var shared = openDb(file)) {
                 value = shared.map.remove(key);
-                CHRONICLE_DB.sync(dataPath() + DATA_DIR + file);
             }
         }
 
@@ -807,7 +802,6 @@ public interface ChronicleDao<V> {
                             deletedMap.put(key, deleted);
                         }
                     }
-                    CHRONICLE_DB.sync(dataPath() + DATA_DIR + DATA_FILE);
                 }
             }
 
@@ -833,7 +827,6 @@ public interface ChronicleDao<V> {
                         for (final String key : entry.getValue()) {
                             deletedMap.put(key, shared.map.remove(key));
                         }
-                        CHRONICLE_DB.sync(dataPath() + DATA_DIR + file);
                     }
                 }
             }
@@ -952,7 +945,6 @@ public interface ChronicleDao<V> {
                 }
                 prevValue = shared.map.put(key, value);
             } finally {
-                CHRONICLE_DB.sync(dataPath() + DATA_DIR + file);
                 shared.close();
             }
         }
@@ -1004,7 +996,6 @@ public interface ChronicleDao<V> {
                     status = PutStatus.UPDATED;
                     prevValue = shared.map.put(key, value);
                 }
-                CHRONICLE_DB.sync(dataPath() + DATA_DIR + file);
             }
         }
 
@@ -1057,7 +1048,6 @@ public interface ChronicleDao<V> {
                 shared = checkAndRotate(shared);
                 shared.map.put(key, value);
             } finally {
-                CHRONICLE_DB.sync(dataPath() + DATA_DIR + getDataFileState().currentFile());
                 shared.close();
             }
         }
@@ -1108,7 +1098,6 @@ public interface ChronicleDao<V> {
                                 prevValues.put(key, prevValue);
                             }
                         }
-                        CHRONICLE_DB.sync(dataPath() + DATA_DIR + file);
                     }
                 }
             }
@@ -1130,7 +1119,6 @@ public interface ChronicleDao<V> {
                         }
                     }
                 } finally {
-                    CHRONICLE_DB.sync(dataPath() + DATA_DIR + getDataFileState().currentFile());
                     shared.close();
                 }
             }
@@ -1173,7 +1161,6 @@ public interface ChronicleDao<V> {
                         for (final String key : entry.getValue()) {
                             prevValues.put(key, shared.map.put(key, map.get(key)));
                         }
-                        CHRONICLE_DB.sync(dataPath() + DATA_DIR + file);
                     }
                 }
             }
@@ -1224,7 +1211,6 @@ public interface ChronicleDao<V> {
                     }
                 }
             } finally {
-                CHRONICLE_DB.sync(dataPath() + DATA_DIR + getDataFileState().currentFile());
                 shared.close();
             }
         }

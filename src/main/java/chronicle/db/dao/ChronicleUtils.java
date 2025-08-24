@@ -346,7 +346,7 @@ public final class ChronicleUtils {
                     dataPath);
         } finally {
             openIndexes.forEach((indexPath, sharedIndexMap) -> {
-                MAP_DB.sync(indexPath);
+                sharedIndexMap.commit();
                 sharedIndexMap.close();
             });
             Logger.info("Indexing {} at [{}] complete.", fields, dataPath);
@@ -421,7 +421,7 @@ public final class ChronicleUtils {
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
                 if (pathsToSync.contains(path)) {
-                    MAP_DB.sync(path);
+                    sharedIndexMap.commit();
                 }
                 sharedIndexMap.close();
             });
@@ -550,7 +550,7 @@ public final class ChronicleUtils {
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
                 if (pathsToSync.contains(path)) {
-                    MAP_DB.sync(path);
+                    sharedIndexMap.commit();
                 }
                 sharedIndexMap.close();
             });

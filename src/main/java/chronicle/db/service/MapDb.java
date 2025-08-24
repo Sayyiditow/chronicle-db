@@ -2,12 +2,8 @@ package chronicle.db.service;
 
 import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
@@ -33,17 +29,6 @@ public final class MapDb {
     private static final byte upperByte = (byte) 0xFF;
 
     private MapDb() {
-    }
-
-    // Your sync method to flush a specific file to disk
-    public void sync(final String file) {
-        try (FileChannel fc = FileChannel.open(Path.of(file), StandardOpenOption.WRITE)) {
-            fc.force(true); // Flush data and metadata
-            Logger.info("Synced MapDb at [{}]", file);
-        } catch (final IOException e) {
-            Logger.error("Sync failed for MapDb at [{}].", file);
-            Logger.error(e);
-        }
     }
 
     public static class SharedKeyMap implements AutoCloseable {
@@ -103,6 +88,10 @@ public final class MapDb {
                 }
                 return entry; // Keep the entry
             });
+        }
+
+        public void commit() {
+            this.db.commit();
         }
     }
 
@@ -188,6 +177,7 @@ public final class MapDb {
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable()
+                        .transactionEnable()
                         .make();
                 final var tree = db.treeSet("index")
                         .serializer(Serializer.BYTE_ARRAY)
