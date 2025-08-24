@@ -773,14 +773,13 @@ public interface ChronicleDao<V> {
 
         final var indexFileNames = indexFileNames();
         CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                averageValue().getClass(), indexExclusions());
+                averageValue().getClass());
         return true;
     }
 
     private void removeFromIndex(final Map<String, V> deletedMap) throws IOException {
         Logger.info("{} record(s) deleted at [{}].", deletedMap.size(), dataPath());
-        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap, averageValue().getClass(),
-                indexExclusions());
+        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap, averageValue().getClass());
     }
 
     /**

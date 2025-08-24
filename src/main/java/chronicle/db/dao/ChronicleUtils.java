@@ -355,7 +355,7 @@ public final class ChronicleUtils {
     }
 
     public <K, V> void removeFromIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<K, V> values, final Class<?> valueClass, final Map<String, Set<Object>> exclusions) {
+            final Map<K, V> values, final Class<?> valueClass) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
@@ -389,7 +389,6 @@ public final class ChronicleUtils {
                 final var sharedIndexMap = openIndexes.get(indexPath);
 
                 final Set<byte[]> keysToRemove = new HashSet<>(values.size());
-                final Set<Object> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
                 final StringBuilder sb = new StringBuilder();
 
                 for (final var e : values.entrySet()) {
@@ -398,21 +397,11 @@ public final class ChronicleUtils {
 
                     try {
                         sb.setLength(0);
-                        boolean shouldSkip = false;
-
                         for (final FieldData fd : fieldGetters) {
                             final var val = String.valueOf(fd.getterHandle.invoke(value));
-                            if (excluded.contains(val)) {
-                                shouldSkip = true;
-                                break;
-                            }
                             sb.append(val);
                         }
-
-                        if (!shouldSkip && sb.length() > 0) {
-                            final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), key.toString());
-                            keysToRemove.add(indexKey);
-                        }
+                        keysToRemove.add(MAP_DB.createIndexKey(sb.toString(), key.toString()));
                     } catch (final Throwable t) {
                         Logger.error("Failed to generate key for [{}] in [{}]", key, compoundField);
                         Logger.error(t);
@@ -488,30 +477,26 @@ public final class ChronicleUtils {
 
                     try {
                         sb.setLength(0);
-                        String newValStr = "";
                         boolean skipAdd = false;
 
                         for (final FieldData fd : fieldGetters) {
                             final var value = String.valueOf(fd.getterHandle.invoke(newVal));
                             if (excluded.contains(value)) {
                                 skipAdd = true;
-                                break;
                             }
                             sb.append(value);
                         }
-                        newValStr = sb.toString();
+                        final var newValStr = sb.toString();
 
-                        String oldValStr = "";
                         if (prevVal != null) {
                             sb.setLength(0);
                             for (final FieldData fd : fieldGetters) {
                                 final var value = String.valueOf(fd.getterHandle.invoke(prevVal));
                                 sb.append(value);
                             }
-                            oldValStr = sb.toString();
-                            final var oldNotSameAsNew = !Objects.equals(oldValStr, newValStr);
+                            final var oldValStr = sb.toString();
 
-                            if (oldNotSameAsNew) {
+                            if (!Objects.equals(oldValStr, newValStr)) {
                                 // Always remove if changed (regardless of exclusion)
                                 removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
                                 // Add new value only if not excluded and not empty
