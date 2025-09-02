@@ -306,6 +306,20 @@ public interface ChronicleDao<V> {
         }
     }
 
+    default void refreshKeyMap() {
+        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+        synchronized (lock) {
+            final var dataFileState = getDataFileState();
+            if (dataFileState.fileNames().size() > 1) {
+                Logger.info("Refreshing KeyMap at [{}]", dataPath());
+                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+                    sharedKeyMap.map.clear();
+                    populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
+                }
+            }
+        }
+    }
+
     default List<String> availableIndexes() throws IOException {
         return CHRONICLE_UTILS.getFileList(dataPath() + INDEX_DIR);
     }
