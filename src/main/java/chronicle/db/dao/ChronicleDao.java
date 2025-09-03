@@ -209,6 +209,12 @@ public interface ChronicleDao<V> {
         }
     }
 
+    default void deleteDataFiles() throws IOException {
+        for (final var file : getDataFileState().fileNames()) {
+            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
+        }
+    }
+
     /**
      * Delete and rerun all indexes. Faster when inserting a lot of records.
      * 
@@ -2166,16 +2172,12 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default void deleteDataFiles() throws IOException {
-        Logger.info("Dropping database at [{}].", dataPath());
-        for (final var file : getDataFileState().fileNames()) {
-            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
-        }
-    }
-
     default void truncate() throws IOException {
+        Logger.info("Dropping database at [{}].", dataPath());
+        backup();
         deleteDataFiles();
         deleteIndexes();
+        CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
     }
 
     default boolean exists(final String key) throws IOException {
