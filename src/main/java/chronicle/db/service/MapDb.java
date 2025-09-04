@@ -5,6 +5,7 @@ import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.NavigableSet;
@@ -263,11 +264,14 @@ public final class MapDb {
     }
 
     public int fastCount(final Iterable<String> result, final int limit) {
+        if (result instanceof final Collection<?> collection) {
+            return Math.min(collection.size(), limit);
+        }
+
         int count = 0;
         for (@SuppressWarnings("unused")
         final var ignored : result) {
-            count++;
-            if (count == limit) {
+            if (++count == limit) {
                 break;
             }
         }
