@@ -822,17 +822,18 @@ public final class ChronicleUtils {
         final var iterator = iterable.iterator();
         final var iteratorLock = new Object();
         final var futures = new ArrayList<Future<?>>();
+        final var batchSize = 100;
 
         try {
             // Spawn consumer threads
-            final int consumerThreads = Math.min(processors, 4); // Limit to reduce contention
+            final int consumerThreads = Math.min(processors, 8); // Limit to reduce contention
             for (int i = 0; i < consumerThreads; i++) {
                 futures.add(executor.submit(() -> {
-                    final var batch = new ArrayList<T>(100);
+                    final var batch = new ArrayList<T>(batchSize);
                     while (!done.get() && matchCounter.get() < limit) {
                         batch.clear();
                         synchronized (iteratorLock) {
-                            for (int j = 0; j < 100 && iterator.hasNext(); j++) {
+                            for (int j = 0; j < batchSize && iterator.hasNext(); j++) {
                                 batch.add(iterator.next());
                             }
                         }
