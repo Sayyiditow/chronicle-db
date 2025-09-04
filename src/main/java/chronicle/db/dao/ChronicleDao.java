@@ -1439,7 +1439,7 @@ public interface ChronicleDao<V> {
         final AtomicInteger counter = new AtomicInteger(0);
         try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
             for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.sum() > limit)
+                if (count.sum() >= limit)
                     break;
 
                 final var file = entry.getKey();
@@ -1626,7 +1626,7 @@ public interface ChronicleDao<V> {
                     }
                 }
 
-                if (count.incrementAndGet() > limit) {
+                if (count.incrementAndGet() >= limit) {
                     return false; // Strict limit enforcement
                 }
             } catch (final Throwable e) {
