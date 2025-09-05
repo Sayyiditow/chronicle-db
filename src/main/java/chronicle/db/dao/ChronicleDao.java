@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -507,11 +508,15 @@ public interface ChronicleDao<V> {
     }
 
     private Set<String> getKeyMapKeys() {
-        final var keys = new HashSet<String>();
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            keys.addAll(sharedKeyMap.map.keySet());
+            return new HashSet<>(sharedKeyMap.map.keySet());
         }
-        return keys;
+    }
+
+    private List<String> getKeyMapKeysList() {
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            return new ArrayList<>(sharedKeyMap.map.keySet());
+        }
     }
 
     private Map<String, Boolean> getKeyMapExists(final Set<String> keys) {
@@ -583,15 +588,23 @@ public interface ChronicleDao<V> {
      * @return Set<String>
      */
     default Set<String> fetchKeys() {
-        final Set<String> result = new HashSet<>(10_000);
         if (getDataFileState().fileNames().size() > 1) {
             return getKeyMapKeys();
         }
         try (final var shared = openDb()) {
-            result.addAll(shared.map.keySet());
+            Logger.info("Fetching [{}] keys at [{}].", shared.map.size(), dataPath());
+            return new HashSet<>(shared.map.keySet());
         }
-        Logger.info("Fetched [{}] keys at [{}].", result.size(), dataPath());
-        return result;
+    }
+
+    default List<String> fetchKeysList() {
+        if (getDataFileState().fileNames().size() > 1) {
+            return getKeyMapKeysList();
+        }
+        try (final var shared = openDb()) {
+            Logger.info("Fetching [{}] keys at [{}].", shared.map.size(), dataPath());
+            return new ArrayList<>(shared.map.keySet());
+        }
     }
 
     /**
@@ -1506,7 +1519,8 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters, final List<String> result) {
+    private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
+            final Collection<String> result) {
         Logger.info("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
         final var valueClass = averageValue().getClass();
 
@@ -1572,8 +1586,8 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private List<String> searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
-            final Set<String> excludedKeys, final List<String> result) {
+    private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
+            final Set<String> excludedKeys, final Collection<String> result) {
         Logger.info("Searching DB keys at [{}] using [{}] filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final var valueClass = averageValue().getClass();
@@ -1603,8 +1617,6 @@ public interface ChronicleDao<V> {
             }
             return true;
         });
-
-        return result;
     }
 
     private int searchCount(final ChronicleMap<String, V> db, final List<Search> filters, final int limit) {
@@ -1812,6 +1824,11 @@ public interface ChronicleDao<V> {
                 .collect(Collectors.toList());
     }
 
+    default Set<String> toSetOfKeys(final Iterable<String> keys) {
+        return StreamSupport.stream(keys.spliterator(), true)
+                .collect(Collectors.toSet());
+    }
+
     private <T> boolean isResultEmpty(final Iterable<T> result) {
         return result == null || !result.iterator().hasNext();
     }
@@ -1827,7 +1844,18 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default List<String> indexedSearchKeys(final Search search) throws Exception {
+    default Set<String> indexedSearchKeys(final Search search) throws Exception {
+        final String indexPath = getIndexPath(search.field());
+        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
+            final var searchResult = indexedSearch(search, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                return Collections.emptySet();
+            }
+            return toSetOfKeys(searchResult.results());
+        }
+    }
+
+    default List<String> indexedSearchKeysList(final Search search) throws Exception {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
             final var searchResult = indexedSearch(search, sharedIndexMap.index);
@@ -1849,7 +1877,18 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default List<String> indexedSearchKeys(final Search search, final Set<String> excludedKeys) throws Exception {
+    default Set<String> indexedSearchKeys(final Search search, final Set<String> excludedKeys) throws Exception {
+        final String indexPath = getIndexPath(search.field());
+        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
+            final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
+            if (isResultEmpty(searchResult.results())) {
+                return Collections.emptySet();
+            }
+            return toSetOfKeys(searchResult.results());
+        }
+    }
+
+    default List<String> indexedSearchKeysList(final Search search, final Set<String> excludedKeys) throws Exception {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
             final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
@@ -1893,7 +1932,17 @@ public interface ChronicleDao<V> {
         return result;
     }
 
-    default List<String> searchKeys(final List<Search> searches) throws IOException {
+    default Set<String> searchKeys(final List<Search> searches) throws IOException {
+        final Set<String> result = ConcurrentHashMap.newKeySet();
+        getDataFileState().fileNames().parallelStream().forEach(file -> {
+            try (final var shared = openDb(file)) {
+                searchKeys(shared.map, searches, result);
+            }
+        });
+        return result;
+    }
+
+    default List<String> searchKeysList(final List<Search> searches) throws IOException {
         final List<String> result = Collections.synchronizedList(new ArrayList<>());
         getDataFileState().fileNames().parallelStream().forEach(file -> {
             try (final var shared = openDb(file)) {
@@ -1920,7 +1969,18 @@ public interface ChronicleDao<V> {
         return result;
     }
 
-    default List<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) throws IOException {
+    default Set<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) throws IOException {
+        final Set<String> result = ConcurrentHashMap.newKeySet();
+        getDataFileState().fileNames().parallelStream().forEach(file -> {
+            try (final var shared = openDb(file)) {
+                searchKeys(shared.map, searches, excludedKeys, result);
+            }
+        });
+        return result;
+    }
+
+    default List<String> searchKeysList(final List<Search> searches, final Set<String> excludedKeys)
+            throws IOException {
         final List<String> result = Collections.synchronizedList(new ArrayList<>());
         getDataFileState().fileNames().parallelStream().forEach(file -> {
             try (final var shared = openDb(file)) {

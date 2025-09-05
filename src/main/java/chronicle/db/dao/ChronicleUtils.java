@@ -804,6 +804,23 @@ public final class ChronicleUtils {
         return limitedSet;
     }
 
+    public <K> List<K> limitListValues(final List<K> sourceData, final int limit) {
+        if (sourceData.size() <= limit) {
+            return sourceData;
+        }
+
+        final var limitedList = new ArrayList<K>();
+        int count = 0;
+        for (final var key : sourceData) {
+            if (count >= limit) {
+                break;
+            }
+            limitedList.add(key);
+            count++;
+        }
+        return limitedList;
+    }
+
     public void parallelIterable(final Iterable<String> iterable, final int limit, final Predicate<String> action)
             throws InterruptedException {
         final AtomicInteger matchCounter = new AtomicInteger(0);
