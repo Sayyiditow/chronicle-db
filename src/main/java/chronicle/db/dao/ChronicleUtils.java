@@ -717,7 +717,7 @@ public final class ChronicleUtils {
      * @throws NoSuchMethodException
      * @throws ClassNotFoundException
      */
-    public <K, V> Map<K, Object> moveRecords(final Map<K, V> currentValues,
+    public <K, V> Map<K, Object> moveRecords(final ChronicleMap<K, V> currentValues, final String fromObjectClass,
             final String toObjectClass, final Map<String, String> move, final Map<String, Object> def)
             throws SecurityException, InstantiationException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException, NoSuchMethodException, ClassNotFoundException {
@@ -725,26 +725,25 @@ public final class ChronicleUtils {
             return new HashMap<>(); // Early exit
 
         final Map<K, Object> map = new HashMap<>(currentValues.size()); // Pre-size map
+        final Class<?> sourceCls = Class.forName(fromObjectClass);
         final Class<?> cls = Class.forName(toObjectClass);
         final Constructor<?> constructor = cls.getConstructor();
-        final V sampleValue = currentValues.values().iterator().next();
-        final Field[] fields = sampleValue.getClass().getDeclaredFields();
-        final Object newInstance = constructor.newInstance(); // Pre-instantiate once
-        final Field[] newFields = newInstance.getClass().getDeclaredFields();
+        final Field[] fields = sourceCls.getDeclaredFields();
+        final Field[] newFields = cls.getDeclaredFields();
         final Set<Field> newFieldsSet = new HashSet<>(Arrays.asList(newFields)); // Faster lookup
         newFieldsSet.removeAll(Arrays.asList(fields));
 
-        for (final var entry : currentValues.entrySet()) {
-            final K key = entry.getKey();
-            final V currentVal = entry.getValue();
-            final Object newObj = constructor.newInstance();
+        currentValues.forEachEntry(entry -> {
+            try {
+                final K key = entry.key().get();
+                final V currentVal = entry.value().get();
+                final Object newObj = constructor.newInstance();
 
-            for (final Field field : fields) {
-                final String fieldName = field.getName();
-                final String destFieldName = move.getOrDefault(fieldName, fieldName); // Faster than null check
-                final Object defValue = def.get(fieldName);
+                for (final Field field : fields) {
+                    final String fieldName = field.getName();
+                    final String destFieldName = move.getOrDefault(fieldName, fieldName); // Faster than null check
+                    final Object defValue = def.get(fieldName);
 
-                try {
                     final Field f2 = newObj.getClass().getField(destFieldName);
                     final var f2Type = f2.getType();
                     final Object fieldVal = field.get(currentVal);
@@ -752,20 +751,23 @@ public final class ChronicleUtils {
                             ? (f2Type.isEnum() ? toEnum(f2Type, defValue) : defValue)
                             : (f2Type.isEnum() && fieldVal != null ? toEnum(f2Type, fieldVal) : fieldVal);
                     f2.set(newObj, value);
-                } catch (final NoSuchFieldException e) {
                 }
-            }
 
-            for (final Field field : newFieldsSet) { // Use Set for iteration
-                final Object defValue = def.get(field.getName());
-                if (defValue != null) {
-                    final var fieldType = field.getType();
-                    final var value = fieldType.isEnum() ? toEnum(fieldType, defValue) : defValue;
-                    field.set(newObj, value);
+                for (final Field field : newFieldsSet) { // Use Set for iteration
+                    final Object defValue = def.get(field.getName());
+                    if (defValue != null) {
+                        final var fieldType = field.getType();
+                        final var value = fieldType.isEnum() ? toEnum(fieldType, defValue) : defValue;
+                        field.set(newObj, value);
+                    }
                 }
+                map.put(key, newObj);
+            } catch (final NoSuchFieldException | IllegalArgumentException | IllegalAccessException
+                    | InstantiationException | InvocationTargetException e) {
+                Logger.error("Error during migration for [{}]", toObjectClass);
+                Logger.error(e);
             }
-            map.put(key, newObj);
-        }
+        });
 
         return map;
     }
