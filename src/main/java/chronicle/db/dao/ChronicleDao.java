@@ -1049,7 +1049,7 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Add a value, will not check if it exists
+     * Add a value, will not return failed if it exists
      * 
      * @param key   the key
      * @param value the value
@@ -1059,6 +1059,10 @@ public interface ChronicleDao<V> {
     default PutStatus insert(final String key, final V value, final Set<String> indexFileNames)
             throws IOException {
         if (key == null) {
+            return PutStatus.FAILED;
+        }
+
+        if (exists(key)) {
             return PutStatus.FAILED;
         }
 
@@ -1217,7 +1221,7 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Add multiple values into the db, this will not check if values exist or not
+     * Add multiple values into the db, this will skip existing values
      * 
      * @param map the map to add
      * @throws IOException
@@ -1226,6 +1230,10 @@ public interface ChronicleDao<V> {
         if (map == null || map.isEmpty()) {
             return PutStatus.FAILED;
         }
+
+        // only work with new keys
+        final var existingKeys = existsList(map.keySet());
+        map.keySet().removeAll(existingKeys);
 
         final int putSize = map.size();
         final var keyMapUpdate = new HashMap<String, String>();
