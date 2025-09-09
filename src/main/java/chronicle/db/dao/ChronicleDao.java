@@ -1951,13 +1951,15 @@ public interface ChronicleDao<V> {
     }
 
     default List<String> searchKeysList(final List<Search> searches) throws IOException {
-        final List<String> result = Collections.synchronizedList(new ArrayList<>());
-        getDataFileState().fileNames().parallelStream().forEach(file -> {
-            try (final var shared = openDb(file)) {
-                searchKeys(shared.map, searches, result);
-            }
-        });
-        return result;
+        return getDataFileState().fileNames().parallelStream()
+                .flatMap(file -> {
+                    try (final var shared = openDb(file)) {
+                        final List<String> fileResults = new ArrayList<>();
+                        searchKeys(shared.map, searches, fileResults);
+                        return fileResults.stream();
+                    }
+                })
+                .collect(Collectors.toList());
     }
 
     default Map<String, V> search(final Search search, final Set<String> excludedKeys) throws IOException {
