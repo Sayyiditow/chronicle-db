@@ -1941,13 +1941,15 @@ public interface ChronicleDao<V> {
     }
 
     default Set<String> searchKeys(final List<Search> searches) throws IOException {
-        final Set<String> result = ConcurrentHashMap.newKeySet();
-        getDataFileState().fileNames().parallelStream().forEach(file -> {
-            try (final var shared = openDb(file)) {
-                searchKeys(shared.map, searches, result);
-            }
-        });
-        return result;
+        return getDataFileState().fileNames().parallelStream()
+                .flatMap(file -> {
+                    try (final var shared = openDb(file)) {
+                        final Set<String> fileResults = new HashSet<>();
+                        searchKeys(shared.map, searches, fileResults);
+                        return fileResults.stream();
+                    }
+                })
+                .collect(Collectors.toSet());
     }
 
     default List<String> searchKeysList(final List<Search> searches) throws IOException {
@@ -1980,13 +1982,15 @@ public interface ChronicleDao<V> {
     }
 
     default Set<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) throws IOException {
-        final Set<String> result = ConcurrentHashMap.newKeySet();
-        getDataFileState().fileNames().parallelStream().forEach(file -> {
-            try (final var shared = openDb(file)) {
-                searchKeys(shared.map, searches, excludedKeys, result);
-            }
-        });
-        return result;
+        return getDataFileState().fileNames().parallelStream()
+                .flatMap(file -> {
+                    try (final var shared = openDb(file)) {
+                        final Set<String> fileResults = new HashSet<>();
+                        searchKeys(shared.map, searches, excludedKeys, fileResults);
+                        return fileResults.stream();
+                    }
+                })
+                .collect(Collectors.toSet());
     }
 
     default List<String> searchKeysList(final List<Search> searches, final Set<String> excludedKeys)
