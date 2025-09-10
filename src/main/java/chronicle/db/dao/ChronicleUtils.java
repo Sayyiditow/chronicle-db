@@ -744,7 +744,12 @@ public final class ChronicleUtils {
                     final String destFieldName = move.getOrDefault(fieldName, fieldName); // Faster than null check
                     final Object defValue = def.get(fieldName);
 
-                    final Field f2 = newObj.getClass().getField(destFieldName);
+                    Field f2 = null;
+                    try {
+                        f2 = newObj.getClass().getDeclaredField(destFieldName);
+                    } catch (final NoSuchFieldException e) {
+                        continue;
+                    }
                     final var f2Type = f2.getType();
                     final Object fieldVal = field.get(currentVal);
                     final Object value = defValue != null
@@ -753,7 +758,7 @@ public final class ChronicleUtils {
                     f2.set(newObj, value);
                 }
 
-                for (final Field field : newFieldsSet) { // Use Set for iteration
+                for (final Field field : newFieldsSet) {
                     final Object defValue = def.get(field.getName());
                     if (defValue != null) {
                         final var fieldType = field.getType();
@@ -762,7 +767,7 @@ public final class ChronicleUtils {
                     }
                 }
                 map.put(key, newObj);
-            } catch (final NoSuchFieldException | IllegalArgumentException | IllegalAccessException
+            } catch (final IllegalArgumentException | IllegalAccessException
                     | InstantiationException | InvocationTargetException e) {
                 Logger.error("Error during migration for [{}]", toObjectClass);
                 Logger.error(e);
