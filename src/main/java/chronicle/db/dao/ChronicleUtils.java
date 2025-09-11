@@ -165,7 +165,7 @@ public final class ChronicleUtils {
         return searchTerm;
     }
 
-    public <K, V> boolean search(final Search search, final K key, final V value, final Class<?> valueClass)
+    public <V> boolean search(final Search search, final String key, final V value, final Class<?> valueClass)
             throws Throwable {
         final String[] fields = search.field().split("\\|");
 
@@ -239,7 +239,7 @@ public final class ChronicleUtils {
      * @throws IOException
      * 
      */
-    public <K, V> void index(final ChronicleMap<K, V> db, final String dbName, final Set<String> fields,
+    public <V> void index(final ChronicleMap<String, V> db, final String dbName, final Set<String> fields,
             final String dataPath, final String indexDirPath, final Class<?> valueClass,
             final Map<String, Set<Object>> exclusions) {
         final int BATCH_SIZE = 100_000;
@@ -287,7 +287,7 @@ public final class ChronicleUtils {
 
             final StringBuilder sb = new StringBuilder();
             db.forEachEntry(entry -> {
-                final K key = entry.key().get();
+                final var key = entry.key().get();
                 final V value = entry.value().get();
 
                 try {
@@ -354,8 +354,8 @@ public final class ChronicleUtils {
         }
     }
 
-    public <K, V> void removeFromIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<K, V> values, final Class<?> valueClass) {
+    public <V> void removeFromIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
+            final Map<String, V> values, final Class<?> valueClass) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
@@ -392,7 +392,7 @@ public final class ChronicleUtils {
                 final StringBuilder sb = new StringBuilder();
 
                 for (final var e : values.entrySet()) {
-                    final K key = e.getKey();
+                    final var key = e.getKey();
                     final V value = e.getValue();
 
                     try {
@@ -429,8 +429,8 @@ public final class ChronicleUtils {
         }
     }
 
-    public <K, V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<K, V> values, final Map<K, V> previousValues, final Class<?> valueClass,
+    public <V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
+            final Map<String, V> values, final Map<String, V> previousValues, final Class<?> valueClass,
             final Map<String, Set<Object>> exclusions) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
@@ -473,7 +473,7 @@ public final class ChronicleUtils {
                 final StringBuilder sb = new StringBuilder();
 
                 for (final var valEntry : values.entrySet()) {
-                    final K key = valEntry.getKey();
+                    final var key = valEntry.getKey();
                     final V newVal = valEntry.getValue();
                     final V prevVal = previousValues.get(key);
 
@@ -565,7 +565,7 @@ public final class ChronicleUtils {
      * @throws Throwable
      * 
      */
-    public <K, V> CsvObject formatChronicleDataToCsv(final Map<K, V> map) throws Throwable {
+    public <V> CsvObject formatChronicleDataToCsv(final Map<String, V> map) throws Throwable {
         if (map.isEmpty())
             return new CsvObject(new String[0], Collections.emptyList());
 
@@ -574,29 +574,35 @@ public final class ChronicleUtils {
         final MethodHandle headersMethod = classData.headerHandle;
         final MethodHandle rowMethod = classData.rowHandle;
         final String[] headerList = (String[]) headersMethod.invoke(sampleValue);
-        final List<Object[]> rowList = new ArrayList<>(map.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
 
-        for (final var entry : map.entrySet()) {
-            rowList.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
-        }
+        map.entrySet().parallelStream().forEach(entry -> {
+            try {
+                rowQueue.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
+            } catch (final Throwable e) {
+                // should not happen
+                Logger.error("Error when formatting Chronicle object to CSV.");
+                Logger.error(e);
+            }
+        });
 
-        return new CsvObject(headerList, rowList);
+        return new CsvObject(headerList, new ArrayList<>(rowQueue));
     }
 
-    public <K, V> void subsetOfValues(final String[] fields, final Map.Entry<K, V> entry,
-            final Map<K, LinkedHashMap<String, Object>> map, final String objectName, final Class<?> valueClas) {
+    public <V> void subsetOfValues(final String[] fields, final Map.Entry<String, V> entry,
+            final Map<String, LinkedHashMap<String, Object>> map, final String objectName, final Class<?> valueClass) {
         final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
-        final K key = entry.getKey();
+        final var key = entry.getKey();
         final V value = entry.getValue();
 
         for (final String f : fields) {
-            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClas, f);
+            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, f);
             if (methodHandle != null) {
                 try {
                     valueMap.put(f, methodHandle.invoke(value));
                 } catch (final Throwable e) {
                     // should not happen, all fields must be public
-                    Logger.error("Field [{}] in [{}] could not get value.", f, objectName);
+                    Logger.error("Could not get value for field [{}] in [{}].", f, objectName);
                     Logger.error(e);
                 }
             }
@@ -604,35 +610,46 @@ public final class ChronicleUtils {
         map.put(key, valueMap);
     }
 
+    public <V> void subsetOfValuesToRow(final String[] fields, final V value,
+            final Object[] row, final String objectName, final Class<?> valueClass) {
+        for (int i = 0; i < fields.length; i++) {
+            final String field = fields[i];
+            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, field);
+            if (methodHandle != null) {
+                try {
+                    row[1 + i] = methodHandle.invoke(value); // Always start at position 1
+                } catch (final Throwable e) {
+                    // should not happen, all fields must be public
+                    Logger.error("Could not get value for field [{}] in [{}].", field, objectName);
+                    Logger.error(e);
+                }
+            }
+        }
+    }
+
     /**
      * Only for chronicle db object types to convert to csv for table display on
      * frontend
      * 
      */
-    public <K> CsvObject formatSubsetChronicleDataToCsv(final Map<K, LinkedHashMap<String, Object>> map,
-            final String[] headers) {
+    public <V> CsvObject formatSubsetChronicleDataToCsv(final Map<String, V> map,
+            final String[] headers, final String objectName, final Class<?> valueClass) {
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final String[] updatedHeaders = new String[headers.length + 1];
         updatedHeaders[0] = "ID";
         System.arraycopy(headers, 0, updatedHeaders, 1, headers.length);
 
         map.entrySet().parallelStream().forEach(entry -> {
-            final K key = entry.getKey();
-            final LinkedHashMap<String, Object> valueMap = entry.getValue();
-            // Create row array with exact size needed
+            final var key = entry.getKey();
+            final V value = entry.getValue();
             final Object[] row = new Object[updatedHeaders.length];
             row[0] = key;
-            // Efficient value copying (no intermediate collections)
-            int i = 1;
-            for (final Object value : valueMap.values()) {
-                if (i >= updatedHeaders.length)
-                    break;
-                row[i++] = value;
-            }
+
+            subsetOfValuesToRow(headers, value, row, objectName, valueClass);
             rowQueue.add(row);
         });
 
-        return new CsvObject(updatedHeaders, new ArrayList<>(rowQueue));
+        return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
     public <V> void updateObjectValues(final V oldObject, final Set<String> fields, final V newObject)
@@ -716,14 +733,15 @@ public final class ChronicleUtils {
      * @throws NoSuchMethodException
      * @throws ClassNotFoundException
      */
-    public <K, V> Map<K, Object> moveRecords(final ChronicleMap<K, V> currentValues, final String fromObjectClass,
+    public <V> Map<String, Object> moveRecords(final ChronicleMap<String, V> currentValues,
+            final String fromObjectClass,
             final String toObjectClass, final Map<String, String> move, final Map<String, Object> def)
             throws SecurityException, InstantiationException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException, NoSuchMethodException, ClassNotFoundException {
         if (currentValues.isEmpty())
             return new HashMap<>(); // Early exit
 
-        final Map<K, Object> map = new HashMap<>(currentValues.size()); // Pre-size map
+        final Map<String, Object> map = new HashMap<>(currentValues.size()); // Pre-size map
         final Class<?> sourceCls = Class.forName(fromObjectClass);
         final Class<?> cls = Class.forName(toObjectClass);
         final Constructor<?> constructor = cls.getConstructor();
@@ -734,7 +752,7 @@ public final class ChronicleUtils {
 
         currentValues.forEachEntry(entry -> {
             try {
-                final K key = entry.key().get();
+                final var key = entry.key().get();
                 final V currentVal = entry.value().get();
                 final Object newObj = constructor.newInstance();
 

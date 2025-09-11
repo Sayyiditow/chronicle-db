@@ -35,6 +35,7 @@ import org.tinylog.Logger;
 
 import com.jsoniter.spi.TypeLiteral;
 
+import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
@@ -2402,6 +2403,10 @@ public interface ChronicleDao<V> {
         }
 
         return map;
+    }
+
+    default CsvObject subsetOfValuesCsv(final Map<String, V> initialMap, final String[] fields) {
+        return CHRONICLE_UTILS.formatSubsetChronicleDataToCsv(initialMap, fields, name(), averageValue().getClass());
     }
 
     /**
