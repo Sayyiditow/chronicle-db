@@ -1726,8 +1726,9 @@ public interface ChronicleDao<V> {
     }
 
     private Map<String, V> search(final Map<String, V> db, final List<Search> filters) {
-        Logger.info("Searching in-memory map with [{}] filters.", filters.size());
-        final Map<String, V> result = new ConcurrentHashMap<>(Math.min(db.size(), 10_000));
+        final var size = db.size();
+        Logger.info("Searching in-memory map of [{}] with [{}] filters.", size, filters.size());
+        final Map<String, V> result = new ConcurrentHashMap<>(Math.min(size, 10_000));
         final var valueClass = averageValue().getClass();
 
         db.entrySet().parallelStream().forEach(entry -> {
