@@ -25,6 +25,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -610,19 +611,17 @@ public final class ChronicleUtils {
      */
     public <K> CsvObject formatSubsetChronicleDataToCsv(final Map<K, LinkedHashMap<String, Object>> map,
             final String[] headers) {
-        final List<Object[]> rowList = Collections.synchronizedList(new ArrayList<>(map.size()));
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final String[] updatedHeaders = new String[headers.length + 1];
         updatedHeaders[0] = "ID";
         System.arraycopy(headers, 0, updatedHeaders, 1, headers.length);
 
-        for (final var entry : map.entrySet()) {
+        map.entrySet().parallelStream().forEach(entry -> {
             final K key = entry.getKey();
             final LinkedHashMap<String, Object> valueMap = entry.getValue();
-
             // Create row array with exact size needed
             final Object[] row = new Object[updatedHeaders.length];
             row[0] = key;
-
             // Efficient value copying (no intermediate collections)
             int i = 1;
             for (final Object value : valueMap.values()) {
@@ -630,10 +629,10 @@ public final class ChronicleUtils {
                     break;
                 row[i++] = value;
             }
-            rowList.add(row);
-        }
+            rowQueue.add(row);
+        });
 
-        return new CsvObject(updatedHeaders, rowList);
+        return new CsvObject(updatedHeaders, new ArrayList<>(rowQueue));
     }
 
     public <V> void updateObjectValues(final V oldObject, final Set<String> fields, final V newObject)

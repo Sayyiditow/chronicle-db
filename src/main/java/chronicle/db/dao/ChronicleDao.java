@@ -23,6 +23,7 @@ import java.util.NavigableSet;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
@@ -1338,6 +1339,70 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    default void searchKeys(final Iterable<String> keys, final List<Search> filters, final Collection<String> results)
+            throws Throwable {
+        if (keys == null || !keys.iterator().hasNext()) {
+            return;
+        }
+
+        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        final var valueClass = averageValue().getClass();
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE,
+                        key -> {
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                try {
+                                    if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                        return false;
+                                    }
+                                } catch (final Throwable e) {
+                                    Logger.error("Search failed for key [{}]: {}", key);
+                                    Logger.error(e);
+                                }
+                            }
+
+                            results.add(key);
+                            return true;
+                        });
+            }
+            return;
+        }
+
+        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+                final var keysForFile = entry.getValue(); // Iterable<String>
+
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, Integer.MAX_VALUE, key -> {
+                        final V value = shared.map.getUsing(key, using());
+                        if (value == null)
+                            return false;
+
+                        for (final var search : filters) {
+                            try {
+                                if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                    return false;
+                                }
+                            } catch (final Throwable e) {
+                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            }
+                        }
+
+                        results.add(key);
+                        return true;
+                    });
+                }
+            }
+        }
+    }
+
     default Map<String, V> search(final Iterable<String> keys, final List<Search> filters,
             final Set<String> excludedKeys, final int limit) throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -1941,27 +2006,25 @@ public interface ChronicleDao<V> {
     }
 
     default Set<String> searchKeys(final List<Search> searches) throws IOException {
-        return getDataFileState().fileNames().parallelStream()
-                .flatMap(file -> {
+        final var results = ConcurrentHashMap.<String>newKeySet();
+        getDataFileState().fileNames().parallelStream()
+                .forEach(file -> {
                     try (final var shared = openDb(file)) {
-                        final Set<String> fileResults = new HashSet<>();
-                        searchKeys(shared.map, searches, fileResults);
-                        return fileResults.stream();
+                        searchKeys(shared.map, searches, results);
                     }
-                })
-                .collect(Collectors.toSet());
+                });
+        return results;
     }
 
     default List<String> searchKeysList(final List<Search> searches) throws IOException {
-        return getDataFileState().fileNames().parallelStream()
-                .flatMap(file -> {
+        final var result = new ConcurrentLinkedQueue<String>();
+        getDataFileState().fileNames().parallelStream()
+                .forEach(file -> {
                     try (final var shared = openDb(file)) {
-                        final List<String> fileResults = new ArrayList<>();
-                        searchKeys(shared.map, searches, fileResults);
-                        return fileResults.stream();
+                        searchKeys(shared.map, searches, result);
                     }
-                })
-                .collect(Collectors.toList());
+                });
+        return new ArrayList<>(result);
     }
 
     default Map<String, V> search(final Search search, final Set<String> excludedKeys) throws IOException {
@@ -1982,26 +2045,25 @@ public interface ChronicleDao<V> {
     }
 
     default Set<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) throws IOException {
-        return getDataFileState().fileNames().parallelStream()
-                .flatMap(file -> {
+        final var results = ConcurrentHashMap.<String>newKeySet();
+        getDataFileState().fileNames().parallelStream()
+                .forEach(file -> {
                     try (final var shared = openDb(file)) {
-                        final Set<String> fileResults = new HashSet<>();
-                        searchKeys(shared.map, searches, excludedKeys, fileResults);
-                        return fileResults.stream();
+                        searchKeys(shared.map, searches, excludedKeys, results);
                     }
-                })
-                .collect(Collectors.toSet());
+                });
+        return results;
     }
 
     default List<String> searchKeysList(final List<Search> searches, final Set<String> excludedKeys)
             throws IOException {
-        final List<String> result = Collections.synchronizedList(new ArrayList<>());
+        final var result = new ConcurrentLinkedQueue<String>();
         getDataFileState().fileNames().parallelStream().forEach(file -> {
             try (final var shared = openDb(file)) {
                 searchKeys(shared.map, searches, excludedKeys, result);
             }
         });
-        return result;
+        return new ArrayList<>(result);
     }
 
     default Map<String, V> multiSearch(final List<Search> searches) throws Throwable {
@@ -2064,6 +2126,120 @@ public interface ChronicleDao<V> {
                 return result;
             } else {
                 return search(searchResult.results(), remainingSearches, limit);
+            }
+        } finally {
+            if (sharedIndexMap != null) {
+                sharedIndexMap.close();
+            }
+        }
+    }
+
+    default Set<String> multiSearchKeys(final List<Search> searches) throws Throwable {
+        if (searches == null || searches.isEmpty()) {
+            return Collections.emptySet();
+        }
+
+        final Set<String> indexFileNames = indexFileNames();
+
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+
+        SearchResult searchResult = null;
+        String indexPath = null;
+        SharedIndexMap sharedIndexMap = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            sharedIndexMap = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                sharedIndexMap.close();
+                return Collections.emptySet();
+            }
+
+            if (remainingSearches.isEmpty()) {
+                try {
+                    return toSetOfKeys(searchResult.results());
+                } finally {
+                    sharedIndexMap.close();
+                }
+            }
+        }
+
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                return searchKeys(searches);
+            } else {
+                final var results = ConcurrentHashMap.<String>newKeySet();
+                searchKeys(searchResult.results(), remainingSearches, results);
+                return results;
+            }
+        } finally {
+            if (sharedIndexMap != null) {
+                sharedIndexMap.close();
+            }
+        }
+    }
+
+    default List<String> multiSearchKeysList(final List<Search> searches) throws Throwable {
+        if (searches == null || searches.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        final Set<String> indexFileNames = indexFileNames();
+
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+
+        SearchResult searchResult = null;
+        String indexPath = null;
+        SharedIndexMap sharedIndexMap = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            sharedIndexMap = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                sharedIndexMap.close();
+                return Collections.emptyList();
+            }
+
+            if (remainingSearches.isEmpty()) {
+                try {
+                    return toListOfKeys(searchResult.results());
+                } finally {
+                    sharedIndexMap.close();
+                }
+            }
+        }
+
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                return searchKeysList(searches);
+            } else {
+                final var results = new ConcurrentLinkedQueue<String>();
+                searchKeys(searchResult.results(), remainingSearches, results);
+                return new ArrayList<>(results);
             }
         } finally {
             if (sharedIndexMap != null) {
