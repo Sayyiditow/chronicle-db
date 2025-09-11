@@ -1974,13 +1974,12 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, V> indexedSearch(final Set<String> matchingKeys, final Search search) throws Throwable {
+    default Map<String, V> searchMatchingKeys(final Set<String> matchingKeys, final Search search) throws Throwable {
         if (matchingKeys == null || matchingKeys.isEmpty()) {
             return Collections.emptyMap();
         }
-        final int limit = search.limit() != -1 ? search.limit() : HARD_LIMIT;
 
-        return search(matchingKeys, List.of(search), limit);
+        return search(matchingKeys, List.of(search), matchingKeys.size());
     }
 
     default Map<String, V> search(final Map<String, V> db, final Search search) throws IOException {
