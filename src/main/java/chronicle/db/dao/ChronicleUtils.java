@@ -649,7 +649,7 @@ public final class ChronicleUtils {
             rowQueue.add(row);
         });
 
-        return new CsvObject(headers, new ArrayList<>(rowQueue));
+        return new CsvObject(updatedHeaders, new ArrayList<>(rowQueue));
     }
 
     public <V> void updateObjectValues(final V oldObject, final Set<String> fields, final V newObject)
