@@ -667,6 +667,13 @@ public final class ChronicleUtils {
         }
     }
 
+    public String[] getCsvHeaders(final String[] fields) {
+        final String[] headers = new String[fields.length + 1];
+        headers[0] = "ID";
+        System.arraycopy(fields, 0, headers, 1, fields.length);
+        return headers;
+    }
+
     /**
      * Only for chronicle db object types to convert to csv for table display on
      * frontend

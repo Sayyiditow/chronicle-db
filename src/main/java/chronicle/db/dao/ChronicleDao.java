@@ -630,10 +630,7 @@ public interface ChronicleDao<V> {
     }
 
     default CsvObject fetchSubsetCsv(final String[] fields, final int limit) {
-        final String[] headers = new String[fields.length + 1];
-        headers[0] = "ID";
-        System.arraycopy(fields, 0, headers, 1, fields.length);
-
+        final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
 
         for (final String file : getDataFileState().fileNames()) {
@@ -769,7 +766,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying subset multiple keys at [{}].", dataPath());
-        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(1000);
+        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(10_000);
         final var averageValueClass = averageValue().getClass();
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -804,9 +801,7 @@ public interface ChronicleDao<V> {
 
     default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields)
             throws Exception {
-        final String[] headers = new String[fields.length + 1];
-        headers[0] = "ID";
-        System.arraycopy(fields, 0, headers, 1, fields.length);
+        final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
 
         if (keys == null || !keys.iterator().hasNext()) {
             return new CsvObject(headers, Collections.emptyList());
@@ -855,7 +850,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, V>(Math.min(1000, limit));
+        final var map = new ConcurrentHashMap<String, V>(Math.min(10_000, limit));
         final var count = new AtomicInteger(0);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -892,13 +887,15 @@ public interface ChronicleDao<V> {
         return map;
     }
 
-    default Map<String, V> getSubset(final Iterable<String> keys, final int limit) throws Exception {
+    default Map<String, LinkedHashMap<String, Object>> getSubset(final Iterable<String> keys, final String[] fields,
+            final int limit) throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, V>(Math.min(1000, limit));
+        Logger.info("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(Math.min(10_000, limit));
+        final var averageValueClass = averageValue().getClass();
         final var count = new AtomicInteger(0);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -908,7 +905,7 @@ public interface ChronicleDao<V> {
                         break;
                     final var value = shared.map.getUsing(key, using());
                     if (value != null && count.incrementAndGet() <= limit) {
-                        map.put(key, value);
+                        CHRONICLE_UTILS.subsetOfValues(fields, key, value, map, name(), averageValueClass);
                     }
                 }
             }
@@ -925,7 +922,7 @@ public interface ChronicleDao<V> {
                             break outer;
                         final var value = shared.map.getUsing(key, using());
                         if (value != null && count.incrementAndGet() <= limit) {
-                            map.put(key, value);
+                            CHRONICLE_UTILS.subsetOfValues(fields, key, value, map, name(), averageValueClass);
                         }
                     }
                 }
@@ -935,14 +932,14 @@ public interface ChronicleDao<V> {
         return map;
     }
 
-    default Map<String, V> get(final Iterable<String> keys, final int limit, final Set<String> excludedKeys)
+    default Map<String, V> get(final Iterable<String> keys, final Set<String> excludedKeys, final int limit)
             throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, V>(Math.min(1000, limit));
+        Logger.info("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, V>(Math.min(10_000, limit));
         final var count = new AtomicInteger(0);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -973,6 +970,56 @@ public interface ChronicleDao<V> {
                             final var value = shared.map.getUsing(key, using());
                             if (value != null && count.incrementAndGet() <= limit) {
                                 map.put(key, value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return map;
+    }
+
+    default Map<String, LinkedHashMap<String, Object>> getSubset(final Iterable<String> keys,
+            final Set<String> excludedKeys, final String[] fields, final int limit)
+            throws Exception {
+        if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.info("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(Math.min(10_000, limit));
+        final var count = new AtomicInteger(0);
+        final var averageValueClass = averageValue().getClass();
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                for (final var key : keys) {
+                    if (count.get() >= limit)
+                        break;
+                    if (!excludedKeys.contains(key)) {
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null && count.incrementAndGet() <= limit) {
+                            CHRONICLE_UTILS.subsetOfValues(fields, key, value, map, name(), averageValueClass);
+                        }
+                    }
+                }
+            }
+            return map;
+        }
+
+        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
+            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+
+                try (final var shared = openDb(file)) {
+                    for (final var key : entry.getValue()) {
+                        if (count.get() >= limit)
+                            break outer;
+                        if (!excludedKeys.contains(key)) {
+                            final var value = shared.map.getUsing(key, using());
+                            if (value != null && count.incrementAndGet() <= limit) {
+                                CHRONICLE_UTILS.subsetOfValues(fields, key, value, map, name(), averageValueClass);
                             }
                         }
                     }
@@ -1556,6 +1603,77 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    default Map<String, LinkedHashMap<String, Object>> searchSubset(final Iterable<String> keys,
+            final List<Search> filters, final String[] fields, final int limit) throws Throwable {
+        if (keys == null || !keys.iterator().hasNext()) {
+            return Collections.emptyMap();
+        }
+
+        Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(10_000);
+        final var averageValueClass = averageValue().getClass();
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                try {
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
+                                    }
+                                } catch (final Throwable e) {
+                                    Logger.error("Search failed for key [{}]: {}", key);
+                                    Logger.error(e);
+                                }
+                            }
+
+                            CHRONICLE_UTILS.subsetOfValues(fields, key, value, map, name(), averageValueClass);
+                            return true;
+                        });
+            }
+            return map;
+        }
+
+        final AtomicInteger count = new AtomicInteger();
+        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                final var keysForFile = entry.getValue(); // Iterable<String>
+
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
+                        final V value = shared.map.getUsing(key, using());
+                        if (value == null)
+                            return false;
+
+                        for (final var search : filters) {
+                            try {
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
+                                }
+                            } catch (final Throwable e) {
+                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            }
+                        }
+
+                        CHRONICLE_UTILS.subsetOfValues(fields, key, value, map, name(), averageValueClass);
+                        return true;
+                    });
+                }
+            }
+        }
+
+        return map;
+    }
+
     default void searchKeys(final Iterable<String> keys, final List<Search> filters, final Collection<String> results)
             throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -1629,8 +1747,6 @@ public interface ChronicleDao<V> {
         Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
                 filters.size(), excludedKeys.size());
         final var map = new ConcurrentHashMap<String, V>(10_000);
-
-        // Determine minimum positive limit across all filters
         final var valueClass = averageValue().getClass();
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1692,6 +1808,86 @@ public interface ChronicleDao<V> {
                                 }
 
                                 map.put(key, value);
+                                return true;
+                            });
+                }
+            }
+        }
+
+        return map;
+    }
+
+    default Map<String, LinkedHashMap<String, Object>> searchSubset(final Iterable<String> keys,
+            final List<Search> filters, final Set<String> excludedKeys, final int limit, final String[] fields)
+            throws Throwable {
+        if (keys == null || !keys.iterator().hasNext()) {
+            return Collections.emptyMap();
+        }
+
+        Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
+                dataPath(), filters.size(), excludedKeys.size());
+        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(Math.min(10_000, limit));
+        final var averageValueClass = averageValue().getClass();
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
+                            if (excludedKeys.contains(key))
+                                return false;
+
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                try {
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
+                                    }
+                                } catch (final Throwable e) {
+                                    Logger.error("Search failed for key [{}]: {}", key);
+                                    Logger.error(e);
+                                }
+                            }
+
+                            CHRONICLE_UTILS.subsetOfValues(fields, key, value, map, name(), averageValueClass);
+                            return true;
+                        });
+            }
+            return map;
+        }
+
+        final AtomicInteger count = new AtomicInteger();
+        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                final var keysForFile = entry.getValue(); // Iterable<String>
+
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
+                            key -> {
+                                if (excludedKeys.contains(key))
+                                    return false;
+
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : filters) {
+                                    try {
+                                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                            return false;
+                                        }
+                                    } catch (final Throwable e) {
+                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                    }
+                                }
+
+                                CHRONICLE_UTILS.subsetOfValues(fields, key, value, map, name(), averageValueClass);
                                 return true;
                             });
                 }
@@ -1808,6 +2004,40 @@ public interface ChronicleDao<V> {
         });
     }
 
+    private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
+            final Map<String, LinkedHashMap<String, Object>> result, final AtomicInteger counter,
+            final String[] fields) {
+        Logger.info("Subset searching DB at [{}] for {} filters.", dataPath(), filters.size());
+
+        db.forEachEntryWhile(entry -> {
+            try {
+                if (counter.get() >= limit) {
+                    return false;
+                }
+
+                final String key = entry.key().get();
+                final V value = entry.value().get();
+                if (value == null) {
+                    return true;
+                }
+
+                for (final Search search : filters) {
+                    if (!CHRONICLE_UTILS.search(search, key, value, averageValue().getClass())) {
+                        return true;
+                    }
+                }
+
+                if (counter.incrementAndGet() <= limit) {
+                    CHRONICLE_UTILS.subsetOfValues(fields, key, value, result, name(), averageValue().getClass());
+                }
+            } catch (final Throwable e) {
+                Logger.error("Search subset failed during multi-filter scan.");
+                Logger.error(e);
+            }
+            return true;
+        });
+    }
+
     private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
             final Collection<String> result) {
         Logger.info("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
@@ -1864,6 +2094,46 @@ public interface ChronicleDao<V> {
 
                 if (counter.incrementAndGet() <= limit) {
                     result.put(key, db.getUsing(key, using()));
+                }
+            } catch (final Throwable e) {
+                Logger.error("Search failed during multi-filter scan.");
+                Logger.error(e);
+            }
+            return true;
+        });
+    }
+
+    private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters,
+            final Set<String> excludedKeys, final int limit, final Map<String, LinkedHashMap<String, Object>> result,
+            final AtomicInteger counter, final String[] fields) {
+        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+                dataPath(), filters.size(), excludedKeys.size(), limit);
+
+        db.forEachEntryWhile(entry -> {
+            try {
+                if (counter.get() >= limit) {
+                    return false; // Early exit
+                }
+
+                final String key = entry.key().get();
+                if (excludedKeys.contains(key)) {
+                    return true;
+                }
+
+                final V value = entry.value().get();
+                if (value == null) {
+                    return true;
+                }
+
+                for (final Search search : filters) {
+                    if (!CHRONICLE_UTILS.search(search, key, value, averageValue().getClass())) {
+                        return true;
+                    }
+                }
+
+                if (counter.incrementAndGet() <= limit) {
+                    CHRONICLE_UTILS.subsetOfValues(fields, key, db.getUsing(key, using()), result, name(),
+                            averageValue().getClass());
                 }
             } catch (final Throwable e) {
                 Logger.error("Search failed during multi-filter scan.");
@@ -2277,76 +2547,75 @@ public interface ChronicleDao<V> {
         return new ArrayList<>(result);
     }
 
-    // default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final
-    // List<Search> searches, final String[] fields) throws Throwable {
-    // if (searches == null || searches.isEmpty()) {
-    // return Collections.emptyMap();
-    // }
+    default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final List<Search> searches,
+            final String[] fields) throws Throwable {
+        if (searches == null || searches.isEmpty()) {
+            return Collections.emptyMap();
+        }
 
-    // final Set<String> indexFileNames = indexFileNames();
+        final Set<String> indexFileNames = indexFileNames();
 
-    // // Step 1: Separate searches into first-indexed and remaining
-    // Search indexedSearch = null;
-    // final List<Search> remainingSearches = new ArrayList<>();
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
 
-    // for (final Search s : searches) {
-    // if (!s.skipIndex() && indexedSearch == null &&
-    // indexFileNames.contains(s.field())) {
-    // indexedSearch = s;
-    // } else {
-    // remainingSearches.add(s);
-    // }
-    // }
-    // final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l >
-    // 0).min()
-    // .orElse(HARD_LIMIT);
+        for (final Search s : searches) {
+            if (!s.skipIndex() && indexedSearch == null &&
+                    indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
+                .orElse(HARD_LIMIT);
 
-    // SearchResult searchResult = null;
-    // String indexPath = null;
-    // SharedIndexMap sharedIndexMap = null;
-    // // Step 2: Perform indexed search (only if indexedSearch != null)
-    // if (indexedSearch != null) {
-    // indexPath = getIndexPath(indexedSearch.field());
-    // sharedIndexMap = MAP_DB.openIndex(indexPath);
-    // searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
-    // if (isResultEmpty(searchResult.results())) {
-    // sharedIndexMap.close();
-    // return Collections.emptyMap();
-    // }
+        SearchResult searchResult = null;
+        String indexPath = null;
+        SharedIndexMap sharedIndexMap = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            sharedIndexMap = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                sharedIndexMap.close();
+                return Collections.emptyMap();
+            }
 
-    // if (remainingSearches.isEmpty()) {
-    // try {
-    // return get(searchResult.results(), limit);
-    // } finally {
-    // sharedIndexMap.close();
-    // }
-    // }
-    // }
+            if (remainingSearches.isEmpty()) {
+                try {
+                    return getSubset(searchResult.results(), fields, limit);
+                } finally {
+                    sharedIndexMap.close();
+                }
+            }
+        }
 
-    // // Step 3: Manual search
-    // try {
-    // if (searchResult == null) {
-    // final Map<String, V> result = new ConcurrentHashMap<>();
-    // final var counter = new AtomicInteger();
-    // getDataFileState().fileNames().parallelStream().forEach(file -> {
-    // if (counter.get() >= limit) {
-    // return;
-    // }
-    // try (final var shared = openDb(file)) {
-    // search(shared.map, searches, limit, result, counter);
-    // }
-    // });
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                final var result = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(10_000);
+                final var counter = new AtomicInteger();
+                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                    if (counter.get() >= limit) {
+                        return;
+                    }
+                    try (final var shared = openDb(file)) {
+                        searchSubset(shared.map, searches, limit, result, counter, fields);
+                    }
+                });
 
-    // return result;
-    // } else {
-    // return search(searchResult.results(), remainingSearches, limit);
-    // }
-    // } finally {
-    // if (sharedIndexMap != null) {
-    // sharedIndexMap.close();
-    // }
-    // }
-    // }
+                return result;
+            } else {
+                return searchSubset(searchResult.results(), remainingSearches, fields, limit);
+            }
+        } finally {
+            if (sharedIndexMap != null) {
+                sharedIndexMap.close();
+            }
+        }
+    }
 
     default Map<String, V> multiSearch(final List<Search> searches) throws Throwable {
         if (searches == null || searches.isEmpty()) {
@@ -2565,7 +2834,7 @@ public interface ChronicleDao<V> {
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return get(searchResult.results(), limit, excludedKeys);
+                    return get(searchResult.results(), excludedKeys, limit);
                 } finally {
                     sharedIndexMap.close();
                 }
@@ -2597,6 +2866,75 @@ public interface ChronicleDao<V> {
         }
     }
 
+    default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final List<Search> searches,
+            final Set<String> excludedKeys, final String[] fields) throws Throwable {
+        if (searches == null || searches.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        final Set<String> indexFileNames = indexFileNames();
+
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+
+        SearchResult searchResult = null;
+        String indexPath = null;
+        SharedIndexMap sharedIndexMap = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            sharedIndexMap = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                sharedIndexMap.close();
+                return Collections.emptyMap();
+            }
+
+            if (remainingSearches.isEmpty()) {
+                try {
+                    return getSubset(searchResult.results(), excludedKeys, fields, limit);
+                } finally {
+                    sharedIndexMap.close();
+                }
+            }
+        }
+
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                final var result = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(
+                        Math.min(10_000, limit));
+                final var counter = new AtomicInteger(0);
+                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                    if (counter.get() >= limit) {
+                        return;
+                    }
+                    try (final var shared = openDb(file)) {
+                        searchSubset(shared.map, searches, excludedKeys, limit, result, counter, fields);
+                    }
+                });
+
+                return result;
+            } else {
+                return searchSubset(searchResult.results(), remainingSearches, excludedKeys, limit, fields);
+            }
+        } finally {
+            if (sharedIndexMap != null) {
+                sharedIndexMap.close();
+            }
+        }
+    }
+
     default Map<String, V> multiSearch(final Set<String> matchingKeys, final List<Search> searches) throws Throwable {
         if (searches == null || searches.isEmpty() || matchingKeys == null || matchingKeys.isEmpty()) {
             return Collections.emptyMap();
@@ -2604,6 +2942,16 @@ public interface ChronicleDao<V> {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         return search(matchingKeys, searches, limit);
+    }
+
+    default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final Set<String> matchingKeys,
+            final List<Search> searches, final String[] fields) throws Throwable {
+        if (searches == null || searches.isEmpty() || matchingKeys == null || matchingKeys.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+
+        return searchSubset(matchingKeys, searches, fields, limit);
     }
 
     default long multiSearchCount(final List<Search> searches) throws Throwable {
