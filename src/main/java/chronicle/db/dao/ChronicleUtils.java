@@ -589,6 +589,25 @@ public final class ChronicleUtils {
         return new CsvObject(headerList, new ArrayList<>(rowQueue));
     }
 
+    public <V> void subsetOfValues(final String[] fields, final String key, final V value,
+            final Map<String, LinkedHashMap<String, Object>> map, final String objectName, final Class<?> valueClass) {
+        final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
+
+        for (final String f : fields) {
+            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, f);
+            if (methodHandle != null) {
+                try {
+                    valueMap.put(f, methodHandle.invoke(value));
+                } catch (final Throwable e) {
+                    // should not happen, all fields must be public
+                    Logger.error("Could not get value for field [{}] in [{}].", f, objectName);
+                    Logger.error(e);
+                }
+            }
+        }
+        map.put(key, valueMap);
+    }
+
     public <V> void subsetOfValues(final String[] fields, final Map.Entry<String, V> entry,
             final Map<String, LinkedHashMap<String, Object>> map, final String objectName, final Class<?> valueClass) {
         final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
@@ -608,6 +627,27 @@ public final class ChronicleUtils {
             }
         }
         map.put(key, valueMap);
+    }
+
+    public <V> Object[] subsetOfValuesToRow(final String[] headers, final String key, final V value,
+            final String objectName, final Class<?> valueClass) {
+        final Object[] row = new Object[headers.length];
+        row[0] = key;
+        for (int i = 1; i < headers.length; i++) {
+            final String field = headers[i];
+            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, field);
+            if (methodHandle != null) {
+                try {
+                    row[i] = methodHandle.invoke(value); // Always start at position 1
+                } catch (final Throwable e) {
+                    // should not happen, all fields must be public
+                    Logger.error("Could not get value for field [{}] in [{}].", field, objectName);
+                    Logger.error(e);
+                }
+            }
+        }
+
+        return row;
     }
 
     public <V> void subsetOfValuesToRow(final String[] fields, final V value,
