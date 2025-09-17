@@ -42,6 +42,7 @@ import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.ChronicleDb.SharedChronicleMap;
 import chronicle.db.service.MapDb.SearchResult;
 import chronicle.db.service.MapDb.SharedIndexMap;
+import net.openhft.chronicle.bytes.UTFDataFormatRuntimeException;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -360,7 +361,7 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * In cases onf data corruption, we can recover the db using this method
+     * In cases of data corruption, we can recover the db using this method
      */
     default void recoverData(final String dataFileName) throws IOException {
         final var dataFileStr = dataPath() + DATA_DIR + dataFileName;
@@ -373,6 +374,28 @@ public interface ChronicleDao<V> {
         try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
                 dataFileStr, bloatFactor())) {
             Logger.info("Recovered ChronicleMap [{}] with {} entries", dataFileName, db.size());
+        }
+    }
+
+    /**
+     * In cases of UTFDataFormatRuntimeException, we can recover the db using this
+     * method
+     */
+    default void checkUtf8Exceptions(final String dataFileName) throws IOException {
+        final var deleteKeys = new HashSet<String>();
+        try (final var shared = openDb(dataFileName)) {
+            Logger.info("Total db size [{}]", shared.map.size());
+            shared.map.forEachEntry(entry -> {
+                final var key = entry.key().get();
+                try {
+                    shared.map.getUsing(key, using());
+                } catch (final UTFDataFormatRuntimeException e) {
+                    deleteKeys.add(key);
+                }
+            });
+
+            Logger.info("Found [{}] entries with malformed data at [{}] and file [{}]", deleteKeys.size(), dataPath(),
+                    dataFileName);
         }
     }
 
