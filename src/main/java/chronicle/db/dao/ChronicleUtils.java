@@ -558,61 +558,35 @@ public final class ChronicleUtils {
         }
     }
 
-    /**
-     * Only for chronicle db object types to convert to csv for table display on
-     * frontend
-     * 
-     * @throws Throwable
-     * 
-     */
-    public <V> CsvObject formatChronicleDataToCsv(final Map<String, V> map) throws Throwable {
-        if (map.isEmpty())
-            return new CsvObject(new String[0], Collections.emptyList());
+    public <V> String[] getHeadersFromObject(final Class<?> valueClass, final V sampleValue) {
+        try {
+            final var classData = getClassData(valueClass);
+            final MethodHandle headersMethod = classData.headerHandle;
+            return (String[]) headersMethod.invoke(sampleValue);
+        } catch (final Throwable e) {
+            // should not happen
+            Logger.error("Error when getting headers from object.");
+            Logger.error(e);
+            return new String[0];
+        }
+    }
 
-        final V sampleValue = map.values().iterator().next();
-        final var classData = getClassData(sampleValue.getClass());
-        final MethodHandle headersMethod = classData.headerHandle;
-        final MethodHandle rowMethod = classData.rowHandle;
-        final String[] headerList = (String[]) headersMethod.invoke(sampleValue);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
-
-        map.entrySet().parallelStream().forEach(entry -> {
-            try {
-                rowQueue.add((Object[]) rowMethod.invoke(entry.getValue(), entry.getKey()));
-            } catch (final Throwable e) {
-                // should not happen
-                Logger.error("Error when formatting Chronicle object to CSV.");
-                Logger.error(e);
-            }
-        });
-
-        return new CsvObject(headerList, new ArrayList<>(rowQueue));
+    public <V> Object[] getRowFromObject(final Class<?> valueClass, final String key, final V sampleValue) {
+        try {
+            final var classData = getClassData(valueClass);
+            final MethodHandle rowMethod = classData.rowHandle;
+            return (Object[]) rowMethod.invoke(sampleValue, key);
+        } catch (final Throwable e) {
+            // should not happen
+            Logger.error("Error when getting row from object.");
+            Logger.error(e);
+            return new Object[0];
+        }
     }
 
     public <V> void subsetOfValues(final String[] fields, final String key, final V value,
             final Map<String, LinkedHashMap<String, Object>> map, final String objectName, final Class<?> valueClass) {
         final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
-
-        for (final String f : fields) {
-            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, f);
-            if (methodHandle != null) {
-                try {
-                    valueMap.put(f, methodHandle.invoke(value));
-                } catch (final Throwable e) {
-                    // should not happen, all fields must be public
-                    Logger.error("Could not get value for field [{}] in [{}].", f, objectName);
-                    Logger.error(e);
-                }
-            }
-        }
-        map.put(key, valueMap);
-    }
-
-    public <V> void subsetOfValues(final String[] fields, final Map.Entry<String, V> entry,
-            final Map<String, LinkedHashMap<String, Object>> map, final String objectName, final Class<?> valueClass) {
-        final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
-        final var key = entry.getKey();
-        final V value = entry.getValue();
 
         for (final String f : fields) {
             final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, f);

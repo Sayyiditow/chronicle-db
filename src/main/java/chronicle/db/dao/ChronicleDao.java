@@ -26,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -607,6 +608,33 @@ public interface ChronicleDao<V> {
         return result;
     }
 
+    default CsvObject fetchCsv(final int limit) {
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+
+        for (final String file : getDataFileState().fileNames()) {
+            if (rowQueue.size() >= limit) {
+                break;
+            }
+            try (final var shared = openDb(file)) {
+                shared.map.forEachEntryWhile(entry -> {
+                    if (rowQueue.size() >= limit) {
+                        return false; // Early exit
+                    }
+                    final var key = entry.key().get();
+                    final var value = shared.map.getUsing(key, using());
+                    headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                    rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                    return true;
+                });
+            }
+        }
+        Logger.info("Fetched [{}] CSV entries at [{}].", rowQueue.size(), dataPath());
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+    }
+
     default Map<String, LinkedHashMap<String, Object>> fetchSubset(final String[] fields, final int limit) {
         final var result = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(10_000);
         for (final String file : getDataFileState().fileNames()) {
@@ -656,6 +684,10 @@ public interface ChronicleDao<V> {
 
     default Map<String, V> fetch() {
         return fetch(HARD_LIMIT);
+    }
+
+    default CsvObject fetchCsv() {
+        return fetchCsv(HARD_LIMIT);
     }
 
     default Map<String, LinkedHashMap<String, Object>> fetchSubset(final String[] fields) {
@@ -757,6 +789,48 @@ public interface ChronicleDao<V> {
         }
 
         return map;
+    }
+
+    default CsvObject getCsv(final Iterable<String> keys) throws Exception {
+        if (keys == null || !keys.iterator().hasNext()) {
+            return new CsvObject(new String[0], Collections.emptyList());
+        }
+
+        Logger.info("Querying multiple keys for CSV at [{}].", dataPath());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                for (final var key : keys) {
+                    final var value = shared.map.getUsing(key, using());
+                    if (value != null) {
+                        headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                        rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                    }
+                }
+            }
+            return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+        }
+
+        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
+            keyFiles.fileGroups.entrySet().parallelStream().forEach(entry -> {
+                final var file = entry.getKey();
+
+                try (final var shared = openDb(file)) {
+                    for (final var key : entry.getValue()) {
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null) {
+                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                        }
+                    }
+                }
+            });
+        }
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
     default Map<String, LinkedHashMap<String, Object>> getSubset(final Iterable<String> keys, final String[] fields)
@@ -887,6 +961,53 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    default CsvObject getCsv(final Iterable<String> keys, final int limit) throws Exception {
+        if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
+            return new CsvObject(new String[0], Collections.emptyList());
+        }
+
+        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var count = new AtomicInteger(0);
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                for (final var key : keys) {
+                    if (count.get() >= limit)
+                        break;
+                    final var value = shared.map.getUsing(key, using());
+                    if (value != null && count.incrementAndGet() <= limit) {
+                        headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                        rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                    }
+                }
+            }
+            return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+        }
+
+        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
+            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+
+                try (final var shared = openDb(file)) {
+                    for (final var key : entry.getValue()) {
+                        if (count.get() >= limit)
+                            break outer;
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null && count.incrementAndGet() <= limit) {
+                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                        }
+                    }
+                }
+            }
+        }
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+    }
+
     default Map<String, LinkedHashMap<String, Object>> getSubset(final Iterable<String> keys, final String[] fields,
             final int limit) throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
@@ -930,6 +1051,53 @@ public interface ChronicleDao<V> {
         }
 
         return map;
+    }
+
+    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] headers, final int limit)
+            throws Exception {
+        if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
+            return new CsvObject(headers, Collections.emptyList());
+        }
+
+        Logger.info("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final var count = new AtomicInteger(0);
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                for (final var key : keys) {
+                    if (count.get() >= limit)
+                        break;
+                    final var value = shared.map.getUsing(key, using());
+                    if (value != null && count.incrementAndGet() <= limit) {
+                        rowQueue.add(
+                                CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(), averageValueClass));
+                    }
+                }
+            }
+            return new CsvObject(headers, new ArrayList<>(rowQueue));
+        }
+
+        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
+            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+
+                try (final var shared = openDb(file)) {
+                    for (final var key : entry.getValue()) {
+                        if (count.get() >= limit)
+                            break outer;
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null && count.incrementAndGet() <= limit) {
+                            rowQueue.add(CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(),
+                                    averageValueClass));
+                        }
+                    }
+                }
+            }
+        }
+
+        return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
     default Map<String, V> get(final Iterable<String> keys, final Set<String> excludedKeys, final int limit)
@@ -980,6 +1148,59 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    default CsvObject getCsv(final Iterable<String> keys, final Set<String> excludedKeys, final int limit)
+            throws Exception {
+        if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
+            return new CsvObject(new String[0], Collections.emptyList());
+        }
+
+        Logger.info("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var count = new AtomicInteger(0);
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                for (final var key : keys) {
+                    if (count.get() >= limit)
+                        break;
+                    if (!excludedKeys.contains(key)) {
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null && count.incrementAndGet() <= limit) {
+                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                        }
+                    }
+                }
+            }
+            return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+        }
+
+        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
+            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+
+                try (final var shared = openDb(file)) {
+                    for (final var key : entry.getValue()) {
+                        if (count.get() >= limit)
+                            break outer;
+                        if (!excludedKeys.contains(key)) {
+                            final var value = shared.map.getUsing(key, using());
+                            if (value != null && count.incrementAndGet() <= limit) {
+                                headers.compareAndSet(null,
+                                        CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                                rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+    }
+
     default Map<String, LinkedHashMap<String, Object>> getSubset(final Iterable<String> keys,
             final Set<String> excludedKeys, final String[] fields, final int limit)
             throws Exception {
@@ -1028,6 +1249,58 @@ public interface ChronicleDao<V> {
         }
 
         return map;
+    }
+
+    default CsvObject getSubsetCsv(final Iterable<String> keys, final Set<String> excludedKeys, final String[] headers,
+            final int limit)
+            throws Exception {
+        if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
+            return new CsvObject(headers, Collections.emptyList());
+        }
+
+        Logger.info("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var count = new AtomicInteger(0);
+        final var averageValueClass = averageValue().getClass();
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                for (final var key : keys) {
+                    if (count.get() >= limit)
+                        break;
+                    if (!excludedKeys.contains(key)) {
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null && count.incrementAndGet() <= limit) {
+                            rowQueue.add(CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(),
+                                    averageValueClass));
+                        }
+                    }
+                }
+            }
+            return new CsvObject(headers, new ArrayList<>(rowQueue));
+        }
+
+        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
+            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+
+                try (final var shared = openDb(file)) {
+                    for (final var key : entry.getValue()) {
+                        if (count.get() >= limit)
+                            break outer;
+                        if (!excludedKeys.contains(key)) {
+                            final var value = shared.map.getUsing(key, using());
+                            if (value != null && count.incrementAndGet() <= limit) {
+                                rowQueue.add(CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(),
+                                        averageValueClass));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
     /**
@@ -1534,7 +1807,7 @@ public interface ChronicleDao<V> {
 
     default Map<String, V> search(final Iterable<String> keys, final List<Search> filters, final int limit)
             throws Throwable {
-        if (keys == null || !keys.iterator().hasNext()) {
+        if (keys == null || !keys.iterator().hasNext() || filters.isEmpty()) {
             return Collections.emptyMap();
         }
 
@@ -1601,6 +1874,80 @@ public interface ChronicleDao<V> {
         }
 
         return map;
+    }
+
+    default CsvObject searchCsv(final Iterable<String> keys, final List<Search> filters, final int limit)
+            throws Throwable {
+        if (keys == null || !keys.iterator().hasNext() || filters.isEmpty()) {
+            return new CsvObject(new String[0], Collections.emptyList());
+        }
+
+        Logger.info("Querying CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                try {
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
+                                    }
+                                } catch (final Throwable e) {
+                                    Logger.error("Search failed for key [{}]: {}", key);
+                                    Logger.error(e);
+                                }
+                            }
+
+                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                            return true;
+                        });
+            }
+            return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+        }
+
+        final AtomicInteger count = new AtomicInteger();
+        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                final var keysForFile = entry.getValue(); // Iterable<String>
+
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
+                        final V value = shared.map.getUsing(key, using());
+                        if (value == null)
+                            return false;
+
+                        for (final var search : filters) {
+                            try {
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
+                                }
+                            } catch (final Throwable e) {
+                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            }
+                        }
+
+                        headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                        rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                        return true;
+                    });
+                }
+            }
+        }
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
     default Map<String, LinkedHashMap<String, Object>> searchSubset(final Iterable<String> keys,
@@ -1672,6 +2019,80 @@ public interface ChronicleDao<V> {
         }
 
         return map;
+    }
+
+    default CsvObject searchSubsetCsv(final Iterable<String> keys, final List<Search> filters, final String[] headers,
+            final int limit) throws Throwable {
+        if (keys == null || !keys.iterator().hasNext()) {
+            return new CsvObject(headers, Collections.emptyList());
+        }
+
+        Logger.info("Querying subset CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(),
+                filters.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                try {
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
+                                    }
+                                } catch (final Throwable e) {
+                                    Logger.error("Search failed for key [{}]: {}", key);
+                                    Logger.error(e);
+                                }
+                            }
+
+                            rowQueue.add(CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(),
+                                    averageValueClass));
+                            return true;
+                        });
+            }
+            return new CsvObject(headers, new ArrayList<>(rowQueue));
+        }
+
+        final AtomicInteger count = new AtomicInteger();
+        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                final var keysForFile = entry.getValue(); // Iterable<String>
+
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
+                        final V value = shared.map.getUsing(key, using());
+                        if (value == null)
+                            return false;
+
+                        for (final var search : filters) {
+                            try {
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
+                                }
+                            } catch (final Throwable e) {
+                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            }
+                        }
+
+                        rowQueue.add(
+                                CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(), averageValueClass));
+                        return true;
+                    });
+                }
+            }
+        }
+
+        return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
     default void searchKeys(final Iterable<String> keys, final List<Search> filters, final Collection<String> results)
@@ -1817,6 +2238,89 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    default CsvObject searchCsv(final Iterable<String> keys, final List<Search> filters,
+            final Set<String> excludedKeys, final int limit) throws Throwable {
+        if (keys == null || !keys.iterator().hasNext()) {
+            return new CsvObject(new String[0], Collections.emptyList());
+        }
+
+        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
+                filters.size(), excludedKeys.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
+                            if (excludedKeys.contains(key))
+                                return false;
+
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                try {
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
+                                    }
+                                } catch (final Throwable e) {
+                                    Logger.error("Search failed for key [{}]: {}", key);
+                                    Logger.error(e);
+                                }
+                            }
+
+                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                            return true;
+                        });
+            }
+            return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+        }
+
+        final AtomicInteger count = new AtomicInteger();
+        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                final var keysForFile = entry.getValue(); // Iterable<String>
+
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
+                            key -> {
+                                if (excludedKeys.contains(key))
+                                    return false;
+
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : filters) {
+                                    try {
+                                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                            return false;
+                                        }
+                                    } catch (final Throwable e) {
+                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                    }
+                                }
+
+                                headers.compareAndSet(null,
+                                        CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                                rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                                return true;
+                            });
+                }
+            }
+        }
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+    }
+
     default Map<String, LinkedHashMap<String, Object>> searchSubset(final Iterable<String> keys,
             final List<Search> filters, final Set<String> excludedKeys, final int limit, final String[] fields)
             throws Throwable {
@@ -1895,6 +2399,88 @@ public interface ChronicleDao<V> {
         }
 
         return map;
+    }
+
+    default CsvObject searchSubsetCsv(final Iterable<String> keys, final List<Search> filters,
+            final Set<String> excludedKeys, final String[] headers, final int limit)
+            throws Throwable {
+        if (keys == null || !keys.iterator().hasNext()) {
+            return new CsvObject(headers, Collections.emptyList());
+        }
+
+        Logger.info("Querying subset CSV filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
+                dataPath(), filters.size(), excludedKeys.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                CHRONICLE_UTILS.parallelIterable(keys, limit,
+                        key -> {
+                            if (excludedKeys.contains(key))
+                                return false;
+
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                try {
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
+                                    }
+                                } catch (final Throwable e) {
+                                    Logger.error("Search failed for key [{}]: {}", key);
+                                    Logger.error(e);
+                                }
+                            }
+
+                            rowQueue.add(CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(),
+                                    averageValueClass));
+                            return true;
+                        });
+            }
+            return new CsvObject(headers, new ArrayList<>(rowQueue));
+        }
+
+        final AtomicInteger count = new AtomicInteger();
+        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                final var keysForFile = entry.getValue(); // Iterable<String>
+
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
+                            key -> {
+                                if (excludedKeys.contains(key))
+                                    return false;
+
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : filters) {
+                                    try {
+                                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                            return false;
+                                        }
+                                    } catch (final Throwable e) {
+                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                    }
+                                }
+
+                                rowQueue.add(CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(),
+                                        averageValueClass));
+                                return true;
+                            });
+                }
+            }
+        }
+
+        return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
     default long searchCount(final Iterable<String> keys, final List<Search> filters, final int limit)
@@ -2004,6 +2590,42 @@ public interface ChronicleDao<V> {
         });
     }
 
+    private void searchCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
+            final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
+            final AtomicReference<String[]> headers) {
+        Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        final var averageValueClass = averageValue().getClass();
+
+        db.forEachEntryWhile(entry -> {
+            try {
+                if (counter.get() >= limit) {
+                    return false;
+                }
+
+                final String key = entry.key().get();
+                final V value = entry.value().get();
+                if (value == null) {
+                    return true;
+                }
+
+                for (final Search search : filters) {
+                    if (!CHRONICLE_UTILS.search(search, key, value, averageValue().getClass())) {
+                        return true;
+                    }
+                }
+
+                if (counter.incrementAndGet() <= limit) {
+                    headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                    rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                }
+            } catch (final Throwable e) {
+                Logger.error("Search failed during multi-filter scan.");
+                Logger.error(e);
+            }
+            return true;
+        });
+    }
+
     private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final Map<String, LinkedHashMap<String, Object>> result, final AtomicInteger counter,
             final String[] fields) {
@@ -2029,6 +2651,40 @@ public interface ChronicleDao<V> {
 
                 if (counter.incrementAndGet() <= limit) {
                     CHRONICLE_UTILS.subsetOfValues(fields, key, value, result, name(), averageValue().getClass());
+                }
+            } catch (final Throwable e) {
+                Logger.error("Search subset failed during multi-filter scan.");
+                Logger.error(e);
+            }
+            return true;
+        });
+    }
+
+    private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
+            final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter, final String[] headers) {
+        Logger.info("Subset CSV searching DB at [{}] for {} filters.", dataPath(), filters.size());
+
+        db.forEachEntryWhile(entry -> {
+            try {
+                if (counter.get() >= limit) {
+                    return false;
+                }
+
+                final String key = entry.key().get();
+                final V value = entry.value().get();
+                if (value == null) {
+                    return true;
+                }
+
+                for (final Search search : filters) {
+                    if (!CHRONICLE_UTILS.search(search, key, value, averageValue().getClass())) {
+                        return true;
+                    }
+                }
+
+                if (counter.incrementAndGet() <= limit) {
+                    rowQueue.add(CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(),
+                            averageValue().getClass()));
                 }
             } catch (final Throwable e) {
                 Logger.error("Search subset failed during multi-filter scan.");
@@ -2103,6 +2759,47 @@ public interface ChronicleDao<V> {
         });
     }
 
+    private void searchCsv(final ChronicleMap<String, V> db, final List<Search> filters, final Set<String> excludedKeys,
+            final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
+            final AtomicReference<String[]> headers) {
+        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+                dataPath(), filters.size(), excludedKeys.size(), limit);
+        final var averageValueClass = averageValue().getClass();
+
+        db.forEachEntryWhile(entry -> {
+            try {
+                if (counter.get() >= limit) {
+                    return false; // Early exit
+                }
+
+                final String key = entry.key().get();
+                if (excludedKeys.contains(key)) {
+                    return true;
+                }
+
+                final V value = entry.value().get();
+                if (value == null) {
+                    return true;
+                }
+
+                for (final Search search : filters) {
+                    if (!CHRONICLE_UTILS.search(search, key, value, averageValue().getClass())) {
+                        return true;
+                    }
+                }
+
+                if (counter.incrementAndGet() <= limit) {
+                    headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(averageValueClass, value));
+                    rowQueue.add(CHRONICLE_UTILS.getRowFromObject(averageValueClass, key, value));
+                }
+            } catch (final Throwable e) {
+                Logger.error("Search failed during multi-filter scan.");
+                Logger.error(e);
+            }
+            return true;
+        });
+    }
+
     private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final int limit, final Map<String, LinkedHashMap<String, Object>> result,
             final AtomicInteger counter, final String[] fields) {
@@ -2134,6 +2831,46 @@ public interface ChronicleDao<V> {
                 if (counter.incrementAndGet() <= limit) {
                     CHRONICLE_UTILS.subsetOfValues(fields, key, db.getUsing(key, using()), result, name(),
                             averageValue().getClass());
+                }
+            } catch (final Throwable e) {
+                Logger.error("Search failed during multi-filter scan.");
+                Logger.error(e);
+            }
+            return true;
+        });
+    }
+
+    private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters,
+            final Set<String> excludedKeys, final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue,
+            final AtomicInteger counter, final String[] headers) {
+        Logger.info("Subset CSV searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+                dataPath(), filters.size(), excludedKeys.size(), limit);
+
+        db.forEachEntryWhile(entry -> {
+            try {
+                if (counter.get() >= limit) {
+                    return false; // Early exit
+                }
+
+                final String key = entry.key().get();
+                if (excludedKeys.contains(key)) {
+                    return true;
+                }
+
+                final V value = entry.value().get();
+                if (value == null) {
+                    return true;
+                }
+
+                for (final Search search : filters) {
+                    if (!CHRONICLE_UTILS.search(search, key, value, averageValue().getClass())) {
+                        return true;
+                    }
+                }
+
+                if (counter.incrementAndGet() <= limit) {
+                    rowQueue.add(CHRONICLE_UTILS.subsetOfValuesToRow(headers, key, value, name(),
+                            averageValue().getClass()));
                 }
             } catch (final Throwable e) {
                 Logger.error("Search failed during multi-filter scan.");
@@ -2207,6 +2944,10 @@ public interface ChronicleDao<V> {
     }
 
     private Map<String, V> search(final Map<String, V> db, final List<Search> filters) {
+        if (filters.isEmpty() || db.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
         final var size = db.size();
         Logger.info("Searching in-memory map of [{}] with [{}] filters.", size, filters.size());
         final Map<String, V> result = new ConcurrentHashMap<>(Math.min(size, 10_000));
@@ -2617,6 +3358,76 @@ public interface ChronicleDao<V> {
         }
     }
 
+    default CsvObject multiSearchSubsetCsv(final List<Search> searches, final String[] fields) throws Throwable {
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
+        if (searches == null || searches.isEmpty()) {
+            return new CsvObject(headers, Collections.emptyList());
+        }
+
+        final Set<String> indexFileNames = indexFileNames();
+
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (!s.skipIndex() && indexedSearch == null &&
+                    indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
+                .orElse(HARD_LIMIT);
+
+        SearchResult searchResult = null;
+        String indexPath = null;
+        SharedIndexMap sharedIndexMap = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            sharedIndexMap = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                sharedIndexMap.close();
+                return new CsvObject(headers, Collections.emptyList());
+            }
+
+            if (remainingSearches.isEmpty()) {
+                try {
+                    return getSubsetCsv(searchResult.results(), headers, limit);
+                } finally {
+                    sharedIndexMap.close();
+                }
+            }
+        }
+
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+                final var counter = new AtomicInteger();
+                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                    if (counter.get() >= limit) {
+                        return;
+                    }
+                    try (final var shared = openDb(file)) {
+                        searchSubsetCsv(shared.map, searches, limit, rowQueue, counter, headers);
+                    }
+                });
+
+                return new CsvObject(headers, new ArrayList<>(rowQueue));
+            } else {
+                return searchSubsetCsv(searchResult.results(), remainingSearches, headers, limit);
+            }
+        } finally {
+            if (sharedIndexMap != null) {
+                sharedIndexMap.close();
+            }
+        }
+    }
+
     default Map<String, V> multiSearch(final List<Search> searches) throws Throwable {
         if (searches == null || searches.isEmpty()) {
             return Collections.emptyMap();
@@ -2677,6 +3488,75 @@ public interface ChronicleDao<V> {
                 return result;
             } else {
                 return search(searchResult.results(), remainingSearches, limit);
+            }
+        } finally {
+            if (sharedIndexMap != null) {
+                sharedIndexMap.close();
+            }
+        }
+    }
+
+    default CsvObject multiSearchCsv(final List<Search> searches) throws Throwable {
+        if (searches == null || searches.isEmpty()) {
+            return new CsvObject(new String[0], Collections.emptyList());
+        }
+
+        final Set<String> indexFileNames = indexFileNames();
+
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
+                .orElse(HARD_LIMIT);
+
+        SearchResult searchResult = null;
+        String indexPath = null;
+        SharedIndexMap sharedIndexMap = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            sharedIndexMap = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                sharedIndexMap.close();
+                return new CsvObject(new String[0], Collections.emptyList());
+            }
+
+            if (remainingSearches.isEmpty()) {
+                try {
+                    return getCsv(searchResult.results(), limit);
+                } finally {
+                    sharedIndexMap.close();
+                }
+            }
+        }
+
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+                final AtomicReference<String[]> headers = new AtomicReference<>(null);
+                final var counter = new AtomicInteger();
+                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                    if (counter.get() >= limit) {
+                        return;
+                    }
+                    try (final var shared = openDb(file)) {
+                        searchCsv(shared.map, searches, limit, rowQueue, counter, headers);
+                    }
+                });
+
+                return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+            } else {
+                return searchCsv(searchResult.results(), remainingSearches, limit);
             }
         } finally {
             if (sharedIndexMap != null) {
@@ -2866,6 +3746,74 @@ public interface ChronicleDao<V> {
         }
     }
 
+    default CsvObject multiSearchCsv(final List<Search> searches, final Set<String> excludedKeys) throws Throwable {
+        if (searches == null || searches.isEmpty()) {
+            return new CsvObject(new String[0], Collections.emptyList());
+        }
+
+        final Set<String> indexFileNames = indexFileNames();
+
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+
+        SearchResult searchResult = null;
+        String indexPath = null;
+        SharedIndexMap sharedIndexMap = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            sharedIndexMap = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                sharedIndexMap.close();
+                return new CsvObject(new String[0], Collections.emptyList());
+            }
+
+            if (remainingSearches.isEmpty()) {
+                try {
+                    return getCsv(searchResult.results(), excludedKeys, limit);
+                } finally {
+                    sharedIndexMap.close();
+                }
+            }
+        }
+
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+                final AtomicReference<String[]> headers = new AtomicReference<>(null);
+                final var counter = new AtomicInteger(0);
+                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                    if (counter.get() >= limit) {
+                        return;
+                    }
+                    try (final var shared = openDb(file)) {
+                        searchCsv(shared.map, searches, excludedKeys, limit, rowQueue, counter, headers);
+                    }
+                });
+
+                return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+            } else {
+                return searchCsv(searchResult.results(), remainingSearches, excludedKeys, limit);
+            }
+        } finally {
+            if (sharedIndexMap != null) {
+                sharedIndexMap.close();
+            }
+        }
+    }
+
     default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final List<Search> searches,
             final Set<String> excludedKeys, final String[] fields) throws Throwable {
         if (searches == null || searches.isEmpty()) {
@@ -2935,23 +3883,100 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, V> multiSearch(final Set<String> matchingKeys, final List<Search> searches) throws Throwable {
-        if (searches == null || searches.isEmpty() || matchingKeys == null || matchingKeys.isEmpty()) {
-            return Collections.emptyMap();
+    default CsvObject multiSearchSubsetCsv(final List<Search> searches, final Set<String> excludedKeys,
+            final String[] fields) throws Throwable {
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
+        if (searches == null || searches.isEmpty()) {
+            return new CsvObject(headers, Collections.emptyList());
         }
+
+        final Set<String> indexFileNames = indexFileNames();
+
+        // Step 1: Separate searches into first-indexed and remaining
+        Search indexedSearch = null;
+        final List<Search> remainingSearches = new ArrayList<>();
+
+        for (final Search s : searches) {
+            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+                indexedSearch = s;
+            } else {
+                remainingSearches.add(s);
+            }
+        }
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+
+        SearchResult searchResult = null;
+        String indexPath = null;
+        SharedIndexMap sharedIndexMap = null;
+        // Step 2: Perform indexed search (only if indexedSearch != null)
+        if (indexedSearch != null) {
+            indexPath = getIndexPath(indexedSearch.field());
+            sharedIndexMap = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            if (isResultEmpty(searchResult.results())) {
+                sharedIndexMap.close();
+                return new CsvObject(headers, Collections.emptyList());
+            }
+
+            if (remainingSearches.isEmpty()) {
+                try {
+                    return getSubsetCsv(searchResult.results(), excludedKeys, headers, limit);
+                } finally {
+                    sharedIndexMap.close();
+                }
+            }
+        }
+
+        // Step 3: Manual search
+        try {
+            if (searchResult == null) {
+                final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+                final var counter = new AtomicInteger(0);
+                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                    if (counter.get() >= limit) {
+                        return;
+                    }
+                    try (final var shared = openDb(file)) {
+                        searchSubsetCsv(shared.map, searches, excludedKeys, limit, rowQueue, counter, headers);
+                    }
+                });
+
+                return new CsvObject(headers, new ArrayList<>(rowQueue));
+            } else {
+                return searchSubsetCsv(searchResult.results(), remainingSearches, excludedKeys, headers, limit);
+            }
+        } finally {
+            if (sharedIndexMap != null) {
+                sharedIndexMap.close();
+            }
+        }
+    }
+
+    default Map<String, V> multiSearch(final Set<String> matchingKeys, final List<Search> searches) throws Throwable {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         return search(matchingKeys, searches, limit);
     }
 
+    default CsvObject multiSearchCsv(final Set<String> matchingKeys, final List<Search> searches) throws Throwable {
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+
+        return searchCsv(matchingKeys, searches, limit);
+    }
+
     default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final Set<String> matchingKeys,
             final List<Search> searches, final String[] fields) throws Throwable {
-        if (searches == null || searches.isEmpty() || matchingKeys == null || matchingKeys.isEmpty()) {
-            return Collections.emptyMap();
-        }
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         return searchSubset(matchingKeys, searches, fields, limit);
+    }
+
+    default CsvObject multiSearchSubsetCsv(final Set<String> matchingKeys,
+            final List<Search> searches, final String[] fields) throws Throwable {
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
+        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+
+        return searchSubsetCsv(matchingKeys, searches, headers, limit);
     }
 
     default long multiSearchCount(final List<Search> searches) throws Throwable {
@@ -3012,10 +4037,6 @@ public interface ChronicleDao<V> {
                 sharedIndexMap.close();
             }
         }
-    }
-
-    default CsvObject subsetOfValuesCsv(final Map<String, V> initialMap, final String[] fields) {
-        return CHRONICLE_UTILS.formatSubsetChronicleDataToCsv(initialMap, fields, name(), averageValue().getClass());
     }
 
     /**
