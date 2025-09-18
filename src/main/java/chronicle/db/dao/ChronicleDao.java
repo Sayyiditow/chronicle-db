@@ -3014,25 +3014,6 @@ public interface ChronicleDao<V> {
         }
     }
 
-    /**
-     * Cases where the data being selected is a subset of the whole object
-     * this will be used to return a map of key, map of required fields and the
-     * values
-     * 
-     * @param initialMap the map containing the whole object fields
-     * @param fields     the required fields
-     */
-    default Map<String, LinkedHashMap<String, Object>> subsetOfValues(final Map<String, V> initialMap,
-            final String[] fields) {
-        final var map = new HashMap<String, LinkedHashMap<String, Object>>(initialMap.size());
-
-        for (final var entry : initialMap.entrySet()) {
-            CHRONICLE_UTILS.subsetOfValues(fields, entry, map, name(), averageValue().getClass());
-        }
-
-        return map;
-    }
-
     default CsvObject subsetOfValuesCsv(final Map<String, V> initialMap, final String[] fields) {
         return CHRONICLE_UTILS.formatSubsetChronicleDataToCsv(initialMap, fields, name(), averageValue().getClass());
     }
