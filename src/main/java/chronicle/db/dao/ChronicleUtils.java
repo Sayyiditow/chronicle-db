@@ -25,7 +25,6 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -36,7 +35,6 @@ import java.util.stream.Collectors;
 
 import org.tinylog.Logger;
 
-import chronicle.db.entity.CsvObject;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.MapDb.SharedIndexMap;
@@ -624,53 +622,11 @@ public final class ChronicleUtils {
         return row;
     }
 
-    public <V> void subsetOfValuesToRow(final String[] fields, final V value,
-            final Object[] row, final String objectName, final Class<?> valueClass) {
-        for (int i = 0; i < fields.length; i++) {
-            final String field = fields[i];
-            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, field);
-            if (methodHandle != null) {
-                try {
-                    row[1 + i] = methodHandle.invoke(value); // Always start at position 1
-                } catch (final Throwable e) {
-                    // should not happen, all fields must be public
-                    Logger.error("Could not get value for field [{}] in [{}].", field, objectName);
-                    Logger.error(e);
-                }
-            }
-        }
-    }
-
     public String[] getCsvHeaders(final String[] fields) {
         final String[] headers = new String[fields.length + 1];
         headers[0] = "ID";
         System.arraycopy(fields, 0, headers, 1, fields.length);
         return headers;
-    }
-
-    /**
-     * Only for chronicle db object types to convert to csv for table display on
-     * frontend
-     * 
-     */
-    public <V> CsvObject formatSubsetChronicleDataToCsv(final Map<String, V> map,
-            final String[] headers, final String objectName, final Class<?> valueClass) {
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
-        final String[] updatedHeaders = new String[headers.length + 1];
-        updatedHeaders[0] = "ID";
-        System.arraycopy(headers, 0, updatedHeaders, 1, headers.length);
-
-        map.entrySet().parallelStream().forEach(entry -> {
-            final var key = entry.getKey();
-            final V value = entry.getValue();
-            final Object[] row = new Object[updatedHeaders.length];
-            row[0] = key;
-
-            subsetOfValuesToRow(headers, value, row, objectName, valueClass);
-            rowQueue.add(row);
-        });
-
-        return new CsvObject(updatedHeaders, new ArrayList<>(rowQueue));
     }
 
     public <V> void updateObjectValues(final V oldObject, final Set<String> fields, final V newObject)
