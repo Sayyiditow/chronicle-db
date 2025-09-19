@@ -678,7 +678,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched [{}] entries at [{}].", rowQueue.size(), dataPath());
+        Logger.info("Fetched subset CSV [{}] entries at [{}].", rowQueue.size(), dataPath());
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
@@ -793,7 +793,7 @@ public interface ChronicleDao<V> {
 
     default CsvObject getCsv(final Iterable<String> keys) throws Exception {
         if (keys == null || !keys.iterator().hasNext()) {
-            return new CsvObject(new String[0], Collections.emptyList());
+            return CsvObject.empty();
         }
 
         Logger.info("Querying multiple keys for CSV at [{}].", dataPath());
@@ -873,15 +873,13 @@ public interface ChronicleDao<V> {
         return map;
     }
 
-    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields)
-            throws Exception {
-        final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
-
+    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields) throws Exception {
         if (keys == null || !keys.iterator().hasNext()) {
-            return new CsvObject(headers, Collections.emptyList());
+            return CsvObject.empty();
         }
 
         Logger.info("Querying subset CSV multiple keys at [{}].", dataPath());
+        final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
 
@@ -963,7 +961,7 @@ public interface ChronicleDao<V> {
 
     default CsvObject getCsv(final Iterable<String> keys, final int limit) throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
-            return new CsvObject(new String[0], Collections.emptyList());
+            return CsvObject.empty();
         }
 
         Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
@@ -1053,14 +1051,15 @@ public interface ChronicleDao<V> {
         return map;
     }
 
-    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] headers, final int limit)
+    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields, final int limit)
             throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
-            return new CsvObject(headers, Collections.emptyList());
+            return CsvObject.empty();
         }
 
-        Logger.info("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.info("Querying subset CSV multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var averageValueClass = averageValue().getClass();
         final var count = new AtomicInteger(0);
 
@@ -1151,7 +1150,7 @@ public interface ChronicleDao<V> {
     default CsvObject getCsv(final Iterable<String> keys, final Set<String> excludedKeys, final int limit)
             throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
-            return new CsvObject(new String[0], Collections.emptyList());
+            return CsvObject.empty();
         }
 
         Logger.info("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
@@ -1251,15 +1250,15 @@ public interface ChronicleDao<V> {
         return map;
     }
 
-    default CsvObject getSubsetCsv(final Iterable<String> keys, final Set<String> excludedKeys, final String[] headers,
-            final int limit)
-            throws Exception {
+    default CsvObject getSubsetCsv(final Iterable<String> keys, final Set<String> excludedKeys, final String[] fields,
+            final int limit) throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
-            return new CsvObject(headers, Collections.emptyList());
+            return CsvObject.empty();
         }
 
-        Logger.info("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.info("Querying subset CSV multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var count = new AtomicInteger(0);
         final var averageValueClass = averageValue().getClass();
 
@@ -1879,7 +1878,7 @@ public interface ChronicleDao<V> {
     default CsvObject searchCsv(final Iterable<String> keys, final List<Search> filters, final int limit)
             throws Throwable {
         if (keys == null || !keys.iterator().hasNext() || filters.isEmpty()) {
-            return new CsvObject(new String[0], Collections.emptyList());
+            return CsvObject.empty();
         }
 
         Logger.info("Querying CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
@@ -2021,15 +2020,16 @@ public interface ChronicleDao<V> {
         return map;
     }
 
-    default CsvObject searchSubsetCsv(final Iterable<String> keys, final List<Search> filters, final String[] headers,
+    default CsvObject searchSubsetCsv(final Iterable<String> keys, final List<Search> filters, final String[] fields,
             final int limit) throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
-            return new CsvObject(headers, Collections.emptyList());
+            return CsvObject.empty();
         }
 
         Logger.info("Querying subset CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(),
                 filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var averageValueClass = averageValue().getClass();
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -2241,7 +2241,7 @@ public interface ChronicleDao<V> {
     default CsvObject searchCsv(final Iterable<String> keys, final List<Search> filters,
             final Set<String> excludedKeys, final int limit) throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
-            return new CsvObject(new String[0], Collections.emptyList());
+            return CsvObject.empty();
         }
 
         Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
@@ -2402,15 +2402,15 @@ public interface ChronicleDao<V> {
     }
 
     default CsvObject searchSubsetCsv(final Iterable<String> keys, final List<Search> filters,
-            final Set<String> excludedKeys, final String[] headers, final int limit)
-            throws Throwable {
+            final Set<String> excludedKeys, final String[] fields, final int limit) throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
-            return new CsvObject(headers, Collections.emptyList());
+            return CsvObject.empty();
         }
 
         Logger.info("Querying subset CSV filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var averageValueClass = averageValue().getClass();
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -2661,8 +2661,9 @@ public interface ChronicleDao<V> {
     }
 
     private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
-            final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter, final String[] headers) {
+            final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter, final String[] fields) {
         Logger.info("Subset CSV searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
 
         db.forEachEntryWhile(entry -> {
             try {
@@ -2842,9 +2843,10 @@ public interface ChronicleDao<V> {
 
     private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue,
-            final AtomicInteger counter, final String[] headers) {
+            final AtomicInteger counter, final String[] fields) {
         Logger.info("Subset CSV searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
 
         db.forEachEntryWhile(entry -> {
             try {
@@ -3359,9 +3361,8 @@ public interface ChronicleDao<V> {
     }
 
     default CsvObject multiSearchSubsetCsv(final List<Search> searches, final String[] fields) throws Throwable {
-        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         if (searches == null || searches.isEmpty()) {
-            return new CsvObject(headers, Collections.emptyList());
+            return CsvObject.empty();
         }
 
         final Set<String> indexFileNames = indexFileNames();
@@ -3391,12 +3392,12 @@ public interface ChronicleDao<V> {
             searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexMap.close();
-                return new CsvObject(headers, Collections.emptyList());
+                return CsvObject.empty();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return getSubsetCsv(searchResult.results(), headers, limit);
+                    return getSubsetCsv(searchResult.results(), fields, limit);
                 } finally {
                     sharedIndexMap.close();
                 }
@@ -3413,13 +3414,14 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        searchSubsetCsv(shared.map, searches, limit, rowQueue, counter, headers);
+                        searchSubsetCsv(shared.map, searches, limit, rowQueue, counter, fields);
                     }
                 });
 
+                final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
                 return new CsvObject(headers, new ArrayList<>(rowQueue));
             } else {
-                return searchSubsetCsv(searchResult.results(), remainingSearches, headers, limit);
+                return searchSubsetCsv(searchResult.results(), remainingSearches, fields, limit);
             }
         } finally {
             if (sharedIndexMap != null) {
@@ -3498,7 +3500,7 @@ public interface ChronicleDao<V> {
 
     default CsvObject multiSearchCsv(final List<Search> searches) throws Throwable {
         if (searches == null || searches.isEmpty()) {
-            return new CsvObject(new String[0], Collections.emptyList());
+            return CsvObject.empty();
         }
 
         final Set<String> indexFileNames = indexFileNames();
@@ -3527,7 +3529,7 @@ public interface ChronicleDao<V> {
             searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexMap.close();
-                return new CsvObject(new String[0], Collections.emptyList());
+                return CsvObject.empty();
             }
 
             if (remainingSearches.isEmpty()) {
@@ -3748,7 +3750,7 @@ public interface ChronicleDao<V> {
 
     default CsvObject multiSearchCsv(final List<Search> searches, final Set<String> excludedKeys) throws Throwable {
         if (searches == null || searches.isEmpty()) {
-            return new CsvObject(new String[0], Collections.emptyList());
+            return CsvObject.empty();
         }
 
         final Set<String> indexFileNames = indexFileNames();
@@ -3776,7 +3778,7 @@ public interface ChronicleDao<V> {
             searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexMap.close();
-                return new CsvObject(new String[0], Collections.emptyList());
+                return CsvObject.empty();
             }
 
             if (remainingSearches.isEmpty()) {
@@ -3885,9 +3887,8 @@ public interface ChronicleDao<V> {
 
     default CsvObject multiSearchSubsetCsv(final List<Search> searches, final Set<String> excludedKeys,
             final String[] fields) throws Throwable {
-        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         if (searches == null || searches.isEmpty()) {
-            return new CsvObject(headers, Collections.emptyList());
+            return CsvObject.empty();
         }
 
         final Set<String> indexFileNames = indexFileNames();
@@ -3915,12 +3916,12 @@ public interface ChronicleDao<V> {
             searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexMap.close();
-                return new CsvObject(headers, Collections.emptyList());
+                return CsvObject.empty();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return getSubsetCsv(searchResult.results(), excludedKeys, headers, limit);
+                    return getSubsetCsv(searchResult.results(), excludedKeys, fields, limit);
                 } finally {
                     sharedIndexMap.close();
                 }
@@ -3937,13 +3938,14 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        searchSubsetCsv(shared.map, searches, excludedKeys, limit, rowQueue, counter, headers);
+                        searchSubsetCsv(shared.map, searches, excludedKeys, limit, rowQueue, counter, fields);
                     }
                 });
 
+                final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
                 return new CsvObject(headers, new ArrayList<>(rowQueue));
             } else {
-                return searchSubsetCsv(searchResult.results(), remainingSearches, excludedKeys, headers, limit);
+                return searchSubsetCsv(searchResult.results(), remainingSearches, excludedKeys, fields, limit);
             }
         } finally {
             if (sharedIndexMap != null) {
@@ -3973,10 +3975,9 @@ public interface ChronicleDao<V> {
 
     default CsvObject multiSearchSubsetCsv(final Set<String> matchingKeys,
             final List<Search> searches, final String[] fields) throws Throwable {
-        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
-        return searchSubsetCsv(matchingKeys, searches, headers, limit);
+        return searchSubsetCsv(matchingKeys, searches, fields, limit);
     }
 
     default long multiSearchCount(final List<Search> searches) throws Throwable {
