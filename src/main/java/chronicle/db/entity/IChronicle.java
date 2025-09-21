@@ -35,6 +35,7 @@ public interface IChronicle {
 
         final String[] fields = input.split(",");
 
+        System.out.println("@Override");
         System.out.println("public Object getFieldValue(final String fieldName) {");
         System.out.println("    return switch (fieldName) {");
         for (final String field : fields) {
