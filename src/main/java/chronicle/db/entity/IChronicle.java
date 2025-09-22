@@ -42,7 +42,8 @@ public interface IChronicle {
             final String trimmed = field.trim();
             System.out.printf("        case \"%s\" -> %s;%n", trimmed, trimmed);
         }
-        System.out.println("        default -> throw new IllegalArgumentException(\"Unknown field: \" + fieldName);");
+        System.out.println(
+                "        default -> throw new IllegalArgumentException(\"Unknown field: \" + fieldName + \" for object: \" + this.getClass().getSimpleName());");
         System.out.println("    };");
         System.out.println("}");
     }

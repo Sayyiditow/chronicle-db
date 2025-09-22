@@ -62,12 +62,18 @@ public final class ChronicleUtils {
         final Map<String, FieldData> fields = new ConcurrentHashMap<>();
         final MethodHandle headerHandle;
         final MethodHandle rowHandle;
+        final MethodHandle subsetHandle;
+        final MethodHandle subsetRowHandle;
 
         ClassData(final Class<?> clazz) {
             try {
                 final MethodHandles.Lookup lookup = MethodHandles.lookup();
                 this.headerHandle = lookup.findVirtual(clazz, "header", MethodType.methodType(String[].class));
-                this.rowHandle = lookup.findVirtual(clazz, "row", MethodType.methodType(Object[].class, Object.class));
+                this.rowHandle = lookup.findVirtual(clazz, "row", MethodType.methodType(Object[].class, String.class));
+                this.subsetHandle = lookup.findVirtual(clazz, "subset",
+                        MethodType.methodType(LinkedHashMap.class, String[].class));
+                this.subsetRowHandle = lookup.findVirtual(clazz, "subsetRow",
+                        MethodType.methodType(Object[].class, String.class, String[].class));
             } catch (NoSuchMethodException | IllegalAccessException e) {
                 throw new RuntimeException("Failed to initialize MethodHandles for " + clazz.getSimpleName(), e);
             }
@@ -76,7 +82,7 @@ public final class ChronicleUtils {
 
     private static final Map<Class<?>, ClassData> CLASS_DATA_CACHE = new ConcurrentHashMap<>();
 
-    private ClassData getClassData(final Class<?> clazz) {
+    public ClassData getClassData(final Class<?> clazz) {
         return CLASS_DATA_CACHE.computeIfAbsent(clazz, ClassData::new);
     }
 
@@ -93,11 +99,6 @@ public final class ChronicleUtils {
                 return null;
             }
         });
-    }
-
-    private MethodHandle getCachedFieldGetterHandle(final Class<?> clazz, final String fieldName) {
-        final FieldData fieldData = getFieldData(clazz, fieldName);
-        return fieldData != null ? fieldData.getterHandle : null;
     }
 
     private MethodHandle getCachedFieldSetterHandle(final Class<?> clazz, final String fieldName) {
@@ -556,9 +557,8 @@ public final class ChronicleUtils {
         }
     }
 
-    public <V> String[] getHeadersFromObject(final Class<?> valueClass, final V sampleValue) {
+    public <V> String[] getHeadersFromObject(final ClassData classData, final V sampleValue) {
         try {
-            final var classData = getClassData(valueClass);
             final MethodHandle headersMethod = classData.headerHandle;
             return (String[]) headersMethod.invoke(sampleValue);
         } catch (final Throwable e) {
@@ -569,9 +569,8 @@ public final class ChronicleUtils {
         }
     }
 
-    public <V> Object[] getRowFromObject(final Class<?> valueClass, final String key, final V sampleValue) {
+    public <V> Object[] getRowFromObject(final ClassData classData, final String key, final V sampleValue) {
         try {
-            final var classData = getClassData(valueClass);
             final MethodHandle rowMethod = classData.rowHandle;
             return (Object[]) rowMethod.invoke(sampleValue, key);
         } catch (final Throwable e) {
@@ -582,44 +581,30 @@ public final class ChronicleUtils {
         }
     }
 
-    public <V> void subsetOfValues(final String[] fields, final String key, final V value,
-            final Map<String, LinkedHashMap<String, Object>> map, final String objectName, final Class<?> valueClass) {
-        final LinkedHashMap<String, Object> valueMap = new LinkedHashMap<>(fields.length);
-
-        for (final String f : fields) {
-            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, f);
-            if (methodHandle != null) {
-                try {
-                    valueMap.put(f, methodHandle.invoke(value));
-                } catch (final Throwable e) {
-                    // should not happen, all fields must be public
-                    Logger.error("Could not get value for field [{}] in [{}].", f, objectName);
-                    Logger.error(e);
-                }
-            }
+    public <V> LinkedHashMap<String, Object> getSubsetFromObject(final ClassData classData, final String[] fields,
+            final V sampleValue) {
+        try {
+            final MethodHandle rowMethod = classData.subsetHandle;
+            return (LinkedHashMap<String, Object>) rowMethod.invoke(sampleValue, fields);
+        } catch (final Throwable e) {
+            // should not happen
+            Logger.error("Error when getting subset from object.");
+            Logger.error(e);
+            return new LinkedHashMap<>();
         }
-        map.put(key, valueMap);
     }
 
-    public <V> Object[] subsetOfValuesToRow(final String[] headers, final String key, final V value,
-            final String objectName, final Class<?> valueClass) {
-        final Object[] row = new Object[headers.length];
-        row[0] = key;
-        for (int i = 1; i < headers.length; i++) {
-            final String field = headers[i];
-            final MethodHandle methodHandle = getCachedFieldGetterHandle(valueClass, field);
-            if (methodHandle != null) {
-                try {
-                    row[i] = methodHandle.invoke(value); // Always start at position 1
-                } catch (final Throwable e) {
-                    // should not happen, all fields must be public
-                    Logger.error("Could not get value for field [{}] in [{}].", field, objectName);
-                    Logger.error(e);
-                }
-            }
+    public <V> Object[] getSubsetRowFromObject(final ClassData classData, final String key, final String[] fields,
+            final V sampleValue) {
+        try {
+            final MethodHandle rowMethod = classData.subsetRowHandle;
+            return (Object[]) rowMethod.invoke(sampleValue, key, fields);
+        } catch (final Throwable e) {
+            // should not happen
+            Logger.error("Error when getting subset row from object.");
+            Logger.error(e);
+            return new Object[0];
         }
-
-        return row;
     }
 
     public String[] getCsvHeaders(final String[] fields) {
