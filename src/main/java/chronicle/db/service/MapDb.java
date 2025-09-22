@@ -84,6 +84,7 @@ public final class MapDb {
         public void close() {
             treeCache.computeIfPresent(filePath, (k, entry) -> {
                 if (entry.refCount.decrementAndGet() == 0) {
+                    entry.db.commit();
                     entry.db.close();
                     return null;
                 }

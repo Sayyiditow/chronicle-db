@@ -364,7 +364,6 @@ public final class ChronicleUtils {
         }
 
         final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
-        final var pathsToSync = ConcurrentHashMap.newKeySet();
         try {
             // Step 1: Parse all field getters (supporting compound fields)
             final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -412,7 +411,6 @@ public final class ChronicleUtils {
                 }
 
                 if (!keysToRemove.isEmpty()) {
-                    pathsToSync.add(indexPath);
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
                         keysToRemove.parallelStream().forEach(key -> {
@@ -424,9 +422,7 @@ public final class ChronicleUtils {
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
-                if (pathsToSync.contains(path)) {
-                    sharedIndexMap.commit();
-                }
+                sharedIndexMap.commit();
                 sharedIndexMap.close();
             });
         }
@@ -441,7 +437,6 @@ public final class ChronicleUtils {
 
         final int BATCH_SIZE = 100_000;
         final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
-        final var pathsToSync = ConcurrentHashMap.newKeySet();
 
         try {
             // Step 1: Parse field getters
@@ -519,7 +514,6 @@ public final class ChronicleUtils {
                         }
 
                         if (addBatch.size() >= BATCH_SIZE || removeBatch.size() >= BATCH_SIZE) {
-                            pathsToSync.add(indexPath);
                             final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                             synchronized (lock) {
                                 removeBatch.parallelStream().forEach(remove -> {
@@ -540,7 +534,6 @@ public final class ChronicleUtils {
 
                 // Final flush
                 if (!addBatch.isEmpty() || !removeBatch.isEmpty()) {
-                    pathsToSync.add(indexPath);
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
                         removeBatch.parallelStream().forEach(remove -> {
@@ -557,9 +550,7 @@ public final class ChronicleUtils {
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
-                if (pathsToSync.contains(path)) {
-                    sharedIndexMap.commit();
-                }
+                sharedIndexMap.commit();
                 sharedIndexMap.close();
             });
         }
