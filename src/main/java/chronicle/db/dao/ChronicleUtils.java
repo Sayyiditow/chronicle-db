@@ -322,7 +322,9 @@ public final class ChronicleUtils {
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
                                 final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
-                                sharedIndexMap.index.addAll(batch);
+                                batch.parallelStream().forEach(add -> {
+                                    sharedIndexMap.index.add(add);
+                                });
                                 batch.clear();
                             }
                         });
@@ -339,7 +341,9 @@ public final class ChronicleUtils {
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
                     final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
-                    sharedIndexMap.index.addAll(batch);
+                    batch.parallelStream().forEach(add -> {
+                        sharedIndexMap.index.add(add);
+                    });
                 }
             });
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
@@ -521,7 +525,9 @@ public final class ChronicleUtils {
                                 removeBatch.parallelStream().forEach(remove -> {
                                     sharedIndexMap.index.remove(remove);
                                 });
-                                sharedIndexMap.index.addAll(addBatch);
+                                addBatch.parallelStream().forEach(add -> {
+                                    sharedIndexMap.index.add(add);
+                                });
                                 removeBatch.clear();
                                 addBatch.clear();
                             }
@@ -540,7 +546,9 @@ public final class ChronicleUtils {
                         removeBatch.parallelStream().forEach(remove -> {
                             sharedIndexMap.index.remove(remove);
                         });
-                        sharedIndexMap.index.addAll(addBatch);
+                        addBatch.parallelStream().forEach(add -> {
+                            sharedIndexMap.index.add(add);
+                        });
                     }
                 }
 
