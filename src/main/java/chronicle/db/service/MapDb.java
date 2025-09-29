@@ -128,7 +128,7 @@ public final class MapDb {
                         .valueSerializer(Serializer.STRING)
                         .createOrOpen();
                 return new SharedKeyMap(map, filePath);
-            } catch (final DBException.DataCorruption | DBException.GetVoid e) {
+            } catch (final DBException.DataCorruption | DBException.GetVoid | IndexOutOfBoundsException e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 Logger.info("Reinitializing KeyMap at [{}]", filePath);
                 throw new RuntimeException(e);
@@ -185,7 +185,7 @@ public final class MapDb {
                         .serializer(Serializer.BYTE_ARRAY)
                         .createOrOpen();
                 return new SharedIndexMap(db, tree, filePath);
-            } catch (final DBException.DataCorruption | DBException.GetVoid e) {
+            } catch (final DBException.DataCorruption | DBException.GetVoid | IndexOutOfBoundsException e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 Logger.error("Reinitializing IndexMap at [{}]", filePath);
                 throw new RuntimeException(e);
