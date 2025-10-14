@@ -325,6 +325,7 @@ public final class ChronicleUtils {
                                 batch.parallelStream().forEach(add -> {
                                     sharedIndexMap.index.add(add);
                                 });
+                                sharedIndexMap.commit();
                                 batch.clear();
                             }
                         });
@@ -344,13 +345,13 @@ public final class ChronicleUtils {
                     batch.parallelStream().forEach(add -> {
                         sharedIndexMap.index.add(add);
                     });
+                    sharedIndexMap.commit();
                 }
             });
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
                     dataPath);
         } finally {
             openIndexes.forEach((indexPath, sharedIndexMap) -> {
-                sharedIndexMap.commit();
                 sharedIndexMap.close();
             });
             Logger.info("Indexing {} at [{}] complete.", fields, dataPath);
@@ -416,13 +417,13 @@ public final class ChronicleUtils {
                         keysToRemove.parallelStream().forEach(key -> {
                             sharedIndexMap.index.remove(key);
                         });
+                        sharedIndexMap.commit();
                     }
                     Logger.info("Removed [{}] records from index: [{}]", keysToRemove.size(), compoundField);
                 }
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
-                sharedIndexMap.commit();
                 sharedIndexMap.close();
             });
         }
@@ -522,6 +523,7 @@ public final class ChronicleUtils {
                                 addBatch.parallelStream().forEach(add -> {
                                     sharedIndexMap.index.add(add);
                                 });
+                                sharedIndexMap.commit();
                                 removeBatch.clear();
                                 addBatch.clear();
                             }
@@ -542,6 +544,7 @@ public final class ChronicleUtils {
                         addBatch.parallelStream().forEach(add -> {
                             sharedIndexMap.index.add(add);
                         });
+                        sharedIndexMap.commit();
                     }
                 }
 
@@ -550,7 +553,6 @@ public final class ChronicleUtils {
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
-                sharedIndexMap.commit();
                 sharedIndexMap.close();
             });
         }
