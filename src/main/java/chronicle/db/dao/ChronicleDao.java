@@ -3131,12 +3131,13 @@ public interface ChronicleDao<V> {
 
     default Map<String, V> indexedSearch(final Search search) throws Exception {
         final String indexPath = getIndexPath(search.field());
+        final int limit = search.limit() > 0 ? search.limit() : HARD_LIMIT;
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
             final var searchResult = indexedSearch(search, sharedIndexMap.index);
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyMap();
             }
-            return get(searchResult.results());
+            return get(searchResult.results(), limit);
         }
     }
 
@@ -3164,12 +3165,13 @@ public interface ChronicleDao<V> {
 
     default Map<String, V> indexedSearch(final Search search, final Set<String> excludedKeys) throws Exception {
         final String indexPath = getIndexPath(search.field());
+        final int limit = search.limit() > 0 ? search.limit() : HARD_LIMIT;
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
             final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyMap();
             }
-            return get(searchResult.results());
+            return get(searchResult.results(), limit);
         }
     }
 
