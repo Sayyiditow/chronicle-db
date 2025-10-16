@@ -354,7 +354,6 @@ public final class ChronicleUtils {
             openIndexes.forEach((indexPath, sharedIndexMap) -> {
                 sharedIndexMap.close();
             });
-            Logger.info("Indexing {} at [{}] complete.", fields, dataPath);
         }
     }
 

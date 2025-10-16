@@ -296,6 +296,7 @@ public interface ChronicleDao<V> {
                 }
             }
         });
+        Logger.info("Indexing {} at [{}] complete.", fields, dataPath());
     }
 
     /**
