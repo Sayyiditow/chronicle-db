@@ -2,10 +2,10 @@ package chronicle.db.service;
 
 import java.util.List;
 
-import chronicle.db.entity.ICsv;
+import chronicle.db.entity.IChronicle;
 import net.openhft.chronicle.bytes.BytesMarshallable;
 
-public class Lead implements BytesMarshallable, ICsv<String> {
+public class Lead implements BytesMarshallable, IChronicle {
     public String fullName, linkedin, facebook, twitter, email, mobilePhone, jobTitle, location;
     public List<Email> emails;
 
@@ -43,6 +43,23 @@ public class Lead implements BytesMarshallable, ICsv<String> {
     public String[] header() {
         return new String[] { "ID", "Full Name", "LinkedIn", "Facebook", "Twitter", "Email", "Mobile Phone",
                 "Job Title", "Location", "Emails" };
+    }
+
+    @Override
+    public Object getFieldValue(final String fieldName) {
+        return switch (fieldName) {
+            case "fullName" -> fullName;
+            case "linkedin" -> linkedin;
+            case "facebook" -> facebook;
+            case "twitter" -> twitter;
+            case "email" -> email;
+            case "mobilePhone" -> mobilePhone;
+            case "jobTitle" -> jobTitle;
+            case "location" -> location;
+            case "emails" -> emails != null ? List.copyOf(emails) : null;
+            default -> throw new IllegalArgumentException(
+                    "Unknown field: " + fieldName + " for object: " + this.getClass().getSimpleName());
+        };
     }
 
 }
