@@ -15,7 +15,6 @@ import net.openhft.chronicle.map.ChronicleMapBuilder;
 
 @SuppressWarnings("unchecked")
 public class LeadDaoTest {
-    private static final String OBJECT = "chronicle.db.service.Lead";
     private static final String DAO = "chronicle.db.service.LeadDao";
     private static final String DATA_PATH = "src/test/.data/";
 
