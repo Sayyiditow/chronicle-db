@@ -29,19 +29,38 @@ public interface IChronicle {
 
     public static void main(final String[] args) {
         final Scanner scanner = new Scanner(System.in);
-        System.out.println("Enter comma-separated field names:");
-        final String input = scanner.nextLine();
-        scanner.close();
 
-        final String[] fields = input.split(",");
+        System.out.println("Enter comma-separated regular field names (no cloning):");
+        final String regularInput = scanner.nextLine();
+
+        System.out.println("Enter comma-separated array field names (with .clone()):");
+        final String arrayInput = scanner.nextLine();
+
+        scanner.close();
 
         System.out.println("@Override");
         System.out.println("public Object getFieldValue(final String fieldName) {");
         System.out.println("    return switch (fieldName) {");
-        for (final String field : fields) {
-            final String trimmed = field.trim();
-            System.out.printf("        case \"%s\" -> %s;%n", trimmed, trimmed);
+
+        // Process regular fields
+        if (!regularInput.trim().isEmpty()) {
+            final String[] regularFields = regularInput.split(",");
+            for (final String field : regularFields) {
+                final String trimmed = field.trim();
+                System.out.printf("        case \"%s\" -> %s;%n", trimmed, trimmed);
+            }
         }
+
+        // Process array fields
+        if (!arrayInput.trim().isEmpty()) {
+            final String[] arrayFields = arrayInput.split(",");
+            for (final String field : arrayFields) {
+                final String trimmed = field.trim();
+                System.out.printf("        case \"%s\" -> %s != null ? %s.clone() : null;%n",
+                        trimmed, trimmed, trimmed);
+            }
+        }
+
         System.out.println(
                 "        default -> throw new IllegalArgumentException(\"Unknown field: \" + fieldName + \" for object: \" + this.getClass().getSimpleName());");
         System.out.println("    };");
