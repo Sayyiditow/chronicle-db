@@ -614,15 +614,6 @@ public final class ChronicleUtils {
         return headers;
     }
 
-    public <V> void updateObjectValues(final V oldObject, final Set<String> fields, final V newObject)
-            throws Throwable {
-        for (final var k : fields) {
-            final var fieldData = getFieldData(oldObject.getClass(), k);
-            if (fieldData != null)
-                fieldData.setterHandle.invoke(oldObject, fieldData.getterHandle.invoke(newObject));
-        }
-    }
-
     public <V> void setNonEnumValue(final V object, final String fieldName, final Object fieldValue)
             throws Throwable {
         final var setterHandle = getCachedFieldSetterHandle(object.getClass(), fieldName);
