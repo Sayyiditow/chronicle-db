@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.invoke.VarHandle;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -48,13 +49,11 @@ public final class ChronicleUtils {
 
     private static class FieldData {
         final Field field;
-        final MethodHandle getterHandle;
-        final MethodHandle setterHandle;
+        final VarHandle varHandle;
 
-        FieldData(final Field field, final MethodHandle getterHandle, final MethodHandle setterHandle) {
+        FieldData(final Field field, final VarHandle varHandle) {
             this.field = field;
-            this.getterHandle = getterHandle;
-            this.setterHandle = setterHandle;
+            this.varHandle = varHandle;
         }
     }
 
@@ -91,19 +90,13 @@ public final class ChronicleUtils {
         return classData.fields.computeIfAbsent(fieldName, f -> {
             try {
                 final Field field = clazz.getField(f);
-                final MethodHandle getterHandle = MethodHandles.lookup().unreflectGetter(field);
-                final MethodHandle setterHandle = MethodHandles.lookup().unreflectSetter(field);
-                return new FieldData(field, getterHandle, setterHandle);
+                final VarHandle varHandle = MethodHandles.lookup().unreflectVarHandle(field);
+                return new FieldData(field, varHandle);
             } catch (NoSuchFieldException | IllegalAccessException e) {
                 Logger.warn("No such field [{}] in class [{}].", f, clazz.getSimpleName());
                 return null;
             }
         });
-    }
-
-    private MethodHandle getCachedFieldSetterHandle(final Class<?> clazz, final String fieldName) {
-        final FieldData fieldData = getFieldData(clazz, fieldName);
-        return fieldData != null ? fieldData.setterHandle : null;
     }
 
     /**
@@ -183,7 +176,7 @@ public final class ChronicleUtils {
                             : null;
             final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
-            final Object currentValue = fieldData.getterHandle.invoke(value);
+            final Object currentValue = fieldData.varHandle.get(value);
             final boolean match = switch (searchType) {
                 case EQUAL -> Objects.equals(currentValue, searchTerm);
                 case NOT_EQUAL -> !Objects.equals(currentValue, searchTerm);
@@ -302,7 +295,7 @@ public final class ChronicleUtils {
                         boolean shouldSkip = false;
 
                         for (final FieldData fd : fieldDataList) {
-                            final var val = String.valueOf(fd.getterHandle.invoke(value));
+                            final var val = String.valueOf(fd.varHandle.get(value));
                             if (excluded.contains(val)) {
                                 shouldSkip = true;
                                 break;
@@ -400,7 +393,7 @@ public final class ChronicleUtils {
                     try {
                         sb.setLength(0);
                         for (final FieldData fd : fieldGetters) {
-                            final var val = String.valueOf(fd.getterHandle.invoke(value));
+                            final var val = String.valueOf(fd.varHandle.get(value));
                             sb.append(val);
                         }
                         keysToRemove.add(MAP_DB.createIndexKey(sb.toString(), key.toString()));
@@ -480,7 +473,7 @@ public final class ChronicleUtils {
                         boolean skipAdd = false;
 
                         for (final FieldData fd : fieldGetters) {
-                            final var value = String.valueOf(fd.getterHandle.invoke(newVal));
+                            final var value = String.valueOf(fd.varHandle.get(newVal));
                             if (excluded.contains(value)) {
                                 skipAdd = true;
                             }
@@ -491,7 +484,7 @@ public final class ChronicleUtils {
                         if (prevVal != null) {
                             sb.setLength(0);
                             for (final FieldData fd : fieldGetters) {
-                                final var value = String.valueOf(fd.getterHandle.invoke(prevVal));
+                                final var value = String.valueOf(fd.varHandle.get(prevVal));
                                 sb.append(value);
                             }
                             final var oldValStr = sb.toString();
@@ -601,7 +594,7 @@ public final class ChronicleUtils {
             return (Object[]) rowMethod.invoke(sampleValue, key, fields);
         } catch (final Throwable e) {
             // should not happen
-            Logger.error("Error when getting subset row from object.");
+            Logger.error("Error when getting subset row from object [{}].", sampleValue.getClass().getSimpleName());
             Logger.error(e);
             return new Object[0];
         }
@@ -616,9 +609,9 @@ public final class ChronicleUtils {
 
     public <V> void setNonEnumValue(final V object, final String fieldName, final Object fieldValue)
             throws Throwable {
-        final var setterHandle = getCachedFieldSetterHandle(object.getClass(), fieldName);
-        if (setterHandle != null)
-            setterHandle.invoke(object, fieldValue);
+        final var fieldData = getFieldData(object.getClass(), fieldName);
+        if (fieldData != null)
+            fieldData.varHandle.set(object, fieldValue);
     }
 
     public <V> void setObjectValue(final V object, final String fieldName, final Object fieldValue)
@@ -628,10 +621,9 @@ public final class ChronicleUtils {
         if (fieldData != null) {
             final var type = fieldData.field.getType();
             if (type.isEnum())
-                fieldData.setterHandle.invoke(object, toEnum(type, fieldValue));
+                fieldData.varHandle.set(object, toEnum(type, fieldValue));
             else
-                fieldData.setterHandle.invoke(object, fieldValue);
-
+                fieldData.varHandle.set(object, fieldValue);
         }
     }
 
@@ -639,16 +631,18 @@ public final class ChronicleUtils {
             throws Throwable {
         final var fieldData = getFieldData(object.getClass(), fieldName);
         if (fieldData != null) {
-            final var value = (String) fieldData.getterHandle.invoke(object);
-            fieldData.setterHandle.invoke(object, value + fieldValue);
+            final var value = (String) fieldData.varHandle.get(object);
+            fieldData.varHandle.set(object, value + fieldValue);
         }
     }
 
     public <V> void replaceObjectValue(final V object, final String fieldName, final String fieldValue,
             final String toReplace) throws Throwable {
         final var fieldData = getFieldData(object.getClass(), fieldName);
-        final var value = ((String) fieldData.getterHandle.invoke(object)).replace(toReplace, fieldValue);
-        fieldData.setterHandle.invoke(object, value);
+        if (fieldData != null) {
+            final var value = ((String) fieldData.varHandle.get(object)).replace(toReplace, fieldValue);
+            fieldData.varHandle.set(object, value);
+        }
     }
 
     public void deleteFileIfExists(final String filePath) {
