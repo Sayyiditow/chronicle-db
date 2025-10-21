@@ -19,7 +19,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -70,7 +69,7 @@ public final class ChronicleUtils {
                 this.headerHandle = lookup.findVirtual(clazz, "header", MethodType.methodType(String[].class));
                 this.rowHandle = lookup.findVirtual(clazz, "row", MethodType.methodType(Object[].class, String.class));
                 this.subsetHandle = lookup.findVirtual(clazz, "subset",
-                        MethodType.methodType(LinkedHashMap.class, String[].class));
+                        MethodType.methodType(Map.class, String[].class));
                 this.subsetRowHandle = lookup.findVirtual(clazz, "subsetRow",
                         MethodType.methodType(Object[].class, String.class, String[].class));
             } catch (NoSuchMethodException | IllegalAccessException e) {
@@ -574,16 +573,16 @@ public final class ChronicleUtils {
         }
     }
 
-    public <V> LinkedHashMap<String, Object> getSubsetFromObject(final ClassData classData, final String[] fields,
+    public <V> Map<String, Object> getSubsetFromObject(final ClassData classData, final String[] fields,
             final V sampleValue) {
         try {
             final MethodHandle rowMethod = classData.subsetHandle;
-            return (LinkedHashMap<String, Object>) rowMethod.invoke(sampleValue, fields);
+            return (Map<String, Object>) rowMethod.invoke(sampleValue, fields);
         } catch (final Throwable e) {
             // should not happen
             Logger.error("Error when getting subset from object.");
             Logger.error(e);
-            return new LinkedHashMap<>();
+            return Collections.emptyMap();
         }
     }
 

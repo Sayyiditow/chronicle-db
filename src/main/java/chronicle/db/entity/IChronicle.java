@@ -1,6 +1,7 @@
 package chronicle.db.entity;
 
-import java.util.LinkedHashMap;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Scanner;
 
 public interface IChronicle {
@@ -10,8 +11,8 @@ public interface IChronicle {
 
     Object getFieldValue(final String fieldName);
 
-    default LinkedHashMap<String, Object> subset(final String[] fields) {
-        final var map = new LinkedHashMap<String, Object>();
+    default Map<String, Object> subset(final String[] fields) {
+        final var map = new HashMap<String, Object>();
         for (int i = 0; i < fields.length; i++) {
             map.put(fields[i], getFieldValue(fields[i]));
         }

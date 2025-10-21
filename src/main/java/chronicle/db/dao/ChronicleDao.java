@@ -16,7 +16,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
@@ -636,8 +635,8 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
-    default Map<String, LinkedHashMap<String, Object>> fetchSubset(final String[] fields, final int limit) {
-        final var result = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(10_000);
+    default Map<String, Map<String, Object>> fetchSubset(final String[] fields, final int limit) {
+        final var result = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         for (final String file : getDataFileState().fileNames()) {
             if (result.size() >= limit) {
@@ -692,7 +691,7 @@ public interface ChronicleDao<V> {
         return fetchCsv(HARD_LIMIT);
     }
 
-    default Map<String, LinkedHashMap<String, Object>> fetchSubset(final String[] fields) {
+    default Map<String, Map<String, Object>> fetchSubset(final String[] fields) {
         return fetchSubset(fields, HARD_LIMIT);
     }
 
@@ -835,14 +834,14 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
-    default Map<String, LinkedHashMap<String, Object>> getSubset(final Iterable<String> keys, final String[] fields)
+    default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final String[] fields)
             throws Exception {
         if (keys == null || !keys.iterator().hasNext()) {
             return Collections.emptyMap();
         }
 
         Logger.info("Querying subset multiple keys at [{}].", dataPath());
-        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(10_000);
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1005,14 +1004,14 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
-    default Map<String, LinkedHashMap<String, Object>> getSubset(final Iterable<String> keys, final String[] fields,
+    default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final String[] fields,
             final int limit) throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
         }
 
         Logger.info("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(Math.min(10_000, limit));
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(Math.min(10_000, limit));
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final var count = new AtomicInteger(0);
 
@@ -1196,7 +1195,7 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
-    default Map<String, LinkedHashMap<String, Object>> getSubset(final Iterable<String> keys,
+    default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys,
             final Set<String> excludedKeys, final String[] fields, final int limit)
             throws Exception {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
@@ -1204,7 +1203,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(Math.min(10_000, limit));
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(Math.min(10_000, limit));
         final var count = new AtomicInteger(0);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -1944,14 +1943,14 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
-    default Map<String, LinkedHashMap<String, Object>> searchSubset(final Iterable<String> keys,
+    default Map<String, Map<String, Object>> searchSubset(final Iterable<String> keys,
             final List<Search> filters, final String[] fields, final int limit) throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
             return Collections.emptyMap();
         }
 
         Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
-        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(10_000);
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
@@ -2317,7 +2316,7 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
-    default Map<String, LinkedHashMap<String, Object>> searchSubset(final Iterable<String> keys,
+    default Map<String, Map<String, Object>> searchSubset(final Iterable<String> keys,
             final List<Search> filters, final Set<String> excludedKeys, final int limit, final String[] fields)
             throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -2326,7 +2325,7 @@ public interface ChronicleDao<V> {
 
         Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
-        final var map = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(Math.min(10_000, limit));
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(Math.min(10_000, limit));
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
@@ -2623,7 +2622,7 @@ public interface ChronicleDao<V> {
     }
 
     private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
-            final Map<String, LinkedHashMap<String, Object>> result, final AtomicInteger counter,
+            final Map<String, Map<String, Object>> result, final AtomicInteger counter,
             final String[] fields) {
         Logger.info("Subset searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
@@ -2800,7 +2799,7 @@ public interface ChronicleDao<V> {
     }
 
     private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters,
-            final Set<String> excludedKeys, final int limit, final Map<String, LinkedHashMap<String, Object>> result,
+            final Set<String> excludedKeys, final int limit, final Map<String, Map<String, Object>> result,
             final AtomicInteger counter, final String[] fields) {
         Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
@@ -3291,7 +3290,7 @@ public interface ChronicleDao<V> {
         return new ArrayList<>(result);
     }
 
-    default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final List<Search> searches,
+    default Map<String, Map<String, Object>> multiSearchSubset(final List<Search> searches,
             final String[] fields) throws Throwable {
         if (searches == null || searches.isEmpty()) {
             return Collections.emptyMap();
@@ -3339,7 +3338,7 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final var result = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(10_000);
+                final var result = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
                 final var counter = new AtomicInteger();
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
                     if (counter.get() >= limit) {
@@ -3817,7 +3816,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final List<Search> searches,
+    default Map<String, Map<String, Object>> multiSearchSubset(final List<Search> searches,
             final Set<String> excludedKeys, final String[] fields) throws Throwable {
         if (searches == null || searches.isEmpty()) {
             return Collections.emptyMap();
@@ -3863,7 +3862,7 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final var result = new ConcurrentHashMap<String, LinkedHashMap<String, Object>>(
+                final var result = new ConcurrentHashMap<String, Map<String, Object>>(
                         Math.min(10_000, limit));
                 final var counter = new AtomicInteger(0);
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
@@ -3967,7 +3966,7 @@ public interface ChronicleDao<V> {
         return searchCsv(matchingKeys, searches, limit);
     }
 
-    default Map<String, LinkedHashMap<String, Object>> multiSearchSubset(final Set<String> matchingKeys,
+    default Map<String, Map<String, Object>> multiSearchSubset(final Set<String> matchingKeys,
             final List<Search> searches, final String[] fields) throws Throwable {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
