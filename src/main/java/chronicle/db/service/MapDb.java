@@ -115,8 +115,8 @@ public final class MapDb {
             // Create a new entry
             try {
                 final HTreeMap<String, String> map = DBMaker.fileDB(filePath)
-                        .allocateStartSize(128 * 1024 * 1024) // initial size
-                        .allocateIncrement(48 * 1024 * 1024) // Grow by 48 MB
+                        .allocateStartSize(512 * 1024 * 1024) // initial size
+                        .allocateIncrement(128 * 1024 * 1024) // Grow by 48 MB
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -172,8 +172,8 @@ public final class MapDb {
             // Create a new entry
             try {
                 final var db = DBMaker.fileDB(filePath)
-                        .allocateStartSize(64 * 1024 * 1024)
-                        .allocateIncrement(32 * 1024 * 1024)
+                        .allocateStartSize(512 * 1024 * 1024)
+                        .allocateIncrement(128 * 1024 * 1024)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
