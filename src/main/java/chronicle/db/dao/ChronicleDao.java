@@ -126,19 +126,26 @@ public interface ChronicleDao<V> {
         return Collections.emptyMap();
     }
 
+    default SharedChronicleMap<String, V> openDb(final String dataDir, final String fileName) {
+        return CHRONICLE_DB.open(name(), entries(), averageKey(), averageValue(), dataPath() + dataDir + fileName,
+                bloatFactor());
+    }
+
+    default SharedChronicleMap<String, V> openDb(final String dataDir, final String fileName, final long entries) {
+        return CHRONICLE_DB.open(name(), entries, averageKey(), averageValue(), dataPath() + dataDir + fileName,
+                bloatFactor());
+    }
+
     default SharedChronicleMap<String, V> openDb() {
-        return CHRONICLE_DB.open(name(), entries(), averageKey(), averageValue(),
-                dataPath() + DATA_DIR + getDataFileState().currentFile(), bloatFactor());
+        return openDb(DATA_DIR, getDataFileState().currentFile());
     }
 
     default SharedChronicleMap<String, V> openDb(final String fileName) {
-        return CHRONICLE_DB.open(name(), entries(), averageKey(), averageValue(), dataPath() + DATA_DIR + fileName,
-                bloatFactor());
+        return openDb(DATA_DIR, fileName);
     }
 
     default SharedChronicleMap<String, V> openDb(final String fileName, final long entries) {
-        return CHRONICLE_DB.open(name(), entries, averageKey(), averageValue(), dataPath() + DATA_DIR + fileName,
-                bloatFactor());
+        return openDb(DATA_DIR, fileName, entries);
     }
 
     private String getKeyMapPath() {
@@ -206,9 +213,13 @@ public interface ChronicleDao<V> {
     default void backup() throws IOException {
         final var dataPath = dataPath() + DATA_DIR;
         final var backupPath = dataPath() + BACKUP_DIR;
-        final var dataFiles = CHRONICLE_UTILS.getFileList(dataPath);
 
-        for (final var file : dataFiles) {
+        // cleanup the old backup files first
+        for (final var file : CHRONICLE_UTILS.getFileList(backupPath)) {
+            CHRONICLE_UTILS.deleteFileIfExists(backupPath + file);
+        }
+
+        for (final var file : CHRONICLE_UTILS.getFileList(dataPath)) {
             Files.copy(Path.of(dataPath + file), Path.of(backupPath + file), REPLACE_EXISTING);
         }
     }
@@ -580,6 +591,26 @@ public interface ChronicleDao<V> {
         }
 
         return containsList;
+    }
+
+    default void vacuum() throws IOException {
+        // backup all files then read from these files and insert afresh
+        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+        Logger.info("Vacuuming database at [{}]", dataPath());
+
+        synchronized (lock) {
+            backup();
+            deleteDataFiles();
+            deleteIndexes();
+            CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
+            DATA_FILE_CACHE.remove(dataPath());
+
+            for (final String file : CHRONICLE_UTILS.getFileList(dataPath() + BACKUP_DIR)) {
+                try (final var shared = openDb(BACKUP_DIR, file)) {
+                    insert(shared.map);
+                }
+            }
+        }
     }
 
     /**
@@ -4064,6 +4095,7 @@ public interface ChronicleDao<V> {
         deleteDataFiles();
         deleteIndexes();
         CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
+        DATA_FILE_CACHE.remove(dataPath());
     }
 
     default boolean exists(final String key) throws IOException {
