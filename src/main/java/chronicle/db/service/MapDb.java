@@ -127,6 +127,12 @@ public final class MapDb {
                         .keySerializer(Serializer.STRING)
                         .valueSerializer(Serializer.STRING)
                         .createOrOpen();
+
+                // Force early validation by attempting to iterate
+                final Iterator<?> iterator = map.keySet().iterator();
+                if (iterator.hasNext()) {
+                    iterator.next(); // Read first element to trigger B-tree navigation
+                }
                 return new SharedKeyMap(map, filePath);
             } catch (final DBException.DataCorruption | DBException.GetVoid | DBException.VolumeEOF
                     | IndexOutOfBoundsException e) {
@@ -185,6 +191,12 @@ public final class MapDb {
                 final var tree = db.treeSet("index")
                         .serializer(Serializer.BYTE_ARRAY)
                         .createOrOpen();
+
+                // Force early validation by attempting to iterate
+                final Iterator<?> iterator = tree.iterator();
+                if (iterator.hasNext()) {
+                    iterator.next(); // Read first element to trigger B-tree navigation
+                }
                 return new SharedIndexMap(db, tree, filePath);
             } catch (final DBException.DataCorruption | DBException.GetVoid | DBException.VolumeEOF
                     | IndexOutOfBoundsException e) {
