@@ -314,9 +314,9 @@ public final class ChronicleUtils {
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
                                 final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
-                                batch.parallelStream().forEach(add -> {
+                                for (final var add : batch) {
                                     sharedIndexMap.index.add(add);
-                                });
+                                }
                                 sharedIndexMap.commit();
                                 batch.clear();
                             }
@@ -334,9 +334,9 @@ public final class ChronicleUtils {
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
                     final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
-                    batch.parallelStream().forEach(add -> {
+                    for (final var add : batch) {
                         sharedIndexMap.index.add(add);
-                    });
+                    }
                     sharedIndexMap.commit();
                 }
             });
@@ -405,9 +405,9 @@ public final class ChronicleUtils {
                 if (!keysToRemove.isEmpty()) {
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
-                        keysToRemove.parallelStream().forEach(key -> {
+                        for (final var key : keysToRemove) {
                             sharedIndexMap.index.remove(key);
-                        });
+                        }
                         sharedIndexMap.commit();
                     }
                     Logger.info("Removed [{}] records from index: [{}]", keysToRemove.size(), compoundField);
@@ -508,12 +508,12 @@ public final class ChronicleUtils {
                         if (addBatch.size() >= BATCH_SIZE || removeBatch.size() >= BATCH_SIZE) {
                             final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                             synchronized (lock) {
-                                removeBatch.parallelStream().forEach(remove -> {
+                                for (final var remove : removeBatch) {
                                     sharedIndexMap.index.remove(remove);
-                                });
-                                addBatch.parallelStream().forEach(add -> {
+                                }
+                                for (final var add : addBatch) {
                                     sharedIndexMap.index.add(add);
-                                });
+                                }
                                 sharedIndexMap.commit();
                                 removeBatch.clear();
                                 addBatch.clear();
@@ -529,12 +529,12 @@ public final class ChronicleUtils {
                 if (!addBatch.isEmpty() || !removeBatch.isEmpty()) {
                     final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     synchronized (lock) {
-                        removeBatch.parallelStream().forEach(remove -> {
+                        for (final var remove : removeBatch) {
                             sharedIndexMap.index.remove(remove);
-                        });
-                        addBatch.parallelStream().forEach(add -> {
+                        }
+                        for (final var add : addBatch) {
                             sharedIndexMap.index.add(add);
-                        });
+                        }
                         sharedIndexMap.commit();
                     }
                 }
