@@ -286,9 +286,8 @@ public interface ChronicleDao<V> {
      * @param field the field of the V value object
      * 
      */
-    private void initIndex(final ChronicleMap<String, V> db, final Set<String> fields, final String indexDirPath) {
-        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), indexDirPath, averageValue().getClass(),
-                indexExclusions());
+    private void initIndex(final ChronicleMap<String, V> db, final Set<String> fields) {
+        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), averageValue().getClass(), indexExclusions());
     }
 
     /**
@@ -302,7 +301,7 @@ public interface ChronicleDao<V> {
             final Object lock = LOCKS.computeIfAbsent(dataPath() + file, k -> new Object());
             synchronized (lock) {
                 try (final var shared = openDb(file)) {
-                    initIndex(shared.map, fields, dataPath() + INDEX_DIR);
+                    initIndex(shared.map, fields);
                 }
             }
         });

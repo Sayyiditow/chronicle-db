@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+import org.mapdb.DBException;
 import org.tinylog.Logger;
 
 import chronicle.db.entity.Search;
@@ -220,6 +221,17 @@ public final class ChronicleUtils {
         return false;
     }
 
+    private void safeIndexAdd(final SharedIndexMap sharedIndexMap, final byte[] add, final String indexPath) {
+        try {
+            sharedIndexMap.index.add(add);
+        } catch (final DBException.PointerChecksumBroken e) {
+            Logger.warn("PointerChecksumBroken on index {} at [{}]. Refreshing.",
+                    Arrays.toString(MAP_DB.extractIndexValueAndKey(add)), indexPath);
+            sharedIndexMap.index.remove(add);
+            sharedIndexMap.index.add(add);
+        }
+    }
+
     /**
      * Index the db so that joins for 1 to many are efficient.
      * 
@@ -231,9 +243,9 @@ public final class ChronicleUtils {
      * 
      */
     public <V> void index(final ChronicleMap<String, V> db, final String dbName, final Set<String> fields,
-            final String dataPath, final String indexDirPath, final Class<?> valueClass,
-            final Map<String, Set<Object>> exclusions) {
+            final String dataPath, final Class<?> valueClass, final Map<String, Set<Object>> exclusions) {
         final int BATCH_SIZE = 100_000;
+        final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
 
         final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
         for (final String rawField : fields) {
@@ -313,9 +325,10 @@ public final class ChronicleUtils {
                             final String field = batchEntry.getKey();
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
-                                final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
+                                final var indexPath = indexDirPath + "/" + field;
+                                final var sharedIndexMap = openIndexes.get(indexPath);
                                 for (final var add : batch) {
-                                    sharedIndexMap.index.add(add);
+                                    safeIndexAdd(sharedIndexMap, add, indexPath);
                                 }
                                 sharedIndexMap.commit();
                                 batch.clear();
@@ -333,9 +346,10 @@ public final class ChronicleUtils {
                 final String field = batchEntry.getKey();
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
-                    final var sharedIndexMap = openIndexes.get(indexDirPath + "/" + field);
+                    final var indexPath = indexDirPath + "/" + field;
+                    final var sharedIndexMap = openIndexes.get(indexPath);
                     for (final var add : batch) {
-                        sharedIndexMap.index.add(add);
+                        safeIndexAdd(sharedIndexMap, add, indexPath);
                     }
                     sharedIndexMap.commit();
                 }
@@ -428,6 +442,7 @@ public final class ChronicleUtils {
         }
 
         final int BATCH_SIZE = 100_000;
+        final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
         final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
 
         try {
@@ -441,7 +456,7 @@ public final class ChronicleUtils {
                     getters.add(getFieldData(valueClass, part));
                 }
                 indexFieldMap.put(indexName, getters);
-                final String indexPath = dataPath + "/indexes/" + indexName;
+                final String indexPath = indexDirPath + indexName;
                 try {
                     openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
                 } catch (final RuntimeException e) {
@@ -453,7 +468,7 @@ public final class ChronicleUtils {
             indexFieldMap.entrySet().parallelStream().forEach(entry -> {
                 final String indexName = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
-                final String indexPath = dataPath + "/indexes/" + indexName;
+                final String indexPath = indexDirPath + indexName;
                 final var sharedIndexMap = openIndexes.get(indexPath);
                 final Set<byte[]> addBatch = new HashSet<>(BATCH_SIZE);
                 final Set<byte[]> removeBatch = new HashSet<>(BATCH_SIZE);
@@ -512,7 +527,7 @@ public final class ChronicleUtils {
                                     sharedIndexMap.index.remove(remove);
                                 }
                                 for (final var add : addBatch) {
-                                    sharedIndexMap.index.add(add);
+                                    safeIndexAdd(sharedIndexMap, add, indexPath);
                                 }
                                 sharedIndexMap.commit();
                                 removeBatch.clear();
@@ -533,7 +548,7 @@ public final class ChronicleUtils {
                             sharedIndexMap.index.remove(remove);
                         }
                         for (final var add : addBatch) {
-                            sharedIndexMap.index.add(add);
+                            safeIndexAdd(sharedIndexMap, add, indexPath);
                         }
                         sharedIndexMap.commit();
                     }
