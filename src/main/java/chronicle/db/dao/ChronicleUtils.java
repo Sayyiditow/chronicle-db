@@ -327,11 +327,14 @@ public final class ChronicleUtils {
                             if (!batch.isEmpty()) {
                                 final var indexPath = indexDirPath + "/" + field;
                                 final var sharedIndexMap = openIndexes.get(indexPath);
-                                for (final var add : batch) {
-                                    safeIndexAdd(sharedIndexMap, add, indexPath);
+                                final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
+                                synchronized (lock) {
+                                    for (final var add : batch) {
+                                        safeIndexAdd(sharedIndexMap, add, indexPath);
+                                    }
+                                    sharedIndexMap.commit();
+                                    batch.clear();
                                 }
-                                sharedIndexMap.commit();
-                                batch.clear();
                             }
                         });
                     }
@@ -348,10 +351,13 @@ public final class ChronicleUtils {
                 if (!batch.isEmpty()) {
                     final var indexPath = indexDirPath + "/" + field;
                     final var sharedIndexMap = openIndexes.get(indexPath);
-                    for (final var add : batch) {
-                        safeIndexAdd(sharedIndexMap, add, indexPath);
+                    final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
+                    synchronized (lock) {
+                        for (final var add : batch) {
+                            safeIndexAdd(sharedIndexMap, add, indexPath);
+                        }
+                        sharedIndexMap.commit();
                     }
-                    sharedIndexMap.commit();
                 }
             });
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
