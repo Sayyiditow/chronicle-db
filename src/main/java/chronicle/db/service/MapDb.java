@@ -129,7 +129,7 @@ public final class MapDb {
                         .createOrOpen();
 
                 return new SharedKeyMap(map, filePath);
-            } catch (final DBException.DataCorruption | DBException.VolumeEOF e) {
+            } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 Logger.info("Reinitializing KeyMap at [{}]", filePath);
                 throw new RuntimeException(e);
@@ -140,6 +140,15 @@ public final class MapDb {
         });
 
         return entry;
+    }
+
+    /**
+     * Use this only when jvm hangs on shutdown
+     */
+    public void closeMap(final String filePath) {
+        final SharedKeyMap mapEntry = mapCache.get(filePath);
+        mapEntry.map.close();
+        Logger.info("Closed KeyMap at [{}]", filePath);
     }
 
     /**
@@ -187,7 +196,7 @@ public final class MapDb {
                         .createOrOpen();
 
                 return new SharedIndexMap(db, tree, filePath);
-            } catch (final DBException.DataCorruption | DBException.VolumeEOF e) {
+            } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 Logger.error("Reinitializing IndexMap at [{}]", filePath);
                 throw new RuntimeException(e);
@@ -198,6 +207,15 @@ public final class MapDb {
         });
 
         return entry;
+    }
+
+    /**
+     * Use this only when jvm hangs on shutdown
+     */
+    public void closeIndex(final String filePath) {
+        final var treeEntry = treeCache.get(filePath);
+        treeEntry.db.close();
+        Logger.info("Closed Index at [{}]", filePath);
     }
 
     /**

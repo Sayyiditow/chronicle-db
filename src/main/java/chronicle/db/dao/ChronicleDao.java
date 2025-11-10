@@ -320,7 +320,9 @@ public interface ChronicleDao<V> {
             if (!indexFiles.isEmpty()) {
                 Logger.info("Re-initializing indexes at [{}].", dataPath());
                 for (final String field : indexFiles) {
-                    CHRONICLE_UTILS.deleteFileIfExists(getIndexPath(field));
+                    final var indexPath = getIndexPath(field);
+                    MAP_DB.closeIndex(indexPath);
+                    CHRONICLE_UTILS.deleteFileIfExists(indexPath);
                 }
                 initIndex(indexFiles);
             }
@@ -333,8 +335,10 @@ public interface ChronicleDao<V> {
             final var dataFileState = getDataFileState();
             if (dataFileState.fileNames().size() > 1) {
                 Logger.info("Refreshing KeyMap at [{}]", dataPath());
-                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-                    sharedKeyMap.map.clear();
+                final var keyMapPath = getKeyMapPath();
+                MAP_DB.closeMap(keyMapPath);
+                CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
+                try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath)) {
                     populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
                 }
             }
