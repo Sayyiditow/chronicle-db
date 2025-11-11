@@ -24,10 +24,13 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -223,8 +226,7 @@ public final class ChronicleUtils {
         };
     }
 
-    public <V> boolean search(final Search search, final String key, final V value, final Class<?> valueClass)
-            throws Throwable {
+    public <V> boolean search(final Search search, final String key, final V value, final Class<?> valueClass) {
         final String[] fields = search.field().split("\\|");
         final SearchType searchType = search.searchType();
 
@@ -902,68 +904,70 @@ public final class ChronicleUtils {
     }
 
     public <T> void parallelIterable(final Iterable<T> iterable, final int limit, final AtomicInteger matchCounter,
-            final Predicate<T> action)
-            throws InterruptedException {
+            final Predicate<T> action) throws InterruptedException {
         if (limit <= 0 || iterable == null) {
             return;
         }
 
-        final var executor = Executors.newFixedThreadPool(processors);
-        final var done = new AtomicBoolean(false);
         final var iterator = iterable.iterator();
         final var iteratorLock = new Object();
-        final var futures = new ArrayList<Future<?>>();
         final var batchSize = 100;
+        final int consumerThreads = Math.min(processors, 8);
+        final var executor = Executors.newFixedThreadPool(consumerThreads);
+        final var futures = new ArrayList<Future<?>>(consumerThreads);
 
         try {
-            // Spawn consumer threads
-            final int consumerThreads = Math.min(processors, 8); // Limit to reduce contention
             for (int i = 0; i < consumerThreads; i++) {
                 futures.add(executor.submit(() -> {
                     final var batch = new ArrayList<T>(batchSize);
-                    while (!done.get() && matchCounter.get() < limit) {
+
+                    while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
+                        // Fetch batch
                         batch.clear();
                         synchronized (iteratorLock) {
+                            if (!iterator.hasNext()) {
+                                return; // No more data
+                            }
                             for (int j = 0; j < batchSize && iterator.hasNext(); j++) {
                                 batch.add(iterator.next());
                             }
                         }
 
-                        if (batch.isEmpty())
-                            return;
-
+                        // Process batch
                         for (final T item : batch) {
-                            if (Thread.currentThread().isInterrupted() || done.get() || matchCounter.get() >= limit)
-                                return;
+                            if (matchCounter.get() >= limit) {
+                                return; // Early exit
+                            }
+
                             try {
                                 if (action.test(item)) {
-                                    if (matchCounter.incrementAndGet() >= limit) {
-                                        done.set(true);
-                                        return;
-                                    }
+                                    matchCounter.incrementAndGet();
+                                    // Note: May slightly exceed limit, acceptable for performance
                                 }
                             } catch (final Exception e) {
-                                Logger.error("[Parallel Iterable] - Error processing item [{}]", item);
-                                Logger.error(e);
+                                Logger.error("[Parallel Iterable] - Error processing item", e);
                             }
                         }
                     }
                 }));
             }
 
-            // Wait for consumer threads until limit reached
-            for (final Iterator<Future<?>> it = futures.iterator(); it.hasNext() && !done.get();) {
-                final Future<?> future = it.next();
+            // Wait for all tasks to complete
+            for (final Future<?> future : futures) {
                 try {
                     future.get();
-                    it.remove();
-                } catch (final Exception e) {
-                    Logger.error("[Parallel Iterable] - Consumer thread failed.");
-                    Logger.error(e);
+                } catch (final ExecutionException e) {
+                    Logger.error("[Parallel Iterable] - Consumer thread failed", e.getCause());
+                } catch (final CancellationException e) {
+                    // Expected if shutdownNow() was called
                 }
             }
+
         } finally {
-            executor.shutdownNow(); // Cancel all tasks
+            executor.shutdownNow();
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                Logger.warn("[Parallel Iterable] - Executor did not terminate in time");
+            }
         }
     }
 

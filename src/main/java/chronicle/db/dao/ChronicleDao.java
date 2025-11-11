@@ -1850,13 +1850,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -1883,12 +1878,8 @@ public interface ChronicleDao<V> {
                             return false;
 
                         for (final var search : filters) {
-                            try {
-                                if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
-                                    return false;
-                                }
-                            } catch (final Throwable e) {
-                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                return false;
                             }
                         }
 
@@ -1923,13 +1914,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -1957,12 +1943,8 @@ public interface ChronicleDao<V> {
                             return false;
 
                         for (final var search : filters) {
-                            try {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                    return false;
-                                }
-                            } catch (final Throwable e) {
-                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                return false;
                             }
                         }
 
@@ -1997,13 +1979,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -2030,12 +2007,8 @@ public interface ChronicleDao<V> {
                             return false;
 
                         for (final var search : filters) {
-                            try {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                    return false;
-                                }
-                            } catch (final Throwable e) {
-                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                return false;
                             }
                         }
 
@@ -2071,13 +2044,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -2104,12 +2072,8 @@ public interface ChronicleDao<V> {
                             return false;
 
                         for (final var search : filters) {
-                            try {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                    return false;
-                                }
-                            } catch (final Throwable e) {
-                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                return false;
                             }
                         }
 
@@ -2141,13 +2105,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -2170,12 +2129,8 @@ public interface ChronicleDao<V> {
                             return false;
 
                         for (final var search : filters) {
-                            try {
-                                if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
-                                    return false;
-                                }
-                            } catch (final Throwable e) {
-                                Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                            if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                return false;
                             }
                         }
 
@@ -2210,13 +2165,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -2247,12 +2197,8 @@ public interface ChronicleDao<V> {
                                     return false;
 
                                 for (final var search : filters) {
-                                    try {
-                                        if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
-                                            return false;
-                                        }
-                                    } catch (final Throwable e) {
-                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                    if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                        return false;
                                     }
                                 }
 
@@ -2291,13 +2237,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -2329,12 +2270,8 @@ public interface ChronicleDao<V> {
                                     return false;
 
                                 for (final var search : filters) {
-                                    try {
-                                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                            return false;
-                                        }
-                                    } catch (final Throwable e) {
-                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
                                     }
                                 }
 
@@ -2375,13 +2312,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -2412,12 +2344,8 @@ public interface ChronicleDao<V> {
                                     return false;
 
                                 for (final var search : filters) {
-                                    try {
-                                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                            return false;
-                                        }
-                                    } catch (final Throwable e) {
-                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
                                     }
                                 }
 
@@ -2456,13 +2384,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -2493,12 +2416,8 @@ public interface ChronicleDao<V> {
                                     return false;
 
                                 for (final var search : filters) {
-                                    try {
-                                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                            return false;
-                                        }
-                                    } catch (final Throwable e) {
-                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                                        return false;
                                     }
                                 }
 
@@ -2533,13 +2452,8 @@ public interface ChronicleDao<V> {
                                 return false;
 
                             for (final var search : filters) {
-                                try {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
-                                        return false;
-                                    }
-                                } catch (final Throwable e) {
-                                    Logger.error("Search failed for key [{}]: {}", key);
-                                    Logger.error(e);
+                                if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                    return false;
                                 }
                             }
 
@@ -2567,12 +2481,8 @@ public interface ChronicleDao<V> {
                                     return false;
 
                                 for (final var search : filters) {
-                                    try {
-                                        if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
-                                            return false;
-                                        }
-                                    } catch (final Throwable e) {
-                                        Logger.error("Search failed for key [{}]: {}", key, e.toString());
+                                    if (!CHRONICLE_UTILS.search(search, key, value, valueClass)) {
+                                        return false;
                                     }
                                 }
 
