@@ -284,18 +284,48 @@ public final class MapDb {
         return keyAndValue;
     }
 
-    public int fastCount(final Iterable<String> result, final int limit) {
+    public int fastCount(final Iterable<String> result) {
         if (result instanceof final Collection<?> collection) {
-            return Math.min(collection.size(), limit);
+            return collection.size();
         }
 
         int count = 0;
-        for (@SuppressWarnings("unused")
-        final var ignored : result) {
-            if (++count == limit) {
+        final var it = result.iterator();
+
+        // Process 8 at a time (loop unrolling)
+        while (it.hasNext()) {
+            it.next();
+            count++;
+            if (!it.hasNext())
                 break;
-            }
+            it.next();
+            count++;
+            if (!it.hasNext())
+                break;
+            it.next();
+            count++;
+            if (!it.hasNext())
+                break;
+            it.next();
+            count++;
+            if (!it.hasNext())
+                break;
+            it.next();
+            count++;
+            if (!it.hasNext())
+                break;
+            it.next();
+            count++;
+            if (!it.hasNext())
+                break;
+            it.next();
+            count++;
+            if (!it.hasNext())
+                break;
+            it.next();
+            count++;
         }
+
         return count;
     }
 
