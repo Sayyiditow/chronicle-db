@@ -1337,7 +1337,6 @@ public interface ChronicleDao<V> {
             return false;
         }
 
-        Logger.info("Deleting key [{}] at [{}].", key, dataPath());
         final var file = getDbFile(key, getDataFileState().fileNames());
         if (file == null) {
             return false;
@@ -1362,6 +1361,8 @@ public interface ChronicleDao<V> {
         final var indexFileNames = indexFileNames();
         CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                 averageValue().getClass());
+
+        Logger.info("Deleted key [{}] at [{}].", key, dataPath());
         return true;
     }
 
@@ -1383,7 +1384,6 @@ public interface ChronicleDao<V> {
         }
 
         final var deletedMap = new HashMap<String, V>();
-        Logger.info("Deleting {} keys at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() <= 1) {
             final Object lock = LOCKS.computeIfAbsent(dataPath() + DATA_FILE, k -> new Object());
@@ -1431,6 +1431,7 @@ public interface ChronicleDao<V> {
 
         removeAllFromKeyMap(deletedMap.keySet());
         removeFromIndex(deletedMap);
+        Logger.info("Deleted {} keys at [{}].", deletedMap.size(), dataPath());
         return true;
     }
 
