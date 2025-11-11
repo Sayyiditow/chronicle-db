@@ -26,7 +26,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -46,7 +45,6 @@ import net.openhft.chronicle.map.ChronicleMap;
 
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleUtils {
-    private static final ConcurrentMap<String, Object> indexWriteLocks = new ConcurrentHashMap<>();
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
     private static final int processors = Runtime.getRuntime().availableProcessors();
 
@@ -391,14 +389,11 @@ public final class ChronicleUtils {
                             if (!batch.isEmpty()) {
                                 final var indexPath = indexDirPath + "/" + field;
                                 final var sharedIndexMap = openIndexes.get(indexPath);
-                                final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
-                                synchronized (lock) {
-                                    batch.parallelStream().forEach(add -> {
-                                        safeIndexAdd(sharedIndexMap, add, indexPath);
-                                    });
-                                    sharedIndexMap.commit();
-                                    batch.clear();
-                                }
+                                batch.parallelStream().forEach(add -> {
+                                    safeIndexAdd(sharedIndexMap, add, indexPath);
+                                });
+                                sharedIndexMap.commit();
+                                batch.clear();
                             }
                         });
                     }
@@ -415,13 +410,10 @@ public final class ChronicleUtils {
                 if (!batch.isEmpty()) {
                     final var indexPath = indexDirPath + "/" + field;
                     final var sharedIndexMap = openIndexes.get(indexPath);
-                    final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
-                    synchronized (lock) {
-                        batch.parallelStream().forEach(add -> {
-                            safeIndexAdd(sharedIndexMap, add, indexPath);
-                        });
-                        sharedIndexMap.commit();
-                    }
+                    batch.parallelStream().forEach(add -> {
+                        safeIndexAdd(sharedIndexMap, add, indexPath);
+                    });
+                    sharedIndexMap.commit();
                 }
             });
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
@@ -487,19 +479,16 @@ public final class ChronicleUtils {
                 }
 
                 if (!keysToRemove.isEmpty()) {
-                    final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     final AtomicBoolean failed = new AtomicBoolean(false);
-                    synchronized (lock) {
-                        keysToRemove.parallelStream().forEach(remove -> {
-                            if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
-                                failed.set(true);
-                            }
-                        });
-
-                        if (!failed.get()) {
-                            sharedIndexMap.commit();
-                            Logger.info("Removed [{}] records from index at [{}]", keysToRemove.size(), indexPath);
+                    keysToRemove.parallelStream().forEach(remove -> {
+                        if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
+                            failed.set(true);
                         }
+                    });
+
+                    if (!failed.get()) {
+                        sharedIndexMap.commit();
+                        Logger.info("Removed [{}] records from index at [{}]", keysToRemove.size(), indexPath);
                     }
                 }
             });
@@ -597,25 +586,22 @@ public final class ChronicleUtils {
                         }
 
                         if (addBatch.size() >= BATCH_SIZE || removeBatch.size() >= BATCH_SIZE) {
-                            final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                             final AtomicBoolean failed = new AtomicBoolean(false);
-                            synchronized (lock) {
-                                removeBatch.parallelStream().forEach(remove -> {
-                                    if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
-                                        failed.set(true);
-                                    }
-                                });
-                                addBatch.parallelStream().forEach(add -> {
-                                    if (!failed.get() && !safeIndexAdd(sharedIndexMap, add, indexPath)) {
-                                        failed.set(true);
-                                    }
-                                });
-
-                                if (!failed.get()) {
-                                    sharedIndexMap.commit();
-                                    removeBatch.clear();
-                                    addBatch.clear();
+                            removeBatch.parallelStream().forEach(remove -> {
+                                if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
+                                    failed.set(true);
                                 }
+                            });
+                            addBatch.parallelStream().forEach(add -> {
+                                if (!failed.get() && !safeIndexAdd(sharedIndexMap, add, indexPath)) {
+                                    failed.set(true);
+                                }
+                            });
+
+                            if (!failed.get()) {
+                                sharedIndexMap.commit();
+                                removeBatch.clear();
+                                addBatch.clear();
                             }
                         }
                     } catch (final Throwable t) {
@@ -626,22 +612,19 @@ public final class ChronicleUtils {
 
                 // Final flush
                 if (!addBatch.isEmpty() || !removeBatch.isEmpty()) {
-                    final Object lock = indexWriteLocks.computeIfAbsent(indexPath, k -> new Object());
                     final AtomicBoolean failed = new AtomicBoolean(false);
-                    synchronized (lock) {
-                        removeBatch.parallelStream().forEach(remove -> {
-                            if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
-                                failed.set(true);
-                            }
-                        });
-                        addBatch.parallelStream().forEach(add -> {
-                            if (!failed.get() && !safeIndexAdd(sharedIndexMap, add, indexPath)) {
-                                failed.set(true);
-                            }
-                        });
-                        if (!failed.get()) {
-                            sharedIndexMap.commit();
+                    removeBatch.parallelStream().forEach(remove -> {
+                        if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
+                            failed.set(true);
                         }
+                    });
+                    addBatch.parallelStream().forEach(add -> {
+                        if (!failed.get() && !safeIndexAdd(sharedIndexMap, add, indexPath)) {
+                            failed.set(true);
+                        }
+                    });
+                    if (!failed.get()) {
+                        sharedIndexMap.commit();
                     }
                 }
 
