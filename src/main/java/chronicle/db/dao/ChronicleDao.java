@@ -954,7 +954,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, V>(Math.min(10_000, limit));
+        final var map = new ConcurrentHashMap<String, V>(limit);
         final var count = new AtomicInteger(0);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1045,7 +1045,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, Map<String, Object>>(Math.min(10_000, limit));
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final var count = new AtomicInteger(0);
 
@@ -1136,7 +1136,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, V>(Math.min(10_000, limit));
+        final var map = new ConcurrentHashMap<String, V>(limit);
         final var count = new AtomicInteger(0);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1237,7 +1237,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
-        final var map = new ConcurrentHashMap<String, Map<String, Object>>(Math.min(10_000, limit));
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var count = new AtomicInteger(0);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -1838,7 +1838,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
-        final var map = new ConcurrentHashMap<String, V>(10_000);
+        final var map = new ConcurrentHashMap<String, V>(limit);
         final var valueClass = averageValue().getClass();
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -2296,7 +2296,7 @@ public interface ChronicleDao<V> {
 
         Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
-        final var map = new ConcurrentHashMap<String, Map<String, Object>>(Math.min(10_000, limit));
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
@@ -2948,52 +2948,28 @@ public interface ChronicleDao<V> {
                 : null;
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
-        switch (searchType) {
-            case EQUAL -> {
-                return MAP_DB.getEqualIndexSearch(index, searchTerm, search.limit());
-            }
+        return switch (searchType) {
+            case EQUAL -> MAP_DB.getEqualIndexSearch(index, searchTerm, search.limit());
             case NOT_EQUAL -> {
                 final var keysBefore = MAP_DB.getBeforeIndexSearch(index, searchTerm, search.limit());
                 final var keysAfter = MAP_DB.getAfterIndexSearch(index, searchTerm, search.limit());
-                return new SearchResult(
+                yield new SearchResult(
                         CHRONICLE_UTILS.concatIterable(keysBefore.results(), keysAfter.results(), search.limit()));
             }
-            case LESS -> {
-                return MAP_DB.getLessThanIndexSearch(index, searchTerm, search.limit());
-            }
-            case LESS_OR_EQUAL -> {
-                return MAP_DB.getLessThanOrEqualIndexSearch(index, searchTerm, search.limit());
-            }
-            case GREATER -> {
-                return MAP_DB.getGreaterThanIndexSearch(index, searchTerm, search.limit());
-            }
-            case GREATER_OR_EQUAL -> {
-                return MAP_DB.getGreaterThanOrEqualIndexSearch(index, searchTerm, search.limit());
-            }
-            case LIKE -> {
-                return MAP_DB.getLikeIndexSearch(index, searchTerm, search.limit());
-            }
-            case NOT_LIKE -> {
-                return MAP_DB.getNotLikeIndexSearch(index, searchTerm, search.limit());
-            }
-            case STARTS_WITH -> {
-                return MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit());
-            }
-            case ENDS_WITH -> {
-                return MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit());
-            }
-            case IN -> {
-                return MAP_DB.getInIndexSearch(index, searchTermSet, search.limit());
-            }
-            case NOT_IN -> {
-                return MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit());
-            }
-            case BETWEEN -> {
-                return MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
-                        searchTermBetween.get(1).toString(), search.limit());
-            }
+            case LESS -> MAP_DB.getLessThanIndexSearch(index, searchTerm, search.limit());
+            case LESS_OR_EQUAL -> MAP_DB.getLessThanOrEqualIndexSearch(index, searchTerm, search.limit());
+            case GREATER -> MAP_DB.getGreaterThanIndexSearch(index, searchTerm, search.limit());
+            case GREATER_OR_EQUAL -> MAP_DB.getGreaterThanOrEqualIndexSearch(index, searchTerm, search.limit());
+            case LIKE -> MAP_DB.getLikeIndexSearch(index, searchTerm, search.limit());
+            case NOT_LIKE -> MAP_DB.getNotLikeIndexSearch(index, searchTerm, search.limit());
+            case STARTS_WITH -> MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit());
+            case ENDS_WITH -> MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit());
+            case IN -> MAP_DB.getInIndexSearch(index, searchTermSet, search.limit());
+            case NOT_IN -> MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit());
+            case BETWEEN -> MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
+                    searchTermBetween.get(1).toString(), search.limit());
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
-        }
+        };
     }
 
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index,
@@ -3011,52 +2987,29 @@ public interface ChronicleDao<V> {
                 : null;
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
-        switch (searchType) {
-            case EQUAL -> {
-                return MAP_DB.getEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
+        return switch (searchType) {
+            case EQUAL -> MAP_DB.getEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
             case NOT_EQUAL -> {
                 final var keysBefore = MAP_DB.getBeforeIndexSearch(index, searchTerm, search.limit(), excludedKeys);
                 final var keysAfter = MAP_DB.getAfterIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-                return new SearchResult(
+                yield new SearchResult(
                         CHRONICLE_UTILS.concatIterable(keysBefore.results(), keysAfter.results(), search.limit()));
             }
-            case LESS -> {
-                return MAP_DB.getLessThanIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
-            case LESS_OR_EQUAL -> {
-                return MAP_DB.getLessThanOrEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
-            case GREATER -> {
-                return MAP_DB.getGreaterThanIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
-            case GREATER_OR_EQUAL -> {
-                return MAP_DB.getGreaterThanOrEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
-            case LIKE -> {
-                return MAP_DB.getLikeIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
-            case NOT_LIKE -> {
-                return MAP_DB.getNotLikeIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
-            case STARTS_WITH -> {
-                return MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
-            case ENDS_WITH -> {
-                return MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            }
-            case IN -> {
-                return MAP_DB.getInIndexSearch(index, searchTermSet, search.limit(), excludedKeys);
-            }
-            case NOT_IN -> {
-                return MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit(), excludedKeys);
-            }
-            case BETWEEN -> {
-                return MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
-                        searchTermBetween.get(1).toString(), search.limit(), excludedKeys);
-            }
+            case LESS -> MAP_DB.getLessThanIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case LESS_OR_EQUAL -> MAP_DB.getLessThanOrEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case GREATER -> MAP_DB.getGreaterThanIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case GREATER_OR_EQUAL ->
+                MAP_DB.getGreaterThanOrEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case LIKE -> MAP_DB.getLikeIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case NOT_LIKE -> MAP_DB.getNotLikeIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case STARTS_WITH -> MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case ENDS_WITH -> MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case IN -> MAP_DB.getInIndexSearch(index, searchTermSet, search.limit(), excludedKeys);
+            case NOT_IN -> MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit(), excludedKeys);
+            case BETWEEN -> MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
+                    searchTermBetween.get(1).toString(), search.limit(), excludedKeys);
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
-        }
+        };
     }
 
     default List<String> toListOfKeys(final Iterable<String> keys) {
@@ -3244,18 +3197,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (!s.skipIndex() && indexedSearch == null &&
-                    indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
-                .orElse(HARD_LIMIT);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -3313,18 +3271,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (!s.skipIndex() && indexedSearch == null &&
-                    indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
-                .orElse(HARD_LIMIT);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -3383,17 +3346,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
-                .orElse(HARD_LIMIT);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -3420,7 +3389,7 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final Map<String, V> result = new ConcurrentHashMap<>();
+                final Map<String, V> result = new ConcurrentHashMap<>(limit);
                 final var counter = new AtomicInteger();
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
                     if (counter.get() >= limit) {
@@ -3451,17 +3420,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min()
-                .orElse(HARD_LIMIT);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -3520,7 +3495,7 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
 
         for (final Search s : searches) {
             if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
@@ -3577,7 +3552,7 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
 
         for (final Search s : searches) {
             if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
@@ -3634,16 +3609,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -3701,16 +3683,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -3770,16 +3759,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -3806,8 +3802,7 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final var result = new ConcurrentHashMap<String, Map<String, Object>>(
-                        Math.min(10_000, limit));
+                final var result = new ConcurrentHashMap<String, Map<String, Object>>(limit);
                 final var counter = new AtomicInteger(0);
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
                     if (counter.get() >= limit) {
@@ -3839,16 +3834,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into first-indexed and remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (!s.skipIndex() && indexedSearch == null && indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         SearchResult searchResult = null;
         String indexPath = null;
@@ -3933,16 +3935,23 @@ public interface ChronicleDao<V> {
 
         // Step 1: Separate searches into one indexed + remaining
         Search indexedSearch = null;
-        final List<Search> remainingSearches = new ArrayList<>();
+        final List<Search> remainingSearches = new ArrayList<>(searches.size());
+        int minLimit = Integer.MAX_VALUE;
 
         for (final Search s : searches) {
-            if (indexedSearch == null && indexFileNames.contains(s.field())) {
+            // Compute limit
+            if (s.limit() > 0 && s.limit() < minLimit) {
+                minLimit = s.limit();
+            }
+
+            // separate searches
+            if (indexedSearch == null && !s.skipIndex() && indexFileNames.contains(s.field())) {
                 indexedSearch = s;
             } else {
                 remainingSearches.add(s);
             }
         }
-        final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(Integer.MAX_VALUE);
+        final int limit = (minLimit == Integer.MAX_VALUE) ? HARD_LIMIT : minLimit;
 
         String indexPath = null;
         SearchResult searchResult = null;
