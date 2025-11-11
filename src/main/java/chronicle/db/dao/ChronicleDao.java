@@ -298,11 +298,8 @@ public interface ChronicleDao<V> {
      */
     private void initIndex(final Set<String> fields) {
         getDataFileState().fileNames().parallelStream().forEach(file -> {
-            final Object lock = LOCKS.computeIfAbsent(dataPath() + file, k -> new Object());
-            synchronized (lock) {
-                try (final var shared = openDb(file)) {
-                    initIndex(shared.map, fields);
-                }
+            try (final var shared = openDb(file)) {
+                initIndex(shared.map, fields);
             }
         });
         Logger.info("Indexing {} at [{}] complete.", fields, dataPath());
@@ -313,11 +310,10 @@ public interface ChronicleDao<V> {
      * 
      */
     default void refreshIndexes() {
-        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-
-        synchronized (lock) {
-            final var indexFiles = indexFileNames();
-            if (!indexFiles.isEmpty()) {
+        final var indexFiles = indexFileNames();
+        if (!indexFiles.isEmpty()) {
+            final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+            synchronized (lock) {
                 Logger.info("Re-initializing indexes at [{}].", dataPath());
                 for (final String field : indexFiles) {
                     final var indexPath = getIndexPath(field);
@@ -454,7 +450,7 @@ public interface ChronicleDao<V> {
             final Set<String> keySet = new HashSet<>();
             try (final var shared = openDb()) {
                 for (final String k : keys) {
-                    if (shared.map.getUsing(k, using()) != null) {
+                    if (shared.map.containsKey(k)) {
                         keySet.add(k);
                     }
                 }
@@ -1342,12 +1338,9 @@ public interface ChronicleDao<V> {
             return false;
         }
 
-        final var keyLock = LOCKS.computeIfAbsent(dataPath() + key, k -> new Object());
         V value = null;
-        synchronized (keyLock) {
-            try (final var shared = openDb(file)) {
-                value = shared.map.remove(key);
-            }
+        try (final var shared = openDb(file)) {
+            value = shared.map.remove(key);
         }
 
         if (value == null) {
@@ -1386,14 +1379,11 @@ public interface ChronicleDao<V> {
         final var deletedMap = new HashMap<String, V>();
 
         if (getDataFileState().fileNames().size() <= 1) {
-            final Object lock = LOCKS.computeIfAbsent(dataPath() + DATA_FILE, k -> new Object());
-            synchronized (lock) {
-                try (final var shared = openDb()) {
-                    for (final String key : keys) {
-                        final var deleted = shared.map.remove(key);
-                        if (deleted != null) {
-                            deletedMap.put(key, deleted);
-                        }
+            try (final var shared = openDb()) {
+                for (final String key : keys) {
+                    final var deleted = shared.map.remove(key);
+                    if (deleted != null) {
+                        deletedMap.put(key, deleted);
                     }
                 }
             }
@@ -1413,13 +1403,9 @@ public interface ChronicleDao<V> {
 
             for (final var entry : keyFiles.fileGroups().entrySet()) {
                 final var file = entry.getKey();
-                final Object lock = LOCKS.computeIfAbsent(dataPath() + file, k -> new Object());
-
-                synchronized (lock) {
-                    try (final var shared = openDb(file)) {
-                        for (final String key : entry.getValue()) {
-                            deletedMap.put(key, shared.map.remove(key));
-                        }
+                try (final var shared = openDb(file)) {
+                    for (final String key : entry.getValue()) {
+                        deletedMap.put(key, shared.map.remove(key));
                     }
                 }
             }
@@ -1576,28 +1562,26 @@ public interface ChronicleDao<V> {
      */
     default PutStatus update(final String key, final V value, final Set<String> indexFileNames)
             throws IOException {
-        if (key == null) {
+        if (key == null || !exists(key)) {
+            Logger.error("Key [{}] does not exist during update at [{}].", key, dataPath());
             return PutStatus.FAILED;
         }
 
         V prevValue = null;
         var status = PutStatus.FAILED;
-        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
-            final var file = getDbFile(key, getDataFileState().fileNames());
-            try (final var shared = openDb(file)) {
-                if (shared.map.containsKey(key)) {
-                    status = PutStatus.UPDATED;
-                    prevValue = shared.map.put(key, value);
-                }
+        final var file = getDbFile(key, getDataFileState().fileNames());
+        try (final var shared = openDb(file)) {
+            if (shared.map.containsKey(key)) {
+                status = PutStatus.UPDATED;
+                prevValue = shared.map.put(key, value);
             }
         }
 
         if (status == PutStatus.UPDATED) {
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                     Map.of(key, prevValue), averageValue().getClass(), indexExclusions());
+            Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
         }
-        Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
 
         return status;
     }
@@ -1619,28 +1603,13 @@ public interface ChronicleDao<V> {
      */
     default PutStatus insert(final String key, final V value, final Set<String> indexFileNames)
             throws IOException {
-        if (key == null) {
+        if (key == null || exists(key)) {
+            Logger.error("Key [{}] already exists during insert at [{}].", key, dataPath());
             return PutStatus.FAILED;
         }
 
-        if (exists(key)) {
-            return PutStatus.FAILED;
-        }
-
-        var file = DATA_FILE;
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var dataFileState = getDataFileState();
-            file = getDbFile(key, dataFileState.fileNames());
-
-            if (file != null && !DATA_FILE.equals(file)) {
-                return PutStatus.FAILED; // already exists
-            }
-
-            if (file == null) {
-                file = dataFileState.currentFile();
-            }
-
             var shared = openDb();
             try {
                 shared = checkAndRotate(shared);
@@ -1653,9 +1622,11 @@ public interface ChronicleDao<V> {
         if (getDataFileState().fileNames().size() > 1) {
             addToKeyMap(key, getDataFileState().currentFile());
         }
+
         CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap(),
                 averageValue().getClass(), indexExclusions());
-        Logger.info("[{}] using key [{}] at [{}].", PutStatus.INSERTED, key, dataPath());
+        Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+
         return PutStatus.INSERTED;
     }
 
@@ -1683,28 +1654,29 @@ public interface ChronicleDao<V> {
         final var keyMapUpdate = new HashMap<String, String>(putSize);
         var status = PutStatus.INSERTED;
 
-        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
-            // update old records first then only move to new record inserts.
-            try (var grouped = getDbFiles(keysToInsert, getDataFileState().fileNames())) {
-                for (final var entry : grouped.fileGroups().entrySet()) {
-                    final var file = entry.getKey();
-                    try (final var shared = openDb(file)) {
-                        for (final String key : entry.getValue()) {
-                            final V prevValue = shared.map.put(key, map.get(key));
-                            if (prevValue != null) {
-                                prevValues.put(key, prevValue);
-                            }
+        // update old records first then only move to new record inserts.
+        try (var grouped = getDbFiles(keysToInsert, getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    for (final String key : entry.getValue()) {
+                        final V prevValue = shared.map.put(key, map.get(key));
+                        if (prevValue != null) {
+                            prevValues.put(key, prevValue);
                         }
                     }
                 }
             }
+        }
 
-            if (!prevValues.isEmpty()) {
-                status = PutStatus.UPDATED;
-                keysToInsert.removeAll(prevValues.keySet());
-            }
-            if (!keysToInsert.isEmpty()) {
+        if (!prevValues.isEmpty()) {
+            status = PutStatus.UPDATED;
+            keysToInsert.removeAll(prevValues.keySet());
+        }
+
+        if (!keysToInsert.isEmpty()) {
+            final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
+            synchronized (lock) {
                 // Insert new records (only keys in keysToInsert)
                 var shared = openDb();
                 try {
@@ -1713,7 +1685,7 @@ public interface ChronicleDao<V> {
                         shared = checkAndRotate(shared, keyMapUpdate);
                         shared.map.put(key, value);
                         if (getDataFileState().fileNames().size() > 1) {
-                            keyMapUpdate.put(key, getDataFileState().currentFile);
+                            keyMapUpdate.put(key, getDataFileState().currentFile());
                         }
                     }
                 } finally {
@@ -1726,8 +1698,8 @@ public interface ChronicleDao<V> {
             addToKeyMap(keyMapUpdate);
         }
 
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues, averageValue().getClass(),
-                indexExclusions());
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues,
+                averageValue().getClass(), indexExclusions());
         Logger.info("Put {} records at [{}].", putSize, dataPath());
 
         return status;
@@ -1736,8 +1708,7 @@ public interface ChronicleDao<V> {
     /**
      * Update multiple values into the db, then update all indexes related
      * This is useful as it does not increase db size. Never run with non existent
-     * keys
-     * it wont insert
+     * keys, it wont insert
      * 
      * @param map the map to add
      * @throws IOException
@@ -1750,34 +1721,39 @@ public interface ChronicleDao<V> {
         var status = PutStatus.UPDATED;
         final var mapSize = map.size();
         final var prevValues = new HashMap<String, V>(mapSize);
-        final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
-            try (var grouped = getDbFiles(map.keySet(), getDataFileState().fileNames())) {
-                for (final var entry : grouped.fileGroups().entrySet()) {
-                    final var file = entry.getKey();
-                    try (final var shared = openDb(file)) {
-                        for (final String key : entry.getValue()) {
-                            prevValues.put(key, shared.map.put(key, map.get(key)));
-                        }
+
+        try (var grouped = getDbFiles(map.keySet(), getDataFileState().fileNames())) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    for (final String key : entry.getValue()) {
+                        prevValues.put(key, shared.map.put(key, map.get(key)));
                     }
                 }
             }
         }
+
         final var prevValueSize = prevValues.size();
+
+        if (prevValueSize == 0) {
+            Logger.error("All [{}] values given do not exist during update at [{}", mapSize, dataPath());
+            return PutStatus.FAILED;
+        }
+
         if (prevValueSize != mapSize) {
             final var mapKeySet = map.keySet();
-            final var prevValueKeySet = prevValues.keySet();
-            final var extraSize = mapKeySet.size() - prevValueKeySet.size();
             mapKeySet.removeAll(prevValues.keySet());
+            final var extraSize = mapKeySet.size();
 
             Logger.error("{} extra keys found during update at [{}]. New keys: [{}].", extraSize, dataPath(),
                     mapKeySet);
-            status = prevValueSize == 0 ? PutStatus.FAILED : PutStatus.PARTIAL;
+            status = PutStatus.PARTIAL;
         }
 
-        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues, averageValue().getClass(),
-                indexExclusions());
+        CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues,
+                averageValue().getClass(), indexExclusions());
         Logger.info("Updated {} records at [{}].", prevValueSize, dataPath());
+
         return status;
     }
 
@@ -1795,6 +1771,11 @@ public interface ChronicleDao<V> {
         // only work with new keys
         final var existingKeys = existsList(map.keySet());
         map.keySet().removeAll(existingKeys);
+
+        if (map.isEmpty()) {
+            Logger.error("No new records found during insert at [{}].", dataPath());
+            return PutStatus.FAILED;
+        }
 
         final int putSize = map.size();
         final var keyMapUpdate = new HashMap<String, String>();
