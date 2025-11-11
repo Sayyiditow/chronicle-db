@@ -120,7 +120,31 @@ public final class ChronicleUtils {
     }
 
     public boolean containsIgnoreCase(final Object str, final Object searchTerm) {
-        return String.valueOf(str).toLowerCase().contains(String.valueOf(searchTerm).toLowerCase());
+        final String strValue = String.valueOf(str);
+        final String termValue = String.valueOf(searchTerm);
+        final int termLen = termValue.length();
+
+        if (termLen == 0)
+            return true;
+
+        for (int i = 0; i <= strValue.length() - termLen; i++) {
+            if (strValue.regionMatches(true, i, termValue, 0, termLen)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean startsWithIgnoreCase(final Object value, final Object searchTerm) {
+        final String str = String.valueOf(value);
+        final String term = String.valueOf(searchTerm);
+        return str.regionMatches(true, 0, term, 0, term.length());
+    }
+
+    public boolean endsWithIgnoreCase(final Object value, final Object searchTerm) {
+        final String str = String.valueOf(value);
+        final String term = String.valueOf(searchTerm);
+        return str.regionMatches(true, str.length() - term.length(), term, 0, term.length());
     }
 
     public Enum toEnum(final Class<?> enumClass, final Object value) {
@@ -131,7 +155,7 @@ public final class ChronicleUtils {
         }
     }
 
-    public Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
+    private Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
         final Set<Object> searchTermSet = new HashSet<>(1000);
         searchTermSet.clear();
         for (final Object searchTerm : searchTerms) {
@@ -147,7 +171,7 @@ public final class ChronicleUtils {
         return searchTermSet;
     }
 
-    public Object setSearchTermNonIndexed(final Object searchTerm, final Class<?> fieldClass) {
+    private Object setSearchTermNonIndexed(final Object searchTerm, final Class<?> fieldClass) {
         if (fieldClass.isEnum() && (searchTerm instanceof String)) {
             return toEnum(fieldClass, searchTerm);
         } else if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
@@ -157,64 +181,87 @@ public final class ChronicleUtils {
         return searchTerm;
     }
 
+    private boolean containsAny(final Object[] array, final Set<Object> searchSet) {
+        for (final Object obj : array) {
+            if (searchSet.contains(obj)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsNone(final Object[] array, final Set<Object> searchSet) {
+        for (final Object obj : array) {
+            if (searchSet.contains(obj)) {
+                return false; // Found one, so NOT "none"
+            }
+        }
+        return true;
+    }
+
+    private boolean matchesSearch(final Object currentValue, final Object searchTerm,
+            final Set<Object> searchTermSet, final List<Object> searchTermBetween,
+            final SearchType searchType) {
+        return switch (searchType) {
+            case EQUAL -> Objects.equals(currentValue, searchTerm);
+            case NOT_EQUAL -> !Objects.equals(currentValue, searchTerm);
+            case LESS -> compare(currentValue, searchTerm) < 0;
+            case GREATER -> compare(currentValue, searchTerm) > 0;
+            case LESS_OR_EQUAL -> compare(currentValue, searchTerm) <= 0;
+            case GREATER_OR_EQUAL -> compare(currentValue, searchTerm) >= 0;
+            case LIKE -> containsIgnoreCase(currentValue, searchTerm);
+            case NOT_LIKE -> !containsIgnoreCase(currentValue, searchTerm);
+            case CONTAINS -> containsAny((Object[]) currentValue, searchTermSet);
+            case NOT_CONTAINS -> containsNone((Object[]) currentValue, searchTermSet);
+            case STARTS_WITH -> startsWithIgnoreCase(currentValue, searchTerm);
+            case ENDS_WITH -> endsWithIgnoreCase(currentValue, searchTerm);
+            case IN -> searchTermSet.contains(currentValue);
+            case NOT_IN -> !searchTermSet.contains(currentValue);
+            case BETWEEN -> compare(currentValue, searchTermBetween.get(0)) >= 0
+                    && compare(currentValue, searchTermBetween.get(1)) <= 0;
+            default -> false;
+        };
+    }
+
     public <V> boolean search(final Search search, final String key, final V value, final Class<?> valueClass)
             throws Throwable {
         final String[] fields = search.field().split("\\|");
+        final SearchType searchType = search.searchType();
+
+        // Compute once, reuse for all fields
+        final Object searchTermParsed;
+        final Set<Object> searchTermSet;
+        final List<Object> searchTermBetween;
+
+        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN
+                || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS) {
+            searchTermSet = setSearchTermNonIndexed((List<Object>) search.searchTerm(), Object.class); // Parse once
+            searchTermParsed = null;
+            searchTermBetween = null;
+        } else if (searchType == SearchType.BETWEEN) {
+            searchTermBetween = (List<Object>) search.searchTerm();
+            searchTermParsed = null;
+            searchTermSet = null;
+        } else {
+            searchTermParsed = search.searchTerm(); // Will be converted per-field
+            searchTermSet = null;
+            searchTermBetween = null;
+        }
 
         for (final String field : fields) {
             final FieldData fieldData = getFieldData(valueClass, field);
-            if (fieldData == null) {
+            if (fieldData == null)
                 continue;
-            }
 
             final var fieldType = fieldData.field.getType();
-            final Object searchTerm = setSearchTermNonIndexed(search.searchTerm(), fieldType);
-            final SearchType searchType = search.searchType();
-            final Set<Object> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN
-                    || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS)
-                            ? setSearchTermNonIndexed((List<Object>) search.searchTerm(), fieldType)
-                            : null;
-            final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
+            final Object searchTerm = (searchTermParsed != null)
+                    ? setSearchTermNonIndexed(searchTermParsed, fieldType)
+                    : null;
 
             final Object currentValue = fieldData.varHandle.get(value);
-            final boolean match = switch (searchType) {
-                case EQUAL -> Objects.equals(currentValue, searchTerm);
-                case NOT_EQUAL -> !Objects.equals(currentValue, searchTerm);
-                case LESS -> compare(currentValue, searchTerm) < 0;
-                case GREATER -> compare(currentValue, searchTerm) > 0;
-                case LESS_OR_EQUAL -> compare(currentValue, searchTerm) <= 0;
-                case GREATER_OR_EQUAL -> compare(currentValue, searchTerm) >= 0;
-                case LIKE -> containsIgnoreCase(currentValue, searchTerm);
-                case NOT_LIKE -> !containsIgnoreCase(currentValue, searchTerm);
-                case CONTAINS -> {
-                    for (final var obj : (Object[]) currentValue) {
-                        if (searchTermSet.contains(obj)) {
-                            yield true;
-                        }
-                    }
-                    yield false;
-                }
-                case NOT_CONTAINS -> {
-                    for (final var obj : (Object[]) currentValue) {
-                        if (!searchTermSet.contains(obj)) {
-                            yield true;
-                        }
-                    }
-                    yield false;
-                }
-                case STARTS_WITH ->
-                    String.valueOf(currentValue).toLowerCase().startsWith(String.valueOf(searchTerm).toLowerCase());
-                case ENDS_WITH ->
-                    String.valueOf(currentValue).toLowerCase().endsWith(String.valueOf(searchTerm).toLowerCase());
-                case IN -> searchTermSet.contains(currentValue);
-                case NOT_IN -> !searchTermSet.contains(currentValue);
-                case BETWEEN -> compare(currentValue, searchTermBetween.get(0)) >= 0
-                        && compare(currentValue, searchTermBetween.get(1)) <= 0;
-                default -> false;
-            };
 
-            if (match) {
-                return true; // OR logic: return as soon as any field matches
+            if (matchesSearch(currentValue, searchTerm, searchTermSet, searchTermBetween, searchType)) {
+                return true;
             }
         }
 
