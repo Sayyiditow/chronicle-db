@@ -443,7 +443,7 @@ public interface ChronicleDao<V> {
      * 
      * @throws IOException
      */
-    private GroupedKeys getDbFiles(final Iterable<String> keys, final Set<String> dbFiles) throws IOException {
+    private GroupedKeys getDbFiles(final Iterable<String> keys, final Set<String> dbFiles) {
         final var dataFileSize = dbFiles.size();
 
         if (dataFileSize <= 1) {
