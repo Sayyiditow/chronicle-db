@@ -229,24 +229,9 @@ public final class ChronicleUtils {
         final SearchType searchType = search.searchType();
 
         // Compute once, reuse for all fields
-        final Object searchTermParsed;
-        final Set<Object> searchTermSet;
-        final List<Object> searchTermBetween;
-
-        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN
-                || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS) {
-            searchTermSet = setSearchTermNonIndexed((List<Object>) search.searchTerm(), Object.class); // Parse once
-            searchTermParsed = null;
-            searchTermBetween = null;
-        } else if (searchType == SearchType.BETWEEN) {
-            searchTermBetween = (List<Object>) search.searchTerm();
-            searchTermParsed = null;
-            searchTermSet = null;
-        } else {
-            searchTermParsed = search.searchTerm(); // Will be converted per-field
-            searchTermSet = null;
-            searchTermBetween = null;
-        }
+        Set<Object> searchTermSet;
+        List<Object> searchTermBetween;
+        Object searchTerm;
 
         for (final String field : fields) {
             final FieldData fieldData = getFieldData(valueClass, field);
@@ -254,9 +239,20 @@ public final class ChronicleUtils {
                 continue;
 
             final var fieldType = fieldData.field.getType();
-            final Object searchTerm = (searchTermParsed != null)
-                    ? setSearchTermNonIndexed(searchTermParsed, fieldType)
-                    : null;
+            if (searchType == SearchType.IN || searchType == SearchType.NOT_IN
+                    || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS) {
+                searchTermSet = setSearchTermNonIndexed((List<Object>) search.searchTerm(), fieldType);
+                searchTerm = null;
+                searchTermBetween = null;
+            } else if (searchType == SearchType.BETWEEN) {
+                searchTermBetween = (List<Object>) search.searchTerm();
+                searchTerm = null;
+                searchTermSet = null;
+            } else {
+                searchTerm = setSearchTermNonIndexed(search.searchTerm(), fieldType);
+                searchTermSet = null;
+                searchTermBetween = null;
+            }
 
             final Object currentValue = fieldData.varHandle.get(value);
 
