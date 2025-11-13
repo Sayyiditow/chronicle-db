@@ -1473,8 +1473,7 @@ public interface ChronicleDao<V> {
     }
 
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared,
-            final Map<String, String> keyMapUpdate)
-            throws IOException {
+            final Map<String, String> keyMapUpdate) throws IOException {
         if (shared.map.size() >= entries()) {
             final var dataFileState = getDataFileState();
             final String newFile = "data-" + (dataFileState.fileNames().size() + 1);
@@ -1534,14 +1533,16 @@ public interface ChronicleDao<V> {
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                     Map.of(key, prevValue), averageValue().getClass(), indexExclusions());
             status = PutStatus.UPDATED;
+            Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
         } else {
             if (getDataFileState().fileNames().size() > 1) {
                 addToKeyMap(key, getDataFileState().currentFile());
             }
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                     Collections.emptyMap(), averageValue().getClass(), indexExclusions());
+            Logger.info("Updated using key [{}] at [{}].", key, dataPath());
         }
-        Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
+
         return status;
     }
 
@@ -1580,7 +1581,7 @@ public interface ChronicleDao<V> {
         if (status == PutStatus.UPDATED) {
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                     Map.of(key, prevValue), averageValue().getClass(), indexExclusions());
-            Logger.info("[{}] using key [{}] at [{}].", status, key, dataPath());
+            Logger.info("Updated using key [{}] at [{}].", key, dataPath());
         }
 
         return status;
@@ -1677,15 +1678,32 @@ public interface ChronicleDao<V> {
         if (!keysToInsert.isEmpty()) {
             final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
             synchronized (lock) {
-                // Insert new records (only keys in keysToInsert)
+                // Insert new records (only keys in keysToInsert) in batches
                 var shared = openDb();
                 try {
-                    for (final String key : keysToInsert) {
-                        final V value = map.get(key);
-                        shared = checkAndRotate(shared, keyMapUpdate);
-                        shared.map.put(key, value);
-                        if (getDataFileState().fileNames().size() > 1) {
-                            keyMapUpdate.put(key, getDataFileState().currentFile());
+                    final var batches = new ArrayList<>(keysToInsert);
+                    int startIndex = 0;
+
+                    while (startIndex < batches.size()) {
+                        final long remainingEntries = entries() - shared.map.size();
+                        final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
+
+                        // Process this batch (sublist)
+                        final var batch = batches.subList(startIndex, endIndex);
+                        for (final String key : batch) {
+                            final V value = map.get(key);
+                            shared.map.put(key, value);
+
+                            if (getDataFileState().fileNames().size() > 1) {
+                                keyMapUpdate.put(key, getDataFileState().currentFile());
+                            }
+                        }
+
+                        startIndex = endIndex;
+
+                        // More to insert? Rotate and continue
+                        if (startIndex < batches.size()) {
+                            shared = checkAndRotate(shared, keyMapUpdate);
                         }
                     }
                 } finally {
@@ -1782,15 +1800,31 @@ public interface ChronicleDao<V> {
 
         final Object lock = LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
+            // insert in batches by checking remaining entries
             var shared = openDb();
             try {
-                for (final var entry : map.entrySet()) {
-                    final String key = entry.getKey();
-                    final V value = entry.getValue();
-                    shared = checkAndRotate(shared, keyMapUpdate);
-                    shared.map.put(key, value);
-                    if (getDataFileState().fileNames().size() > 1) {
-                        keyMapUpdate.put(key, getDataFileState().currentFile());
+                final var batches = new ArrayList<>(map.entrySet());
+                int startIndex = 0;
+
+                while (startIndex < batches.size()) {
+                    final long remainingEntries = entries() - shared.map.size();
+                    final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
+
+                    // Process this batch (sublist)
+                    final var batch = batches.subList(startIndex, endIndex);
+                    for (final var entry : batch) {
+                        shared.map.put(entry.getKey(), entry.getValue());
+
+                        if (getDataFileState().fileNames().size() > 1) {
+                            keyMapUpdate.put(entry.getKey(), getDataFileState().currentFile());
+                        }
+                    }
+
+                    startIndex = endIndex;
+
+                    // More to insert? Rotate and continue
+                    if (startIndex < batches.size()) {
+                        shared = checkAndRotate(shared, keyMapUpdate);
                     }
                 }
             } finally {
