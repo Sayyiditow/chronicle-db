@@ -511,24 +511,28 @@ public interface ChronicleDao<V> {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.remove(key);
         }
+        Logger.info("Deleted [{}] from KeyMap.", key);
     }
 
     private void removeAllFromKeyMap(final Set<String> keys) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.keySet().removeAll(keys);
         }
+        Logger.info("Deleted [{}] keys from KeyMap.", keys.size());
     }
 
     private void addToKeyMap(final String key, final String file) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.put(key, file);
         }
+        Logger.info("Inserted [{}] to KeyMap.", key);
     }
 
     private void addToKeyMap(final Map<String, String> map) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.putAll(map);
         }
+        Logger.info("Inserted [{}] keys to KeyMap.", map.size());
     }
 
     private int getKeyMapSize() {
