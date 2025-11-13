@@ -970,4 +970,25 @@ public final class ChronicleUtils {
             }
         };
     }
+
+    public void processInParallel(final List<Runnable> tasks) {
+        if (tasks == null || tasks.size() == 0)
+            return;
+
+        final List<Thread> threads = new ArrayList<>();
+        for (final Runnable task : tasks) {
+            if (task != null) {
+                threads.add(Thread.ofVirtual().start(task));
+            }
+        }
+
+        for (final Thread thread : threads) {
+            try {
+                thread.join();
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Logger.error(e);
+            }
+        }
+    }
 }
