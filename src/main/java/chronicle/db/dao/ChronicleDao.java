@@ -122,7 +122,7 @@ public interface ChronicleDao<V> {
     /**
      * If an object needs indexes, use this to declare.
      */
-    default Map<String, Set<Object>> indexExclusions() {
+    default Map<String, Set<String>> indexExclusions() {
         return Collections.emptyMap();
     }
 
@@ -3107,8 +3107,8 @@ public interface ChronicleDao<V> {
             }
 
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {
@@ -3183,8 +3183,8 @@ public interface ChronicleDao<V> {
             }
 
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {
@@ -3260,8 +3260,8 @@ public interface ChronicleDao<V> {
             }
 
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {
@@ -3336,8 +3336,8 @@ public interface ChronicleDao<V> {
             }
 
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {
@@ -3527,8 +3527,8 @@ public interface ChronicleDao<V> {
             }
 
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {
@@ -3603,8 +3603,8 @@ public interface ChronicleDao<V> {
             }
 
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {
@@ -3681,8 +3681,8 @@ public interface ChronicleDao<V> {
             }
 
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {
@@ -3758,8 +3758,8 @@ public interface ChronicleDao<V> {
             }
 
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {
@@ -3855,8 +3855,8 @@ public interface ChronicleDao<V> {
 
         for (final Search s : searches) {
             // separate searches
-            final var exclusions = indexExclusions().get(s.field());
-            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex() && exclusions != null
+            final var exclusions = indexExclusions().getOrDefault(s.field(), Collections.emptySet());
+            if (indexedSearch == null && indexFileNames.contains(s.field()) && !s.skipIndex()
                     && !exclusions.contains(s.searchTerm())) {
                 indexedSearch = s;
             } else {

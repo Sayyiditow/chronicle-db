@@ -301,7 +301,7 @@ public final class ChronicleUtils {
      * 
      */
     public <V> void index(final ChronicleMap<String, V> db, final String dbName, final Set<String> fields,
-            final String dataPath, final Class<?> valueClass, final Map<String, Set<Object>> exclusions) {
+            final String dataPath, final Class<?> valueClass, final Map<String, Set<String>> exclusions) {
         final int BATCH_SIZE = 100_000;
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
 
@@ -358,7 +358,7 @@ public final class ChronicleUtils {
                         if (batch == null)
                             continue;
 
-                        final Set<Object> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
+                        final Set<String> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
                         final List<FieldData> fieldDataList = fieldEntry.getValue();
                         sb.setLength(0);
                         boolean shouldSkip = false;
@@ -495,7 +495,7 @@ public final class ChronicleUtils {
 
     public <V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
             final Map<String, V> values, final Map<String, V> previousValues, final Class<?> valueClass,
-            final Map<String, Set<Object>> exclusions) {
+            final Map<String, Set<String>> exclusions) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
@@ -530,7 +530,7 @@ public final class ChronicleUtils {
                 final var sharedIndexMap = openIndexes.get(indexPath);
                 final var recordCount = new AtomicInteger();
 
-                final Set<Object> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
+                final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
                 final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
                 final var failed = new AtomicBoolean(false);
 
