@@ -531,6 +531,10 @@ public final class MapDb {
                 if (limit != -1 && returned >= limit)
                     return false;
 
+                if (nextMatch != null) {
+                    return true;
+                }
+
                 while (it.hasNext()) {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
 
@@ -568,6 +572,10 @@ public final class MapDb {
             public boolean hasNext() {
                 if (limit != -1 && returned >= limit)
                     return false;
+
+                if (nextMatch != null) {
+                    return true;
+                }
 
                 while (it.hasNext()) {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
@@ -610,6 +618,10 @@ public final class MapDb {
                 if (limit != -1 && returned >= limit)
                     return false;
 
+                if (nextMatch != null) {
+                    return true;
+                }
+
                 while (it.hasNext()) {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
 
@@ -647,6 +659,10 @@ public final class MapDb {
             public boolean hasNext() {
                 if (limit != -1 && returned >= limit)
                     return false;
+
+                if (nextMatch != null) {
+                    return true;
+                }
 
                 while (it.hasNext()) {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
@@ -778,28 +794,24 @@ public final class MapDb {
         final Iterable<String> iterable = () -> new Iterator<>() {
             final Iterator<byte[]> it = index.iterator();
             String nextValid = null;
-            boolean hasNextComputed = false;
             int returned = 0;
 
             @Override
             public boolean hasNext() {
-                if (hasNextComputed)
-                    return nextValid != null;
+                if (limit != -1 && returned >= limit)
+                    return false;
+
+                if (nextValid != null)
+                    return true;
 
                 while (it.hasNext()) {
-                    if (limit != -1 && returned >= limit)
-                        break;
-
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
                     if (!searchTerms.contains(indexValueAndKey[0])) {
                         nextValid = indexValueAndKey[1];
-                        hasNextComputed = true;
                         return true;
                     }
                 }
 
-                nextValid = null;
-                hasNextComputed = true;
                 return false;
             }
 
@@ -808,8 +820,9 @@ public final class MapDb {
                 if (!hasNext())
                     throw new NoSuchElementException();
                 returned++;
-                hasNextComputed = false;
-                return nextValid;
+                final var result = nextValid;
+                nextValid = null;
+                return result;
             }
         };
 
@@ -821,30 +834,28 @@ public final class MapDb {
         final Iterable<String> iterable = () -> new Iterator<>() {
             final Iterator<byte[]> it = index.iterator();
             String nextValid = null;
-            boolean hasNextComputed = false;
             int returned = 0;
 
             @Override
             public boolean hasNext() {
-                if (hasNextComputed)
-                    return nextValid != null;
+                if (limit != -1 && returned >= limit)
+                    return false;
+
+                if (nextValid != null)
+                    return true;
 
                 while (it.hasNext()) {
-                    if (limit != -1 && returned >= limit)
-                        break;
-
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
+
+                    if (excludedKeys.contains(indexValueAndKey[1]))
+                        continue;
+
                     if (!searchTerms.contains(indexValueAndKey[0])) {
-                        if (!excludedKeys.contains(indexValueAndKey[1])) {
-                            nextValid = indexValueAndKey[1];
-                            hasNextComputed = true;
-                            return true;
-                        }
+                        nextValid = indexValueAndKey[1];
+                        return true;
                     }
                 }
 
-                nextValid = null;
-                hasNextComputed = true;
                 return false;
             }
 
@@ -853,8 +864,9 @@ public final class MapDb {
                 if (!hasNext())
                     throw new NoSuchElementException();
                 returned++;
-                hasNextComputed = false;
-                return nextValid;
+                final var result = nextValid;
+                nextValid = null; // reset
+                return result;
             }
         };
 
