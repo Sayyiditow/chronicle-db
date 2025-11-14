@@ -1490,12 +1490,22 @@ public interface ChronicleDao<V> {
             final Map<String, String> keyMapUpdate) throws IOException {
         if (shared.map.size() >= entries()) {
             final var dataFileState = getDataFileState();
-            final String newFile = "data-" + (dataFileState.fileNames().size() + 1);
-            // Update key map using the provided ChronicleMap
-            try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-                shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), dataFileState.currentFile()));
+            final var currentSize = dataFileState.fileNames().size();
+            final String newFile = "data-" + (currentSize + 1);
+
+            if (currentSize == 1) {
+                // For first rotation since no keys will be in keyMapUpdate
+                final int firstFileSize = shared.map.size();
+                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+                    shared.map.forEachEntry(
+                            entry -> sharedKeyMap.map.put(entry.key().get(), dataFileState.currentFile()));
+                }
+                Logger.info("Inserted [{}] keys to KeyMap at [{}].", firstFileSize, dataPath());
+            } else {
+                addToKeyMap(keyMapUpdate);
             }
-            shared.close(); // close after rotation
+            shared.close();
+
             dataFileState.fileNames().add(newFile);
             Logger.info("Rotated file [{}] at [{}].", dataFileState.currentFile(), dataPath());
             final var updateFileState = dataFileState.withCurrentFile(newFile);
@@ -1546,14 +1556,14 @@ public interface ChronicleDao<V> {
                 CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                         Map.of(key, prevValue), averageValue().getClass(), indexExclusions());
                 status = PutStatus.UPDATED;
-                Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                Logger.info("Updated using key [{}] at [{}].", key, dataPath());
             } else {
                 if (getDataFileState().fileNames().size() > 1) {
                     addToKeyMap(key, getDataFileState().currentFile());
                 }
                 CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
                         Collections.emptyMap(), averageValue().getClass(), indexExclusions());
-                Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
             }
 
             return status;
