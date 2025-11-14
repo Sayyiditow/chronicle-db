@@ -2014,7 +2014,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
-        final var map = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
@@ -2198,7 +2198,7 @@ public interface ChronicleDao<V> {
 
         Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
                 filters.size(), excludedKeys.size());
-        final var map = new ConcurrentHashMap<String, V>(10_000);
+        final var map = new ConcurrentHashMap<String, V>(limit);
         final var averageValueClass = averageValue().getClass();
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -3140,7 +3140,7 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final var result = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
+                final var result = new ConcurrentHashMap<String, Map<String, Object>>(limit);
                 final var counter = new AtomicInteger();
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
                     if (counter.get() >= limit) {
