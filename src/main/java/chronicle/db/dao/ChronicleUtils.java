@@ -319,7 +319,7 @@ public final class ChronicleUtils {
 
         final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
         for (final String field : indexFieldMap.keySet()) {
-            final String indexPath = indexDirPath + "/" + field;
+            final String indexPath = indexDirPath + field;
             try {
                 openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
             } catch (final RuntimeException e) {
@@ -340,7 +340,7 @@ public final class ChronicleUtils {
             final AtomicInteger recordCount = new AtomicInteger(0);
 
             for (final String field : indexFieldMap.keySet()) {
-                final String indexPath = indexDirPath + "/" + field;
+                final String indexPath = indexDirPath + field;
                 if (openIndexes.containsKey(indexPath)) {
                     fieldBatches.put(field, ConcurrentHashMap.newKeySet(BATCH_SIZE));
                 }
@@ -383,7 +383,7 @@ public final class ChronicleUtils {
                             final String field = batchEntry.getKey();
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
-                                final var indexPath = indexDirPath + "/" + field;
+                                final var indexPath = indexDirPath + field;
                                 final var sharedIndexMap = openIndexes.get(indexPath);
                                 batch.parallelStream().forEach(add -> {
                                     safeIndexAdd(sharedIndexMap, add, indexPath);
@@ -404,7 +404,7 @@ public final class ChronicleUtils {
                 final String field = batchEntry.getKey();
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
-                    final var indexPath = indexDirPath + "/" + field;
+                    final var indexPath = indexDirPath + field;
                     final var sharedIndexMap = openIndexes.get(indexPath);
                     batch.parallelStream().forEach(add -> {
                         safeIndexAdd(sharedIndexMap, add, indexPath);
@@ -439,7 +439,7 @@ public final class ChronicleUtils {
                     getters.add(getFieldData(valueClass, part));
                 }
                 indexFieldMap.put(indexName, getters);
-                final String indexPath = dataPath + "/indexes/" + indexName;
+                final String indexPath = dataPath + ChronicleDao.INDEX_DIR + indexName;
                 try {
                     openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
                 } catch (final RuntimeException e) {
@@ -449,43 +449,41 @@ public final class ChronicleUtils {
 
             // Step 2: Remove from each index
             indexFieldMap.entrySet().parallelStream().forEach(entry -> {
-                final String compoundField = entry.getKey();
+                final String indexName = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
-                final String indexPath = dataPath + "/indexes/" + compoundField;
+                final String indexPath = dataPath + ChronicleDao.INDEX_DIR + indexName;
                 final var sharedIndexMap = openIndexes.get(indexPath);
 
-                final Set<byte[]> keysToRemove = new HashSet<>(values.size());
-                final StringBuilder sb = new StringBuilder();
+                final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
+                final var failed = new AtomicBoolean(false);
+                final var recordCount = new AtomicInteger();
 
-                for (final var e : values.entrySet()) {
+                values.entrySet().parallelStream().forEach(e -> {
+                    if (failed.get()) {
+                        return; // Exit early if already failed
+                    }
+
                     final var key = e.getKey();
                     final V value = e.getValue();
 
-                    try {
-                        sb.setLength(0);
-                        for (final FieldData fd : fieldGetters) {
-                            final var val = String.valueOf(fd.varHandle.get(value));
-                            sb.append(val);
-                        }
-                        keysToRemove.add(MAP_DB.createIndexKey(sb.toString(), key.toString()));
-                    } catch (final Throwable t) {
-                        Logger.error("Failed to generate key for [{}] in [{}]", key, compoundField);
-                        Logger.error(t);
+                    final var sb = sbThreadLocal.get();
+                    sb.setLength(0);
+                    for (final FieldData fd : fieldGetters) {
+                        final var val = String.valueOf(fd.varHandle.get(value));
+                        sb.append(val);
                     }
-                }
 
-                if (!keysToRemove.isEmpty()) {
-                    final AtomicBoolean failed = new AtomicBoolean(false);
-                    keysToRemove.parallelStream().forEach(remove -> {
-                        if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
-                            failed.set(true);
-                        }
-                    });
-
-                    if (!failed.get()) {
-                        sharedIndexMap.commit();
-                        Logger.info("Removed [{}] records from index at [{}]", keysToRemove.size(), indexPath);
+                    if (!safeIndexRemove(sharedIndexMap, MAP_DB.createIndexKey(sb.toString(), key.toString()),
+                            indexPath)) {
+                        failed.set(true);
+                        return;
                     }
+                    recordCount.incrementAndGet();
+                });
+
+                if (!failed.get() && recordCount.get() != 0) {
+                    sharedIndexMap.commit();
+                    Logger.info("Removed [{}] records from index at [{}]", recordCount.get(), indexPath);
                 }
             });
         } finally {
@@ -502,7 +500,6 @@ public final class ChronicleUtils {
             return;
         }
 
-        final int BATCH_SIZE = 100_000;
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
         final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
 
@@ -531,101 +528,76 @@ public final class ChronicleUtils {
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = indexDirPath + indexName;
                 final var sharedIndexMap = openIndexes.get(indexPath);
-                final Set<byte[]> addBatch = new HashSet<>(BATCH_SIZE);
-                final Set<byte[]> removeBatch = new HashSet<>(BATCH_SIZE);
-                int recordCount = 0;
+                final var recordCount = new AtomicInteger();
 
                 final Set<Object> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
-                final StringBuilder sb = new StringBuilder();
+                final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
+                final var failed = new AtomicBoolean(false);
 
-                for (final var valEntry : values.entrySet()) {
+                values.entrySet().parallelStream().forEach(valEntry -> {
+                    if (failed.get()) {
+                        return; // Exit early if already failed
+                    }
+
                     final var key = valEntry.getKey();
                     final V newVal = valEntry.getValue();
                     final V prevVal = previousValues.get(key);
 
-                    try {
-                        sb.setLength(0);
-                        boolean skipAdd = false;
+                    final var sb = sbThreadLocal.get();
+                    sb.setLength(0);
+                    boolean skipAdd = false;
 
+                    for (final FieldData fd : fieldGetters) {
+                        final var value = String.valueOf(fd.varHandle.get(newVal));
+                        if (excluded.contains(value)) {
+                            skipAdd = true;
+                        }
+                        sb.append(value);
+                    }
+                    final var newValStr = sb.toString();
+
+                    if (prevVal != null) {
+                        sb.setLength(0);
                         for (final FieldData fd : fieldGetters) {
-                            final var value = String.valueOf(fd.varHandle.get(newVal));
-                            if (excluded.contains(value)) {
-                                skipAdd = true;
-                            }
+                            final var value = String.valueOf(fd.varHandle.get(prevVal));
                             sb.append(value);
                         }
-                        final var newValStr = sb.toString();
+                        final var oldValStr = sb.toString();
 
-                        if (prevVal != null) {
-                            sb.setLength(0);
-                            for (final FieldData fd : fieldGetters) {
-                                final var value = String.valueOf(fd.varHandle.get(prevVal));
-                                sb.append(value);
+                        if (!Objects.equals(oldValStr, newValStr)) {
+                            // Always remove if changed (regardless of exclusion)
+                            if (!safeIndexRemove(sharedIndexMap, MAP_DB.createIndexKey(oldValStr, key.toString()),
+                                    indexPath)) {
+                                failed.set(true);
+                                return;
                             }
-                            final var oldValStr = sb.toString();
-
-                            if (!Objects.equals(oldValStr, newValStr)) {
-                                // Always remove if changed (regardless of exclusion)
-                                removeBatch.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
-                                // Add new value only if not excluded and not empty
-                                if (!skipAdd) {
-                                    addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                                }
-                                recordCount++;
-                            }
-                        } else {
-                            // Add new value only if not excluded
+                            // Add new value only if not excluded and not empty
                             if (!skipAdd) {
-                                addBatch.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                                recordCount++;
-                            }
-                        }
-
-                        if (addBatch.size() >= BATCH_SIZE || removeBatch.size() >= BATCH_SIZE) {
-                            final AtomicBoolean failed = new AtomicBoolean(false);
-                            removeBatch.parallelStream().forEach(remove -> {
-                                if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
+                                if (!safeIndexAdd(sharedIndexMap, MAP_DB.createIndexKey(newValStr, key.toString()),
+                                        indexPath)) {
                                     failed.set(true);
+                                    return;
                                 }
-                            });
-                            addBatch.parallelStream().forEach(add -> {
-                                if (!failed.get() && !safeIndexAdd(sharedIndexMap, add, indexPath)) {
-                                    failed.set(true);
-                                }
-                            });
-
-                            if (!failed.get()) {
-                                sharedIndexMap.commit();
-                                removeBatch.clear();
-                                addBatch.clear();
                             }
+                            recordCount.incrementAndGet();
                         }
-                    } catch (final Throwable t) {
-                        Logger.error("Failed to update index [{}] for key [{}]", indexName, key);
-                        Logger.error(t);
+                    } else {
+                        // Add new value only if not excluded
+                        if (!skipAdd) {
+                            if (!safeIndexAdd(sharedIndexMap, MAP_DB.createIndexKey(newValStr, key.toString()),
+                                    indexPath)) {
+                                failed.set(true);
+                                return;
+                            }
+                            recordCount.incrementAndGet();
+                        }
                     }
-                }
+                });
 
-                // Final flush
-                if (!addBatch.isEmpty() || !removeBatch.isEmpty()) {
-                    final AtomicBoolean failed = new AtomicBoolean(false);
-                    removeBatch.parallelStream().forEach(remove -> {
-                        if (!failed.get() && !safeIndexRemove(sharedIndexMap, remove, indexPath)) {
-                            failed.set(true);
-                        }
-                    });
-                    addBatch.parallelStream().forEach(add -> {
-                        if (!failed.get() && !safeIndexAdd(sharedIndexMap, add, indexPath)) {
-                            failed.set(true);
-                        }
-                    });
-                    if (!failed.get()) {
-                        sharedIndexMap.commit();
-                    }
+                if (!failed.get() && recordCount.get() != 0) {
+                    sharedIndexMap.commit();
+                    Logger.info("Updated [{}] records for index: [{}]", recordCount.get(), indexName);
                 }
-
-                if (recordCount != 0)
-                    Logger.info("Updated [{}] records for index: [{}]", recordCount, indexName);
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
