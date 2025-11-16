@@ -3768,8 +3768,12 @@ public interface ChronicleDao<V> {
             return getKeyMapExists(keys);
         }
 
-        final var containsMap = new HashMap<String, Boolean>();
+        final var containsMap = new HashMap<String, Boolean>(keys.size());
         try (var shared = openDb()) {
+            if (shared.map.size() == 0) {
+                return containsMap;
+            }
+
             for (final var key : keys) {
                 containsMap.put(key, shared.map.containsKey(key));
             }
@@ -3790,6 +3794,10 @@ public interface ChronicleDao<V> {
 
         final var list = new ArrayList<String>(keys.size());
         try (var shared = openDb()) {
+            if (shared.map.size() == 0) {
+                return list;
+            }
+
             for (final var key : keys) {
                 if (shared.map.containsKey(key)) {
                     list.add(key);
@@ -3812,6 +3820,10 @@ public interface ChronicleDao<V> {
 
         final var list = new ArrayList<String>(keys.size());
         try (var shared = openDb()) {
+            if (shared.map.size() == 0) {
+                return list;
+            }
+
             for (final var key : keys) {
                 if (!shared.map.containsKey(key)) {
                     list.add(key);
