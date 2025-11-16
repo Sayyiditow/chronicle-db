@@ -15,11 +15,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
-import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -27,6 +25,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -224,7 +223,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default void deleteDataFiles() throws IOException {
+    default void deleteDataFiles() {
         for (final var file : getDataFileState().fileNames()) {
             CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
         }
@@ -392,7 +391,7 @@ public interface ChronicleDao<V> {
      * In cases of UTFDataFormatRuntimeException, we can recover the db using this
      * method
      */
-    default void checkUtf8Exceptions(final String dataFileName) throws IOException {
+    default void checkUtf8Exceptions(final String dataFileName) {
         final var deleteKeys = new HashSet<String>();
         try (final var shared = openDb(dataFileName)) {
             Logger.info("Total db size [{}]", shared.map.size());
@@ -428,83 +427,24 @@ public interface ChronicleDao<V> {
         }
     }
 
-    public record GroupedKeys(Map<String, Iterable<String>> fileGroups, AutoCloseable closer) implements AutoCloseable {
-        @Override
-        public void close() throws Exception {
-            closer.close();
-        }
-
-        public static final AutoCloseable NOOP = () -> {
-        };
-    }
-
     /**
      * Get a map of file and set of keys in that file from cache.
+     * Only run for multi file cases
      * 
-     * @throws IOException
      */
-    private GroupedKeys getDbFiles(final Iterable<String> keys, final Set<String> dbFiles) {
-        final var dataFileSize = dbFiles.size();
-
-        if (dataFileSize <= 1) {
-            final Set<String> keySet = new HashSet<>();
-            try (final var shared = openDb()) {
-                for (final String k : keys) {
-                    if (shared.map.containsKey(k)) {
-                        keySet.add(k);
-                    }
+    private Map<String, Set<String>> getDbFiles(final Iterable<String> keys, final Set<String> dbFiles) {
+        // Multi-file: eagerly group keys by file
+        final Map<String, Set<String>> fileGroups = new HashMap<>();
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            for (final String k : keys) {
+                final String mappedFile = sharedKeyMap.map.get(k);
+                if (mappedFile != null) {
+                    fileGroups.computeIfAbsent(mappedFile, file -> new HashSet<>()).add(k);
                 }
             }
-            final Map<String, Iterable<String>> singleGroup = Map.of(DATA_FILE, keySet);
-            return new GroupedKeys(singleGroup, GroupedKeys.NOOP);
         }
 
-        // Multi-file: use lazy grouping based on keyMap
-        final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
-
-        // Group keys lazily by file using filtering
-        final Map<String, Iterable<String>> fileGroups = new HashMap<>();
-        for (final String file : dbFiles) {
-            final Iterable<String> fileKeys = () -> new Iterator<>() {
-                final Iterator<String> it = keys.iterator();
-                String nextValid = null;
-                boolean computed = false;
-
-                private void findNext() {
-                    while (it.hasNext()) {
-                        final String k = it.next();
-                        final String mappedFile = sharedKeyMap.map.get(k);
-                        if (file.equals(mappedFile)) {
-                            nextValid = k;
-                            return;
-                        }
-                    }
-                    nextValid = null;
-                }
-
-                @Override
-                public boolean hasNext() {
-                    if (!computed) {
-                        findNext();
-                        computed = true;
-                    }
-                    return nextValid != null;
-                }
-
-                @Override
-                public String next() {
-                    if (!hasNext()) {
-                        throw new NoSuchElementException();
-                    }
-                    computed = false;
-                    return nextValid;
-                }
-            };
-
-            fileGroups.put(file, fileKeys);
-        }
-
-        return new GroupedKeys(fileGroups, () -> sharedKeyMap.close());
+        return fileGroups;
     }
 
     private void removeFromKeyMap(final String key) {
@@ -654,7 +594,7 @@ public interface ChronicleDao<V> {
      * @return Map<String, V>
      */
     default Map<String, V> fetch(final int limit) {
-        final Map<String, V> result = new HashMap<>(10_000);
+        final Map<String, V> result = new HashMap<>(limit);
         for (final String file : getDataFileState().fileNames()) {
             if (result.size() >= limit) {
                 break;
@@ -696,7 +636,7 @@ public interface ChronicleDao<V> {
     }
 
     default Map<String, Map<String, Object>> fetchSubset(final String[] fields, final int limit) {
-        final var result = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
+        final var result = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         for (final String file : getDataFileState().fileNames()) {
             if (result.size() >= limit) {
@@ -781,9 +721,8 @@ public interface ChronicleDao<V> {
      * 
      * @param key the key to search in the db
      * @return V value
-     * @throws IOException
      */
-    default V get(final String key) throws IOException {
+    default V get(final String key) {
         if (key == null) {
             return null;
         }
@@ -799,20 +738,76 @@ public interface ChronicleDao<V> {
         }
     }
 
+    private void processKeysByFile(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        keyFiles.entrySet().parallelStream().forEach(entry -> {
+            final var file = entry.getKey();
+            try (final var shared = openDb(file)) {
+                for (final var key : entry.getValue()) {
+                    final var value = shared.map.getUsing(key, using());
+                    if (value != null) {
+                        valueConsumer.accept(key, value);
+                    }
+                }
+            }
+        });
+    }
+
+    private void processKeysByFile(final Iterable<String> keys, final int limit,
+            final BiConsumer<String, V> valueConsumer) {
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        int count = 0;
+        outer: for (final var entry : keyFiles.entrySet()) {
+            final var file = entry.getKey();
+            try (final var shared = openDb(file)) {
+                for (final var key : entry.getValue()) {
+                    final var value = shared.map.getUsing(key, using());
+                    if (value != null) {
+                        valueConsumer.accept(key, value);
+                        if (++count >= limit) {
+                            break outer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void processKeysByFile(final Iterable<String> keys, final int limit,
+            final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        int count = 0;
+        outer: for (final var entry : keyFiles.entrySet()) {
+            final var file = entry.getKey();
+            try (final var shared = openDb(file)) {
+                for (final var key : entry.getValue()) {
+                    if (!excludedKeys.contains(key)) {
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null) {
+                            valueConsumer.accept(key, value);
+                            if (++count >= limit) {
+                                break outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * Get all the values for a list of keys
      * 
      * @param keys list of keys
      * @return Map<String, V> values
-     * @throws IOException
      */
-    default Map<String, V> get(final Iterable<String> keys) throws Exception {
+    default Map<String, V> get(final Iterable<String> keys) {
         if (keys == null || !keys.iterator().hasNext()) {
             return Collections.emptyMap();
         }
 
         Logger.info("Querying multiple keys at [{}].", dataPath());
-        final var map = new ConcurrentHashMap<String, V>(1000);
+        final var map = new ConcurrentHashMap<String, V>(10_000);
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
@@ -826,25 +821,14 @@ public interface ChronicleDao<V> {
             return map;
         }
 
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            keyFiles.fileGroups.entrySet().parallelStream().forEach(entry -> {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            map.put(key, value);
-                        }
-                    }
-                }
-            });
-        }
+        processKeysByFile(keys, (key, value) -> {
+            map.put(key, value);
+        });
 
         return map;
     }
 
-    default CsvObject getCsv(final Iterable<String> keys) throws Exception {
+    default CsvObject getCsv(final Iterable<String> keys) {
         if (keys == null || !keys.iterator().hasNext()) {
             return CsvObject.empty();
         }
@@ -867,27 +851,15 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
         }
 
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            keyFiles.fileGroups.entrySet().parallelStream().forEach(entry -> {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
-                            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
-                        }
-                    }
-                }
-            });
-        }
+        processKeysByFile(keys, (key, value) -> {
+            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+        });
 
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
-    default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final String[] fields)
-            throws Exception {
+    default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final String[] fields) {
         if (keys == null || !keys.iterator().hasNext()) {
             return Collections.emptyMap();
         }
@@ -908,25 +880,14 @@ public interface ChronicleDao<V> {
             return map;
         }
 
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            keyFiles.fileGroups.entrySet().parallelStream().forEach(entry -> {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
-                        }
-                    }
-                }
-            });
-        }
+        processKeysByFile(keys, (key, value) -> {
+            map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
+        });
 
         return map;
     }
 
-    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields) throws Exception {
+    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields) {
         if (keys == null || !keys.iterator().hasNext()) {
             return CsvObject.empty();
         }
@@ -948,25 +909,14 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers, new ArrayList<>(rowQueue));
         }
 
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            keyFiles.fileGroups.entrySet().parallelStream().forEach(entry -> {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
-                        }
-                    }
-                }
-            });
-        }
+        processKeysByFile(keys, (key, value) -> {
+            rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
+        });
 
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
-    default Map<String, V> get(final Iterable<String> keys, final int limit) throws Exception {
+    default Map<String, V> get(final Iterable<String> keys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
         }
@@ -981,7 +931,7 @@ public interface ChronicleDao<V> {
                     final var value = shared.map.getUsing(key, using());
                     if (value != null) {
                         map.put(key, value);
-                        if (count++ == limit)
+                        if (++count >= limit)
                             break;
                     }
                 }
@@ -989,29 +939,14 @@ public interface ChronicleDao<V> {
             return map;
         }
 
-        final var count = new AtomicInteger(0);
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            map.put(key, value);
-                            if (count.incrementAndGet() >= limit) {
-                                break outer;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        processKeysByFile(keys, limit, (key, value) -> {
+            map.put(key, value);
+        });
 
         return map;
     }
 
-    default CsvObject getCsv(final Iterable<String> keys, final int limit) throws Exception {
+    default CsvObject getCsv(final Iterable<String> keys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return CsvObject.empty();
         }
@@ -1029,7 +964,7 @@ public interface ChronicleDao<V> {
                     if (value != null) {
                         headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
                         rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
-                        if (count++ == limit)
+                        if (++count >= limit)
                             break;
                     }
                 }
@@ -1037,31 +972,16 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
         }
 
-        final var count = new AtomicInteger(0);
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
-                            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
-                            if (count.incrementAndGet() >= limit) {
-                                break outer;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        processKeysByFile(keys, limit, (key, value) -> {
+            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+        });
 
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
     default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final String[] fields,
-            final int limit) throws Exception {
+            final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
         }
@@ -1077,7 +997,7 @@ public interface ChronicleDao<V> {
                     final var value = shared.map.getUsing(key, using());
                     if (value != null) {
                         map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
-                        if (count++ == limit)
+                        if (++count >= limit)
                             break;
                     }
                 }
@@ -1085,29 +1005,14 @@ public interface ChronicleDao<V> {
             return map;
         }
 
-        final var count = new AtomicInteger(0);
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
-                            if (count.incrementAndGet() >= limit)
-                                break outer;
-                        }
-                    }
-                }
-            }
-        }
+        processKeysByFile(keys, limit, (key, value) -> {
+            map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
+        });
 
         return map;
     }
 
-    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields, final int limit)
-            throws Exception {
+    default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return CsvObject.empty();
         }
@@ -1124,7 +1029,7 @@ public interface ChronicleDao<V> {
                     final var value = shared.map.getUsing(key, using());
                     if (value != null) {
                         rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
-                        if (count++ == limit)
+                        if (++count >= limit)
                             break;
                     }
                 }
@@ -1132,29 +1037,14 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers, new ArrayList<>(rowQueue));
         }
 
-        final var count = new AtomicInteger(0);
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
-                            if (count.incrementAndGet() >= limit)
-                                break outer;
-                        }
-                    }
-                }
-            }
-        }
+        processKeysByFile(keys, limit, (key, value) -> {
+            rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
+        });
 
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
-    default Map<String, V> get(final Iterable<String> keys, final Set<String> excludedKeys, final int limit)
-            throws Exception {
+    default Map<String, V> get(final Iterable<String> keys, final Set<String> excludedKeys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
         }
@@ -1170,7 +1060,7 @@ public interface ChronicleDao<V> {
                         final var value = shared.map.getUsing(key, using());
                         if (value != null) {
                             map.put(key, value);
-                            if (count++ == limit)
+                            if (++count >= limit)
                                 break;
                         }
                     }
@@ -1179,31 +1069,14 @@ public interface ChronicleDao<V> {
             return map;
         }
 
-        final var count = new AtomicInteger(0);
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        if (!excludedKeys.contains(key)) {
-                            final var value = shared.map.getUsing(key, using());
-                            if (value != null) {
-                                map.put(key, value);
-                                if (count.incrementAndGet() >= limit)
-                                    break outer;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        processKeysByFile(keys, limit, excludedKeys, (key, value) -> {
+            map.put(key, value);
+        });
 
         return map;
     }
 
-    default CsvObject getCsv(final Iterable<String> keys, final Set<String> excludedKeys, final int limit)
-            throws Exception {
+    default CsvObject getCsv(final Iterable<String> keys, final Set<String> excludedKeys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return CsvObject.empty();
         }
@@ -1222,7 +1095,7 @@ public interface ChronicleDao<V> {
                         if (value != null) {
                             headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
                             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
-                            if (count++ == limit)
+                            if (++count >= limit)
                                 break;
                         }
                     }
@@ -1231,33 +1104,16 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
         }
 
-        final var count = new AtomicInteger(0);
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        if (!excludedKeys.contains(key)) {
-                            final var value = shared.map.getUsing(key, using());
-                            if (value != null) {
-                                headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
-                                rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
-                                if (count.incrementAndGet() >= limit)
-                                    break outer;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        processKeysByFile(keys, limit, excludedKeys, (key, value) -> {
+            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+        });
 
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
-    default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys,
-            final Set<String> excludedKeys, final String[] fields, final int limit)
-            throws Exception {
+    default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final Set<String> excludedKeys,
+            final String[] fields, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
         }
@@ -1274,7 +1130,7 @@ public interface ChronicleDao<V> {
                         final var value = shared.map.getUsing(key, using());
                         if (value != null) {
                             map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
-                            if (count++ == limit)
+                            if (++count >= limit)
                                 break;
                         }
                     }
@@ -1283,31 +1139,15 @@ public interface ChronicleDao<V> {
             return map;
         }
 
-        final var count = new AtomicInteger(0);
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        if (!excludedKeys.contains(key)) {
-                            final var value = shared.map.getUsing(key, using());
-                            if (value != null) {
-                                map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
-                                if (count.incrementAndGet() >= limit)
-                                    break outer;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        processKeysByFile(keys, limit, excludedKeys, (key, value) -> {
+            map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
+        });
 
         return map;
     }
 
     default CsvObject getSubsetCsv(final Iterable<String> keys, final Set<String> excludedKeys, final String[] fields,
-            final int limit) throws Exception {
+            final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return CsvObject.empty();
         }
@@ -1325,7 +1165,7 @@ public interface ChronicleDao<V> {
                         final var value = shared.map.getUsing(key, using());
                         if (value != null) {
                             rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
-                            if (count++ == limit)
+                            if (++count >= limit)
                                 break;
                         }
                     }
@@ -1334,25 +1174,9 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers, new ArrayList<>(rowQueue));
         }
 
-        final var count = new AtomicInteger(0);
-        try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-            outer: for (final var entry : keyFiles.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-
-                try (final var shared = openDb(file)) {
-                    for (final var key : entry.getValue()) {
-                        if (!excludedKeys.contains(key)) {
-                            final var value = shared.map.getUsing(key, using());
-                            if (value != null) {
-                                rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
-                                if (count.incrementAndGet() >= limit)
-                                    break outer;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        processKeysByFile(keys, limit, excludedKeys, (key, value) -> {
+            rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
+        });
 
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
@@ -1362,7 +1186,6 @@ public interface ChronicleDao<V> {
      * 
      * @param key the key to remove
      * @return true if updated else false
-     * @throws IOException
      */
     default boolean delete(final String key) {
         if (key == null) {
@@ -1410,15 +1233,13 @@ public interface ChronicleDao<V> {
      * 
      * @param keys the keys to remove
      * @return true if updated else false
-     * @throws IOException
      */
-    default boolean delete(final Set<String> keys) throws Exception {
+    default boolean delete(final Set<String> keys) {
         if (keys == null || keys.isEmpty()) {
             return false;
         }
 
-        final var deletedMap = new HashMap<String, V>();
-
+        final var deletedMap = new ConcurrentHashMap<String, V>(keys.size());
         final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             if (getDataFileState().fileNames().size() <= 1) {
@@ -1439,20 +1260,19 @@ public interface ChronicleDao<V> {
                 return true;
             }
 
-            try (var keyFiles = getDbFiles(keys, getDataFileState().fileNames())) {
-                if (keyFiles.fileGroups().isEmpty()) {
-                    return false;
-                }
+            final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+            if (keyFiles.isEmpty()) {
+                return false;
+            }
 
-                for (final var entry : keyFiles.fileGroups().entrySet()) {
-                    final var file = entry.getKey();
-                    try (final var shared = openDb(file)) {
-                        for (final String key : entry.getValue()) {
-                            deletedMap.put(key, shared.map.remove(key));
-                        }
+            keyFiles.entrySet().parallelStream().forEach(entry -> {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    for (final String key : entry.getValue()) {
+                        deletedMap.put(key, shared.map.remove(key));
                     }
                 }
-            }
+            });
 
             if (deletedMap.isEmpty()) {
                 return false;
@@ -1467,8 +1287,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared)
-            throws IOException {
+    private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared) {
         if (shared.map.size() >= entries()) {
             final var dataFileState = getDataFileState();
             final String newFile = "data-" + (dataFileState.fileNames().size() + 1);
@@ -1487,7 +1306,7 @@ public interface ChronicleDao<V> {
     }
 
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared,
-            final Map<String, String> keyMapUpdate) throws IOException {
+            final Map<String, String> keyMapUpdate) {
         if (shared.map.size() >= entries()) {
             final var dataFileState = getDataFileState();
             final var currentSize = dataFileState.fileNames().size();
@@ -1522,10 +1341,8 @@ public interface ChronicleDao<V> {
      * @param key   the key
      * @param value the value
      * @return true if updated else false
-     * @throws IOException
      */
-    default PutStatus put(final String key, final V value, final Set<String> indexFileNames)
-            throws IOException {
+    default PutStatus put(final String key, final V value, final Set<String> indexFileNames) {
         if (key == null) {
             return PutStatus.FAILED;
         }
@@ -1573,7 +1390,7 @@ public interface ChronicleDao<V> {
     /**
      * Refer to method above
      */
-    default PutStatus put(final String key, final V value) throws IOException {
+    default PutStatus put(final String key, final V value) {
         return put(key, value, indexFileNames());
     }
 
@@ -1583,10 +1400,8 @@ public interface ChronicleDao<V> {
      * @param key   the key
      * @param value the value
      * @return true if updated else false
-     * @throws IOException
      */
-    default PutStatus update(final String key, final V value, final Set<String> indexFileNames)
-            throws IOException {
+    default PutStatus update(final String key, final V value, final Set<String> indexFileNames) {
         if (key == null || !exists(key)) {
             Logger.error("Key [{}] does not exist during update at [{}].", key, dataPath());
             return PutStatus.FAILED;
@@ -1618,7 +1433,7 @@ public interface ChronicleDao<V> {
     /**
      * Refer to method above
      */
-    default PutStatus update(final String key, final V value) throws IOException {
+    default PutStatus update(final String key, final V value) {
         return update(key, value, indexFileNames());
     }
 
@@ -1628,10 +1443,8 @@ public interface ChronicleDao<V> {
      * @param key   the key
      * @param value the value
      * @return true if updated else false
-     * @throws IOException
      */
-    default PutStatus insert(final String key, final V value, final Set<String> indexFileNames)
-            throws IOException {
+    default PutStatus insert(final String key, final V value, final Set<String> indexFileNames) {
         if (key == null || exists(key)) {
             Logger.error("Key [{}] already exists during insert at [{}].", key, dataPath());
             return PutStatus.FAILED;
@@ -1662,7 +1475,7 @@ public interface ChronicleDao<V> {
     /**
      * Refer to method above
      */
-    default PutStatus insert(final String key, final V value) throws IOException {
+    default PutStatus insert(final String key, final V value) {
         return insert(key, value, indexFileNames());
     }
 
@@ -1670,15 +1483,14 @@ public interface ChronicleDao<V> {
      * Add/Update multiple values into the db, then update all indexes related
      * 
      * @param map the map to add
-     * @throws IOException
      */
-    default PutStatus put(final Map<String, V> map) throws Exception {
+    default PutStatus put(final Map<String, V> map) {
         if (map == null || map.isEmpty()) {
             return PutStatus.FAILED;
         }
 
         final int putSize = map.size();
-        final var prevValues = new HashMap<String, V>(putSize);
+        final var prevValues = new ConcurrentHashMap<String, V>(putSize);
         final Set<String> keysToInsert = new HashSet<>(map.keySet());
         final var keyMapUpdate = new HashMap<String, String>(putSize);
         var status = PutStatus.INSERTED;
@@ -1686,8 +1498,18 @@ public interface ChronicleDao<V> {
         final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             // update old records first then only move to new record inserts.
-            try (var grouped = getDbFiles(keysToInsert, getDataFileState().fileNames())) {
-                for (final var entry : grouped.fileGroups().entrySet()) {
+            if (getDataFileState().fileNames().size() <= 1) {
+                // Single file
+                try (final var shared = openDb()) {
+                    for (final String key : map.keySet()) {
+                        if (shared.map.containsKey(key)) {
+                            prevValues.put(key, shared.map.put(key, map.get(key)));
+                        }
+                    }
+                }
+            } else {
+                final var keyFiles = getDbFiles(keysToInsert, getDataFileState().fileNames());
+                keyFiles.entrySet().parallelStream().forEach(entry -> {
                     final var file = entry.getKey();
                     try (final var shared = openDb(file)) {
                         for (final String key : entry.getValue()) {
@@ -1697,7 +1519,7 @@ public interface ChronicleDao<V> {
                             }
                         }
                     }
-                }
+                });
             }
 
             if (!prevValues.isEmpty()) {
@@ -1759,32 +1581,41 @@ public interface ChronicleDao<V> {
      * keys, it wont insert
      * 
      * @param map the map to add
-     * @throws IOException
      */
-    default PutStatus update(final Map<String, V> map) throws Exception {
+    default PutStatus update(final Map<String, V> map) {
         if (map == null || map.isEmpty()) {
             return PutStatus.FAILED;
         }
 
         var status = PutStatus.UPDATED;
         final var mapSize = map.size();
-        final var prevValues = new HashMap<String, V>(mapSize);
+        final var prevValues = new ConcurrentHashMap<String, V>(mapSize);
 
         final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            try (var grouped = getDbFiles(map.keySet(), getDataFileState().fileNames())) {
-                for (final var entry : grouped.fileGroups().entrySet()) {
+            if (getDataFileState().fileNames().size() <= 1) {
+                // Single file
+                try (final var shared = openDb()) {
+                    for (final String key : map.keySet()) {
+                        if (shared.map.containsKey(key)) {
+                            prevValues.put(key, shared.map.put(key, map.get(key)));
+                        }
+                    }
+                }
+            } else {
+                // Multi-file
+                final var keyFiles = getDbFiles(map.keySet(), getDataFileState().fileNames());
+                keyFiles.entrySet().parallelStream().forEach(entry -> {
                     final var file = entry.getKey();
                     try (final var shared = openDb(file)) {
                         for (final String key : entry.getValue()) {
                             prevValues.put(key, shared.map.put(key, map.get(key)));
                         }
                     }
-                }
+                });
             }
 
             final var prevValueSize = prevValues.size();
-
             if (prevValueSize == 0) {
                 Logger.error("All [{}] values given do not exist during update at [{}", mapSize, dataPath());
                 return PutStatus.FAILED;
@@ -1812,9 +1643,8 @@ public interface ChronicleDao<V> {
      * Add multiple values into the db, this will skip existing values
      * 
      * @param map the map to add
-     * @throws IOException
      */
-    default PutStatus insert(final Map<String, V> map) throws IOException {
+    default PutStatus insert(final Map<String, V> map) {
         if (map == null || map.isEmpty()) {
             return PutStatus.FAILED;
         }
@@ -1911,30 +1741,29 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
-                    break;
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            if (count.get() >= limit)
+                break;
 
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
-                        final V value = shared.map.getUsing(key, using());
-                        if (value == null)
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
+                    final V value = shared.map.getUsing(key, using());
+                    if (value == null)
+                        return false;
+
+                    for (final var search : filters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                             return false;
-
-                        for (final var search : filters) {
-                            if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                return false;
-                            }
                         }
+                    }
 
-                        map.put(key, value);
-                        return true;
-                    });
-                }
+                    map.put(key, value);
+                    return true;
+                });
             }
         }
 
@@ -1976,31 +1805,30 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
-                    break;
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            if (count.get() >= limit)
+                break;
 
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
-                        final V value = shared.map.getUsing(key, using());
-                        if (value == null)
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
+                    final V value = shared.map.getUsing(key, using());
+                    if (value == null)
+                        return false;
+
+                    for (final var search : filters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                             return false;
-
-                        for (final var search : filters) {
-                            if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                return false;
-                            }
                         }
+                    }
 
-                        headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
-                        rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
-                        return true;
-                    });
-                }
+                    headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                    rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+                    return true;
+                });
             }
         }
 
@@ -2040,30 +1868,29 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
-                    break;
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            if (count.get() >= limit)
+                break;
 
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
-                        final V value = shared.map.getUsing(key, using());
-                        if (value == null)
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
+                    final V value = shared.map.getUsing(key, using());
+                    if (value == null)
+                        return false;
+
+                    for (final var search : filters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                             return false;
-
-                        for (final var search : filters) {
-                            if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                return false;
-                            }
                         }
+                    }
 
-                        map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
-                        return true;
-                    });
-                }
+                    map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
+                    return true;
+                });
             }
         }
 
@@ -2105,30 +1932,29 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
-                    break;
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            if (count.get() >= limit)
+                break;
 
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
-                        final V value = shared.map.getUsing(key, using());
-                        if (value == null)
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
+                    final V value = shared.map.getUsing(key, using());
+                    if (value == null)
+                        return false;
+
+                    for (final var search : filters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                             return false;
-
-                        for (final var search : filters) {
-                            if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                return false;
-                            }
                         }
+                    }
 
-                        rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
-                        return true;
-                    });
-                }
+                    rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
+                    return true;
+                });
             }
         }
 
@@ -2165,27 +1991,26 @@ public interface ChronicleDao<V> {
             return;
         }
 
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, Integer.MAX_VALUE, key -> {
-                        final V value = shared.map.getUsing(key, using());
-                        if (value == null)
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, Integer.MAX_VALUE, key -> {
+                    final V value = shared.map.getUsing(key, using());
+                    if (value == null)
+                        return false;
+
+                    for (final var search : filters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                             return false;
-
-                        for (final var search : filters) {
-                            if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                return false;
-                            }
                         }
+                    }
 
-                        results.add(key);
-                        return true;
-                    });
-                }
+                    results.add(key);
+                    return true;
+                });
             }
         }
     }
@@ -2226,34 +2051,33 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
-                    break;
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            if (count.get() >= limit)
+                break;
 
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
-                            key -> {
-                                if (excludedKeys.contains(key))
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
+                        key -> {
+                            if (excludedKeys.contains(key))
+                                return false;
+
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                                     return false;
-
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
-                                    return false;
-
-                                for (final var search : filters) {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
                                 }
+                            }
 
-                                map.put(key, value);
-                                return true;
-                            });
-                }
+                            map.put(key, value);
+                            return true;
+                        });
             }
         }
 
@@ -2299,36 +2123,35 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
-                    break;
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            if (count.get() >= limit)
+                break;
 
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
-                            key -> {
-                                if (excludedKeys.contains(key))
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
+                        key -> {
+                            if (excludedKeys.contains(key))
+                                return false;
+
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                                     return false;
-
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
-                                    return false;
-
-                                for (final var search : filters) {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
                                 }
+                            }
 
-                                headers.compareAndSet(null,
-                                        CHRONICLE_UTILS.getHeadersFromObject(classData, value));
-                                rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
-                                return true;
-                            });
-                }
+                            headers.compareAndSet(null,
+                                    CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+                            return true;
+                        });
             }
         }
 
@@ -2373,34 +2196,33 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
-                    break;
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            if (count.get() >= limit)
+                break;
 
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
-                            key -> {
-                                if (excludedKeys.contains(key))
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
+                        key -> {
+                            if (excludedKeys.contains(key))
+                                return false;
+
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                                     return false;
-
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
-                                    return false;
-
-                                for (final var search : filters) {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
                                 }
+                            }
 
-                                map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
-                                return true;
-                            });
-                }
+                            map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
+                            return true;
+                        });
             }
         }
 
@@ -2445,34 +2267,33 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                if (count.get() >= limit)
-                    break;
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            if (count.get() >= limit)
+                break;
 
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
-                            key -> {
-                                if (excludedKeys.contains(key))
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
+                        key -> {
+                            if (excludedKeys.contains(key))
+                                return false;
+
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                                     return false;
-
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
-                                    return false;
-
-                                for (final var search : filters) {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
                                 }
+                            }
 
-                                rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
-                                return true;
-                            });
-                }
+                            rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
+                            return true;
+                        });
             }
         }
 
@@ -2514,28 +2335,27 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger counter = new AtomicInteger(0);
-        try (var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
-            for (final var entry : grouped.fileGroups().entrySet()) {
-                final var file = entry.getKey();
-                final var keysForFile = entry.getValue(); // Iterable<String>
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        for (final var entry : keyFiles.entrySet()) {
+            final var file = entry.getKey();
+            final var keysForFile = entry.getValue(); // Iterable<String>
 
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(keysForFile, limit - counter.get(), counter,
-                            key -> {
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
+            try (final var shared = openDb(file)) {
+                CHRONICLE_UTILS.parallelIterable(keysForFile, limit - counter.get(), counter,
+                        key -> {
+                            final V value = shared.map.getUsing(key, using());
+                            if (value == null)
+                                return false;
+
+                            for (final var search : filters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
                                     return false;
-
-                                for (final var search : filters) {
-                                    if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
-                                        return false;
-                                    }
                                 }
+                            }
 
-                                count.increment();
-                                return true;
-                            });
-                }
+                            count.increment();
+                            return true;
+                        });
             }
         }
 
@@ -2926,7 +2746,7 @@ public interface ChronicleDao<V> {
         return result == null || !result.iterator().hasNext();
     }
 
-    default Map<String, V> indexedSearch(final Search search) throws Exception {
+    default Map<String, V> indexedSearch(final Search search) {
         final String indexPath = getIndexPath(search.field());
         final int limit = search.limit() > 0 ? search.limit() : HARD_LIMIT;
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
@@ -2938,7 +2758,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Set<String> indexedSearchKeys(final Search search) throws Exception {
+    default Set<String> indexedSearchKeys(final Search search) {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
             final var searchResult = indexedSearch(search, sharedIndexMap.index);
@@ -2949,7 +2769,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default List<String> indexedSearchKeysList(final Search search) throws Exception {
+    default List<String> indexedSearchKeysList(final Search search) {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
             final var searchResult = indexedSearch(search, sharedIndexMap.index);
@@ -2960,7 +2780,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, V> indexedSearch(final Search search, final Set<String> excludedKeys) throws Exception {
+    default Map<String, V> indexedSearch(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
         final int limit = search.limit() > 0 ? search.limit() : HARD_LIMIT;
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
@@ -2972,7 +2792,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Set<String> indexedSearchKeys(final Search search, final Set<String> excludedKeys) throws Exception {
+    default Set<String> indexedSearchKeys(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
             final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
@@ -2983,7 +2803,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default List<String> indexedSearchKeysList(final Search search, final Set<String> excludedKeys) throws Exception {
+    default List<String> indexedSearchKeysList(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
             final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
@@ -3002,14 +2822,14 @@ public interface ChronicleDao<V> {
         return search(matchingKeys, List.of(search), matchingKeys.size());
     }
 
-    default Map<String, V> search(final Map<String, V> db, final Search search) throws IOException {
+    default Map<String, V> search(final Map<String, V> db, final Search search) {
         if (db == null || db.isEmpty()) {
             return Collections.emptyMap();
         }
         return search(db, List.of(search));
     }
 
-    default Map<String, V> search(final Search search) throws IOException {
+    default Map<String, V> search(final Search search) {
         final Map<String, V> result = new ConcurrentHashMap<>();
         final int limit = search.limit() == -1 ? HARD_LIMIT : search.limit();
         final AtomicInteger counter = new AtomicInteger(0);
@@ -3026,7 +2846,7 @@ public interface ChronicleDao<V> {
         return result;
     }
 
-    default Set<String> searchKeys(final List<Search> searches) throws IOException {
+    default Set<String> searchKeys(final List<Search> searches) {
         final var results = ConcurrentHashMap.<String>newKeySet();
         getDataFileState().fileNames().parallelStream()
                 .forEach(file -> {
@@ -3037,7 +2857,7 @@ public interface ChronicleDao<V> {
         return results;
     }
 
-    default List<String> searchKeysList(final List<Search> searches) throws IOException {
+    default List<String> searchKeysList(final List<Search> searches) {
         final var result = new ConcurrentLinkedQueue<String>();
         getDataFileState().fileNames().parallelStream()
                 .forEach(file -> {
@@ -3048,7 +2868,7 @@ public interface ChronicleDao<V> {
         return new ArrayList<>(result);
     }
 
-    default Map<String, V> search(final Search search, final Set<String> excludedKeys) throws IOException {
+    default Map<String, V> search(final Search search, final Set<String> excludedKeys) {
         final Map<String, V> result = new ConcurrentHashMap<>();
         final int limit = search.limit() == -1 ? HARD_LIMIT : search.limit();
         final AtomicInteger counter = new AtomicInteger(0);
@@ -3065,7 +2885,7 @@ public interface ChronicleDao<V> {
         return result;
     }
 
-    default Set<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) throws IOException {
+    default Set<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) {
         final var results = ConcurrentHashMap.<String>newKeySet();
         getDataFileState().fileNames().parallelStream()
                 .forEach(file -> {
@@ -3076,8 +2896,7 @@ public interface ChronicleDao<V> {
         return results;
     }
 
-    default List<String> searchKeysList(final List<Search> searches, final Set<String> excludedKeys)
-            throws IOException {
+    default List<String> searchKeysList(final List<Search> searches, final Set<String> excludedKeys) {
         final var result = new ConcurrentLinkedQueue<String>();
         getDataFileState().fileNames().parallelStream().forEach(file -> {
             try (final var shared = openDb(file)) {
@@ -3908,9 +3727,8 @@ public interface ChronicleDao<V> {
      * Current size of the data
      * 
      * @return int size
-     * @throws IOException
      */
-    default int size() throws IOException {
+    default int size() {
         Logger.info("Getting DB size at [{}].", dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
@@ -3931,7 +3749,7 @@ public interface ChronicleDao<V> {
         DATA_FILE_CACHE.remove(dataPath());
     }
 
-    default boolean exists(final String key) throws IOException {
+    default boolean exists(final String key) {
         Logger.info("Checking [{}] existence at [{}].", key, dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
@@ -3943,7 +3761,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, Boolean> existsMultiple(final Set<String> keys) throws IOException {
+    default Map<String, Boolean> existsMultiple(final Set<String> keys) {
         Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
@@ -3963,7 +3781,7 @@ public interface ChronicleDao<V> {
     /**
      * Returns only the keys that exist
      */
-    default List<String> existsList(final Set<String> keys) throws IOException {
+    default List<String> existsList(final Set<String> keys) {
         Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
@@ -3985,7 +3803,7 @@ public interface ChronicleDao<V> {
     /**
      * Returns only the keys that dont exist
      */
-    default List<String> notExistsList(final Set<String> keys) throws IOException {
+    default List<String> notExistsList(final Set<String> keys) {
         Logger.info("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
