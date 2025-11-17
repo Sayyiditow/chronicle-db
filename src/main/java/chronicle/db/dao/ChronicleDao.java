@@ -499,7 +499,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    private Map<String, Boolean> getKeyMapExists(final Set<String> keys) {
+    private Map<String, Boolean> getKeyMapExists(final Collection<String> keys) {
         final var containsMap = new HashMap<String, Boolean>();
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             for (final String k : keys) {
@@ -510,7 +510,7 @@ public interface ChronicleDao<V> {
         return containsMap;
     }
 
-    private List<String> getKeyMapExistsList(final Set<String> keys) {
+    private List<String> getKeyMapExistsList(final Collection<String> keys) {
         final var containsList = new ArrayList<String>(keys.size());
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             for (final String k : keys) {
@@ -523,7 +523,7 @@ public interface ChronicleDao<V> {
         return containsList;
     }
 
-    private List<String> getKeyMapNotExistsList(final Set<String> keys) {
+    private List<String> getKeyMapNotExistsList(final Collection<String> keys) {
         final var containsList = new ArrayList<String>(keys.size());
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             for (final String k : keys) {
@@ -1234,7 +1234,7 @@ public interface ChronicleDao<V> {
      * @param keys the keys to remove
      * @return true if updated else false
      */
-    default boolean delete(final Set<String> keys) {
+    default boolean delete(final Collection<String> keys) {
         if (keys == null || keys.isEmpty()) {
             return false;
         }
@@ -3761,7 +3761,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, Boolean> existsMultiple(final Set<String> keys) {
+    default Map<String, Boolean> existsMultiple(final Collection<String> keys) {
         Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
@@ -3785,7 +3785,7 @@ public interface ChronicleDao<V> {
     /**
      * Returns only the keys that exist
      */
-    default List<String> existsList(final Set<String> keys) {
+    default List<String> existsList(final Collection<String> keys) {
         Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
@@ -3811,7 +3811,7 @@ public interface ChronicleDao<V> {
     /**
      * Returns only the keys that dont exist
      */
-    default List<String> notExistsList(final Set<String> keys) {
+    default List<String> notExistsList(final Collection<String> keys) {
         Logger.info("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
