@@ -1594,9 +1594,7 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        final int putSize = map.size();
         final var keyMapUpdate = new HashMap<String, String>();
-
         final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
             // insert in batches by checking remaining entries
@@ -1639,7 +1637,7 @@ public interface ChronicleDao<V> {
                             averageValue().getClass(), indexExclusions()));
             CHRONICLE_UTILS.processInParallel(tasks);
 
-            Logger.info("Inserted {} records at [{}].", putSize, dataPath());
+            Logger.info("Inserted {} records at [{}].", map.size(), dataPath());
 
             return PutStatus.INSERTED;
         }
