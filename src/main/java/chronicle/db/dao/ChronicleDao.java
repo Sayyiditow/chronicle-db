@@ -1524,6 +1524,7 @@ public interface ChronicleDao<V> {
 
             if (!prevValues.isEmpty()) {
                 status = PutStatus.UPDATED;
+                Logger.info("Updated [{}] record(s) at [{}].", prevValues.size(), dataPath());
                 keysToInsert.removeAll(prevValues.keySet());
             }
 
@@ -1556,6 +1557,7 @@ public interface ChronicleDao<V> {
                             shared = checkAndRotate(shared, keyMapUpdate);
                         }
                     }
+                    Logger.info("Inserted [{}] record(s) at [{}].", keysToInsert.size(), dataPath());
                 } finally {
                     shared.close();
                 }
@@ -1568,8 +1570,6 @@ public interface ChronicleDao<V> {
             tasks.add(() -> CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues,
                     averageValue().getClass(), indexExclusions()));
             CHRONICLE_UTILS.processInParallel(tasks);
-
-            Logger.info("Put {} records at [{}].", putSize, dataPath());
 
             return status;
         }
