@@ -27,9 +27,9 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -48,23 +48,28 @@ import net.openhft.chronicle.map.ChronicleMap;
  * <p>
  * This singleton contains helper methods for:
  * <ul>
- *   <li><b>Reflection & Field Access:</b> High-performance field access using VarHandles and MethodHandles</li>
- *   <li><b>Search Operations:</b> Manual filtering logic for non-indexed searches</li>
- *   <li><b>Index Management:</b> Building, updating, and removing secondary indexes</li>
- *   <li><b>CSV Operations:</b> Converting entities to CSV rows and headers</li>
- *   <li><b>Data Migration:</b> Moving records between different entity versions</li>
- *   <li><b>File Operations:</b> File management utilities</li>
- *   <li><b>Type Conversion:</b> Converting between types (enums, numbers, strings)</li>
+ * <li><b>Reflection & Field Access:</b> High-performance field access using
+ * VarHandles and MethodHandles</li>
+ * <li><b>Search Operations:</b> Manual filtering logic for non-indexed
+ * searches</li>
+ * <li><b>Index Management:</b> Building, updating, and removing secondary
+ * indexes</li>
+ * <li><b>CSV Operations:</b> Converting entities to CSV rows and headers</li>
+ * <li><b>Data Migration:</b> Moving records between different entity
+ * versions</li>
+ * <li><b>File Operations:</b> File management utilities</li>
+ * <li><b>Type Conversion:</b> Converting between types (enums, numbers,
+ * strings)</li>
  * </ul>
  * </p>
  * 
  * <p>
  * <b>Performance Optimizations:</b>
  * <ul>
- *   <li>Uses VarHandles for fast field access (faster than reflection)</li>
- *   <li>Caches MethodHandles and field metadata per class</li>
- *   <li>Parallel processing for batch operations</li>
- *   <li>Thread-local StringBuilder for string concatenation</li>
+ * <li>Uses VarHandles for fast field access (faster than reflection)</li>
+ * <li>Caches MethodHandles and field metadata per class</li>
+ * <li>Parallel processing for batch operations</li>
+ * <li>Thread-local StringBuilder for string concatenation</li>
  * </ul>
  * </p>
  * 
@@ -112,10 +117,25 @@ public final class ChronicleUtils {
 
     private static final Map<Class<?>, ClassData> CLASS_DATA_CACHE = new ConcurrentHashMap<>();
 
+    /**
+     * Retrieves or creates cached ClassData for the given class.
+     * ClassData contains MethodHandles for optimized reflection.
+     *
+     * @param clazz The class to retrieve data for.
+     * @return The cached ClassData instance.
+     */
     public ClassData getClassData(final Class<?> clazz) {
         return CLASS_DATA_CACHE.computeIfAbsent(clazz, ClassData::new);
     }
 
+    /**
+     * Retrieves or creates cached FieldData for a specific field in a class.
+     * FieldData contains the Field object and its VarHandle.
+     *
+     * @param clazz     The class containing the field.
+     * @param fieldName The name of the field.
+     * @return The FieldData instance, or null if the field does not exist.
+     */
     private FieldData getFieldData(final Class<?> clazz, final String fieldName) {
         final ClassData classData = getClassData(clazz);
         return classData.fields.computeIfAbsent(fieldName, f -> {
@@ -143,6 +163,13 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Compares two objects. Handles Numbers specifically as Doubles, otherwise uses String comparison.
+     *
+     * @param obj1 The first object.
+     * @param obj2 The second object.
+     * @return A negative integer, zero, or a positive integer as the first argument is less than, equal to, or greater than the second.
+     */
     public int compare(final Object obj1, final Object obj2) {
         if (obj1 instanceof final Number n1 && obj2 instanceof final Number n2) {
             return Double.compare(n1.doubleValue(), n2.doubleValue());
@@ -150,6 +177,13 @@ public final class ChronicleUtils {
         return String.valueOf(obj1).compareTo(String.valueOf(obj2));
     }
 
+    /**
+     * Checks if a string representation of an object contains a search term, ignoring case.
+     *
+     * @param str        The object to search within.
+     * @param searchTerm The term to search for.
+     * @return true if the string contains the search term, false otherwise.
+     */
     public boolean containsIgnoreCase(final Object str, final Object searchTerm) {
         final String strValue = String.valueOf(str);
         final String termValue = String.valueOf(searchTerm);
@@ -166,18 +200,39 @@ public final class ChronicleUtils {
         return false;
     }
 
+    /**
+     * Checks if a string representation of an object starts with a search term, ignoring case.
+     *
+     * @param value      The object to check.
+     * @param searchTerm The prefix to search for.
+     * @return true if the string starts with the search term, false otherwise.
+     */
     public boolean startsWithIgnoreCase(final Object value, final Object searchTerm) {
         final String str = String.valueOf(value);
         final String term = String.valueOf(searchTerm);
         return str.regionMatches(true, 0, term, 0, term.length());
     }
 
+    /**
+     * Checks if a string representation of an object ends with a search term, ignoring case.
+     *
+     * @param value      The object to check.
+     * @param searchTerm The suffix to search for.
+     * @return true if the string ends with the search term, false otherwise.
+     */
     public boolean endsWithIgnoreCase(final Object value, final Object searchTerm) {
         final String str = String.valueOf(value);
         final String term = String.valueOf(searchTerm);
         return str.regionMatches(true, str.length() - term.length(), term, 0, term.length());
     }
 
+    /**
+     * Converts an object value to a specific Enum type.
+     *
+     * @param enumClass The Enum class.
+     * @param value     The value to convert (usually a String).
+     * @return The Enum constant, or null if conversion fails.
+     */
     public Enum toEnum(final Class<?> enumClass, final Object value) {
         try {
             return Enum.valueOf((Class<Enum>) enumClass, value.toString());
@@ -186,6 +241,13 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Prepares a set of search terms for non-indexed search, converting types if necessary.
+     *
+     * @param searchTerms The list of raw search terms.
+     * @param fieldClass  The target field type.
+     * @return A Set of converted search terms.
+     */
     private Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
         final Set<Object> searchTermSet = new HashSet<>(1000);
         searchTermSet.clear();
@@ -202,6 +264,13 @@ public final class ChronicleUtils {
         return searchTermSet;
     }
 
+    /**
+     * Prepares a single search term for non-indexed search, converting types if necessary.
+     *
+     * @param searchTerm The raw search term.
+     * @param fieldClass The target field type.
+     * @return The converted search term.
+     */
     private Object setSearchTermNonIndexed(final Object searchTerm, final Class<?> fieldClass) {
         if (fieldClass.isEnum() && (searchTerm instanceof String)) {
             return toEnum(fieldClass, searchTerm);
@@ -212,6 +281,13 @@ public final class ChronicleUtils {
         return searchTerm;
     }
 
+    /**
+     * Checks if an array contains any element from a search set.
+     *
+     * @param array     The array to check.
+     * @param searchSet The set of elements to look for.
+     * @return true if any element is found, false otherwise.
+     */
     private boolean containsAny(final Object[] array, final Set<Object> searchSet) {
         for (final Object obj : array) {
             if (searchSet.contains(obj)) {
@@ -221,6 +297,13 @@ public final class ChronicleUtils {
         return false;
     }
 
+    /**
+     * Checks if an array contains none of the elements from a search set.
+     *
+     * @param array     The array to check.
+     * @param searchSet The set of elements to avoid.
+     * @return true if none of the elements are found, false otherwise.
+     */
     private boolean containsNone(final Object[] array, final Set<Object> searchSet) {
         for (final Object obj : array) {
             if (searchSet.contains(obj)) {
@@ -230,6 +313,16 @@ public final class ChronicleUtils {
         return true;
     }
 
+    /**
+     * Evaluates if a value matches a search criteria based on the search type.
+     *
+     * @param currentValue      The value to check.
+     * @param searchTerm        The single search term (for EQUAL, LIKE, etc.).
+     * @param searchTermSet     The set of search terms (for IN, CONTAINS, etc.).
+     * @param searchTermBetween The range of search terms (for BETWEEN).
+     * @param searchType        The type of search operation.
+     * @return true if the value matches the criteria.
+     */
     private boolean matchesSearch(final Object currentValue, final Object searchTerm,
             final Set<Object> searchTermSet, final List<Object> searchTermBetween,
             final SearchType searchType) {
@@ -254,6 +347,16 @@ public final class ChronicleUtils {
         };
     }
 
+    /**
+     * Performs a non-indexed search on a value object.
+     *
+     * @param <V>        The type of the value object.
+     * @param search     The search criteria.
+     * @param key        The key associated with the value.
+     * @param value      The value object to search within.
+     * @param valueClass The class of the value object.
+     * @return true if the value matches the search criteria.
+     */
     public <V> boolean search(final Search search, final String key, final V value, final Class<?> valueClass) {
         final String[] fields = search.field().split("\\|");
         final SearchType searchType = search.searchType();
@@ -294,6 +397,14 @@ public final class ChronicleUtils {
         return false;
     }
 
+    /**
+     * Safely adds an entry to a shared index, handling potential corruption by resetting the index.
+     *
+     * @param sharedIndexMap The shared index map.
+     * @param add            The byte array to add.
+     * @param indexPath      The path to the index file (for recovery).
+     * @return true if successful, false if the index was corrupted and reset.
+     */
     private boolean safeIndexAdd(final SharedIndexMap sharedIndexMap, final byte[] add, final String indexPath) {
         try {
             sharedIndexMap.index.add(add);
@@ -307,6 +418,14 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Safely removes an entry from a shared index, handling potential corruption by resetting the index.
+     *
+     * @param sharedIndexMap The shared index map.
+     * @param remove         The byte array to remove.
+     * @param indexPath      The path to the index file (for recovery).
+     * @return true if successful, false if the index was corrupted and reset.
+     */
     private boolean safeIndexRemove(final SharedIndexMap sharedIndexMap, final byte[] remove, final String indexPath) {
         try {
             sharedIndexMap.index.remove(remove);
@@ -451,6 +570,16 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Removes entries from secondary indexes.
+     *
+     * @param <V>            The type of the value object.
+     * @param dbName         The name of the database.
+     * @param dataPath       The path to the data directory.
+     * @param indexFileNames The set of index file names to update.
+     * @param values         The map of key-value pairs to remove from the index.
+     * @param valueClass     The class of the value object.
+     */
     public <V> void removeFromIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
             final Map<String, V> values, final Class<?> valueClass) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
@@ -523,6 +652,19 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Updates secondary indexes when records are modified.
+     * Handles removing old index entries and adding new ones.
+     *
+     * @param <V>            The type of the value object.
+     * @param dbName         The name of the database.
+     * @param dataPath       The path to the data directory.
+     * @param indexFileNames The set of index file names to update.
+     * @param values         The map of new key-value pairs.
+     * @param previousValues The map of previous key-value pairs (for comparison).
+     * @param valueClass     The class of the value object.
+     * @param exclusions     A map of values to exclude from indexing for specific fields.
+     */
     public <V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
             final Map<String, V> values, final Map<String, V> previousValues, final Class<?> valueClass,
             final Map<String, Set<String>> exclusions) {
@@ -636,6 +778,14 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Retrieves CSV headers from an object using reflection (via MethodHandle).
+     *
+     * @param <V>         The type of the value object.
+     * @param classData   The cached ClassData for the object type.
+     * @param sampleValue A sample object instance.
+     * @return An array of header strings.
+     */
     public <V> String[] getHeadersFromObject(final ClassData classData, final V sampleValue) {
         try {
             final MethodHandle headersMethod = classData.headerHandle;
@@ -648,6 +798,15 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Retrieves a CSV row from an object using reflection (via MethodHandle).
+     *
+     * @param <V>         The type of the value object.
+     * @param classData   The cached ClassData for the object type.
+     * @param key         The key associated with the object.
+     * @param sampleValue The object instance.
+     * @return An array of objects representing the row data.
+     */
     public <V> Object[] getRowFromObject(final ClassData classData, final String key, final V sampleValue) {
         try {
             final MethodHandle rowMethod = classData.rowHandle;
@@ -660,6 +819,15 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Retrieves a subset of fields from an object as a Map.
+     *
+     * @param <V>         The type of the value object.
+     * @param classData   The cached ClassData for the object type.
+     * @param fields      The list of fields to retrieve.
+     * @param sampleValue The object instance.
+     * @return A Map containing the requested fields.
+     */
     public <V> Map<String, Object> getSubsetFromObject(final ClassData classData, final String[] fields,
             final V sampleValue) {
         try {
@@ -673,6 +841,16 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Retrieves a subset of fields from an object as a row array.
+     *
+     * @param <V>         The type of the value object.
+     * @param classData   The cached ClassData for the object type.
+     * @param key         The key associated with the object.
+     * @param fields      The list of fields to retrieve.
+     * @param sampleValue The object instance.
+     * @return An array of objects representing the subset row data.
+     */
     public <V> Object[] getSubsetRowFromObject(final ClassData classData, final String key, final String[] fields,
             final V sampleValue) {
         try {
@@ -686,6 +864,12 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Generates CSV headers including an "ID" column.
+     *
+     * @param fields The list of field names.
+     * @return An array of header strings starting with "ID".
+     */
     public String[] getCsvHeaders(final String[] fields) {
         final String[] headers = new String[fields.length + 1];
         headers[0] = "ID";
@@ -693,6 +877,15 @@ public final class ChronicleUtils {
         return headers;
     }
 
+    /**
+     * Sets a non-enum value on an object field using VarHandle.
+     *
+     * @param <V>        The type of the object.
+     * @param object     The object instance.
+     * @param fieldName  The name of the field to set.
+     * @param fieldValue The value to set.
+     * @throws Throwable If the field access fails.
+     */
     public <V> void setNonEnumValue(final V object, final String fieldName, final Object fieldValue)
             throws Throwable {
         final var fieldData = getFieldData(object.getClass(), fieldName);
@@ -700,6 +893,15 @@ public final class ChronicleUtils {
             fieldData.varHandle.set(object, fieldValue);
     }
 
+    /**
+     * Sets a value on an object field, handling Enum conversion if necessary.
+     *
+     * @param <V>        The type of the object.
+     * @param object     The object instance.
+     * @param fieldName  The name of the field to set.
+     * @param fieldValue The value to set.
+     * @throws Throwable If the field access fails.
+     */
     public <V> void setObjectValue(final V object, final String fieldName, final Object fieldValue)
             throws Throwable {
         final var fieldData = getFieldData(object.getClass(), fieldName);
@@ -713,6 +915,15 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Appends a string value to an existing string field on an object.
+     *
+     * @param <V>        The type of the object.
+     * @param object     The object instance.
+     * @param fieldName  The name of the field to update.
+     * @param fieldValue The string value to append.
+     * @throws Throwable If the field access fails.
+     */
     public <V> void concatenateObjectValue(final V object, final String fieldName, final String fieldValue)
             throws Throwable {
         final var fieldData = getFieldData(object.getClass(), fieldName);
@@ -722,6 +933,16 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Replaces a substring within a string field on an object.
+     *
+     * @param <V>        The type of the object.
+     * @param object     The object instance.
+     * @param fieldName  The name of the field to update.
+     * @param fieldValue The replacement string.
+     * @param toReplace  The substring to be replaced.
+     * @throws Throwable If the field access fails.
+     */
     public <V> void replaceObjectValue(final V object, final String fieldName, final String fieldValue,
             final String toReplace) throws Throwable {
         final var fieldData = getFieldData(object.getClass(), fieldName);
@@ -731,6 +952,11 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Deletes a file if it exists, logging a message if it does not.
+     *
+     * @param filePath The path to the file.
+     */
     public void deleteFileIfExists(final String filePath) {
         try {
             Files.delete(Path.of(filePath));
@@ -739,6 +965,12 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Moves a file from source to destination, replacing existing files.
+     *
+     * @param source The source path.
+     * @param dest   The destination path.
+     */
     public void move(final Path source, final Path dest) {
         try {
             Files.move(source, dest, REPLACE_EXISTING);
@@ -747,6 +979,14 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Moves contents of a directory that start with a specific prefix to a destination directory.
+     *
+     * @param src        The source directory.
+     * @param dest       The destination directory.
+     * @param filePrefix The file name prefix to filter by.
+     * @throws IOException If an I/O error occurs.
+     */
     public void moveDirContentsStartsWith(final Path src, final Path dest, final String filePrefix)
             throws IOException {
         Files.walk(src).filter(path -> !path.equals(src))
@@ -767,8 +1007,8 @@ public final class ChronicleUtils {
      * @throws ClassNotFoundException
      */
     public <V> Map<String, Object> moveRecords(final ChronicleMap<String, V> currentValues,
-            final String fromObjectClass,
-            final String toObjectClass, final Map<String, String> move, final Map<String, Object> def)
+            final String fromObjectClass, final String toObjectClass, final Map<String, String> move,
+            final Map<String, Object> def)
             throws SecurityException, InstantiationException, IllegalAccessException, IllegalArgumentException,
             InvocationTargetException, NoSuchMethodException, ClassNotFoundException {
         if (currentValues.isEmpty())
@@ -783,39 +1023,78 @@ public final class ChronicleUtils {
         final Set<Field> newFieldsSet = new HashSet<>(Arrays.asList(newFields)); // Faster lookup
         newFieldsSet.removeAll(Arrays.asList(fields));
 
+        // --- Optimization: Pre-compute field mappings ---
+        class FieldTransfer {
+            final Field src;
+            final Field dest;
+            final Object defValue;
+            final boolean isDestEnum;
+
+            FieldTransfer(final Field src, final Field dest, final Object defValue) {
+                this.src = src;
+                this.dest = dest;
+                this.defValue = defValue;
+                this.isDestEnum = dest.getType().isEnum();
+                this.src.setAccessible(true);
+                this.dest.setAccessible(true);
+            }
+        }
+
+        class DefaultTransfer {
+            final Field dest;
+            final Object value;
+
+            DefaultTransfer(final Field dest, final Object value) {
+                this.dest = dest;
+                this.dest.setAccessible(true);
+                final var type = dest.getType();
+                this.value = type.isEnum() ? toEnum(type, value) : value;
+            }
+        }
+
+        final List<FieldTransfer> transfers = new ArrayList<>(fields.length);
+        for (final Field field : fields) {
+            final String fieldName = field.getName();
+            final String destFieldName = move.getOrDefault(fieldName, fieldName);
+            final Object defValue = def.get(fieldName);
+
+            try {
+                final Field destField = cls.getDeclaredField(destFieldName);
+                transfers.add(new FieldTransfer(field, destField, defValue));
+            } catch (final NoSuchFieldException e) {
+                // Destination field doesn't exist, skip
+            }
+        }
+
+        final List<DefaultTransfer> defaults = new ArrayList<>();
+        for (final Field field : newFieldsSet) {
+            final Object defValue = def.get(field.getName());
+            if (defValue != null) {
+                defaults.add(new DefaultTransfer(field, defValue));
+            }
+        }
+        // ------------------------------------------------
+
         currentValues.forEachEntry(entry -> {
             try {
                 final var key = entry.key().get();
                 final V currentVal = entry.value().get();
                 final Object newObj = constructor.newInstance();
 
-                for (final Field field : fields) {
-                    final String fieldName = field.getName();
-                    final String destFieldName = move.getOrDefault(fieldName, fieldName); // Faster than null check
-                    final Object defValue = def.get(fieldName);
-
-                    Field f2 = null;
-                    try {
-                        f2 = newObj.getClass().getDeclaredField(destFieldName);
-                    } catch (final NoSuchFieldException e) {
-                        continue;
-                    }
-                    final var f2Type = f2.getType();
-                    final Object fieldVal = field.get(currentVal);
-                    final Object value = defValue != null
-                            ? (f2Type.isEnum() ? toEnum(f2Type, defValue) : defValue)
-                            : (f2Type.isEnum() && fieldVal != null ? toEnum(f2Type, fieldVal) : fieldVal);
-                    f2.set(newObj, value);
+                // Apply transfers
+                for (final FieldTransfer ft : transfers) {
+                    final Object fieldVal = ft.src.get(currentVal);
+                    final Object value = ft.defValue != null
+                            ? (ft.isDestEnum ? toEnum(ft.dest.getType(), ft.defValue) : ft.defValue)
+                            : (ft.isDestEnum && fieldVal != null ? toEnum(ft.dest.getType(), fieldVal) : fieldVal);
+                    ft.dest.set(newObj, value);
                 }
 
-                for (final Field field : newFieldsSet) {
-                    final Object defValue = def.get(field.getName());
-                    if (defValue != null) {
-                        final var fieldType = field.getType();
-                        final var value = fieldType.isEnum() ? toEnum(fieldType, defValue) : defValue;
-                        field.set(newObj, value);
-                    }
+                // Apply defaults
+                for (final DefaultTransfer dt : defaults) {
+                    dt.dest.set(newObj, dt.value);
                 }
+
                 map.put(key, newObj);
             } catch (final IllegalArgumentException | IllegalAccessException
                     | InstantiationException | InvocationTargetException e) {
@@ -827,6 +1106,15 @@ public final class ChronicleUtils {
         return map;
     }
 
+    /**
+     * Limits a Map to a specified number of entries.
+     *
+     * @param <K>        The type of keys.
+     * @param <V>        The type of values.
+     * @param sourceData The source map.
+     * @param limit      The maximum number of entries.
+     * @return A new Map containing at most 'limit' entries.
+     */
     public <K, V> Map<K, V> limitMapValues(final Map<K, V> sourceData, final int limit) {
         if (sourceData.size() <= limit) {
             return sourceData;
@@ -844,6 +1132,14 @@ public final class ChronicleUtils {
         return limitedMap;
     }
 
+    /**
+     * Limits a Set to a specified number of entries.
+     *
+     * @param <K>        The type of elements.
+     * @param sourceData The source set.
+     * @param limit      The maximum number of entries.
+     * @return A new Set containing at most 'limit' entries.
+     */
     public <K> Set<K> limitSetValues(final Set<K> sourceData, final int limit) {
         if (sourceData.size() <= limit) {
             return sourceData;
@@ -861,6 +1157,14 @@ public final class ChronicleUtils {
         return limitedSet;
     }
 
+    /**
+     * Limits a List to a specified number of entries.
+     *
+     * @param <K>        The type of elements.
+     * @param sourceData The source list.
+     * @param limit      The maximum number of entries.
+     * @return A new List containing at most 'limit' entries.
+     */
     public <K> List<K> limitListValues(final List<K> sourceData, final int limit) {
         if (sourceData.size() <= limit) {
             return sourceData;
@@ -878,12 +1182,32 @@ public final class ChronicleUtils {
         return limitedList;
     }
 
+    private static final ExecutorService SHARED_EXECUTOR = Executors.newFixedThreadPool(Math.min(processors, 8));
+
+    /**
+     * Processes an Iterable in parallel using a shared executor service.
+     *
+     * @param iterable The iterable to process.
+     * @param limit    The maximum number of items to process.
+     * @param action   The predicate action to perform on each item.
+     * @throws InterruptedException If the thread is interrupted.
+     */
     public void parallelIterable(final Iterable<String> iterable, final int limit, final Predicate<String> action)
             throws InterruptedException {
         final AtomicInteger matchCounter = new AtomicInteger(0);
         parallelIterable(iterable, limit, matchCounter, action);
     }
 
+    /**
+     * Processes an Iterable in parallel using a shared executor service.
+     *
+     * @param <T>          The type of elements.
+     * @param iterable     The iterable to process.
+     * @param limit        The maximum number of items to process.
+     * @param matchCounter An atomic counter to track processed items.
+     * @param action       The predicate action to perform on each item.
+     * @throws InterruptedException If the thread is interrupted.
+     */
     public <T> void parallelIterable(final Iterable<T> iterable, final int limit, final AtomicInteger matchCounter,
             final Predicate<T> action) throws InterruptedException {
         if (limit <= 0 || iterable == null) {
@@ -893,65 +1217,66 @@ public final class ChronicleUtils {
         final var iterator = iterable.iterator();
         final var iteratorLock = new Object();
         final var batchSize = 100;
+        // Use shared executor instead of creating new one
         final int consumerThreads = Math.min(processors, 8);
-        final var executor = Executors.newFixedThreadPool(consumerThreads);
         final var futures = new ArrayList<Future<?>>(consumerThreads);
 
-        try {
-            for (int i = 0; i < consumerThreads; i++) {
-                futures.add(executor.submit(() -> {
-                    final var batch = new ArrayList<T>(batchSize);
+        for (int i = 0; i < consumerThreads; i++) {
+            futures.add(SHARED_EXECUTOR.submit(() -> {
+                final var batch = new ArrayList<T>(batchSize);
 
-                    while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
-                        // Fetch batch
-                        batch.clear();
-                        synchronized (iteratorLock) {
-                            if (!iterator.hasNext()) {
-                                return; // No more data
-                            }
-                            for (int j = 0; j < batchSize && iterator.hasNext(); j++) {
-                                batch.add(iterator.next());
-                            }
+                while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
+                    // Fetch batch
+                    batch.clear();
+                    synchronized (iteratorLock) {
+                        if (!iterator.hasNext()) {
+                            return; // No more data
                         }
-
-                        // Process batch
-                        for (final T item : batch) {
-                            if (matchCounter.get() >= limit) {
-                                return; // Early exit
-                            }
-
-                            try {
-                                if (action.test(item)) {
-                                    matchCounter.incrementAndGet();
-                                    // Note: May slightly exceed limit, acceptable for performance
-                                }
-                            } catch (final Exception e) {
-                                Logger.error("[Parallel Iterable] - Error processing item", e);
-                            }
+                        for (int j = 0; j < batchSize && iterator.hasNext(); j++) {
+                            batch.add(iterator.next());
                         }
                     }
-                }));
-            }
 
-            // Wait for all tasks to complete
-            for (final Future<?> future : futures) {
-                try {
-                    future.get();
-                } catch (final ExecutionException e) {
-                    Logger.error("[Parallel Iterable] - Consumer thread failed", e.getCause());
-                } catch (final CancellationException e) {
-                    // Expected if shutdownNow() was called
+                    // Process batch
+                    for (final T item : batch) {
+                        if (matchCounter.get() >= limit) {
+                            return; // Early exit
+                        }
+
+                        try {
+                            if (action.test(item)) {
+                                matchCounter.incrementAndGet();
+                                // Note: May slightly exceed limit, acceptable for performance
+                            }
+                        } catch (final Exception e) {
+                            Logger.error("[Parallel Iterable] - Error processing item", e);
+                        }
+                    }
                 }
-            }
+            }));
+        }
 
-        } finally {
-            executor.shutdownNow();
-            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                Logger.warn("[Parallel Iterable] - Executor did not terminate in time");
+        // Wait for all tasks to complete
+        for (final Future<?> future : futures) {
+            try {
+                future.get();
+            } catch (final ExecutionException e) {
+                Logger.error("[Parallel Iterable] - Consumer thread failed", e.getCause());
+            } catch (final CancellationException e) {
+                // Expected if cancelled
             }
         }
     }
 
+    /**
+     * Concatenates two Iterables into a single Iterable, limited by a maximum count.
+     *
+     * @param <T>    The type of elements.
+     * @param first  The first iterable.
+     * @param second The second iterable.
+     * @param limit  The maximum number of elements to return.
+     * @return A concatenated Iterable.
+     */
     public <T> Iterable<T> concatIterable(final Iterable<T> first, final Iterable<T> second, final int limit) {
         return () -> new Iterator<>() {
             private final Iterator<T> firstIterator = first.iterator();
@@ -973,6 +1298,11 @@ public final class ChronicleUtils {
         };
     }
 
+    /**
+     * Executes a list of Runnable tasks in parallel using Virtual Threads.
+     *
+     * @param tasks The list of tasks to execute.
+     */
     public void processInParallel(final List<Runnable> tasks) {
         if (tasks == null || tasks.size() == 0)
             return;
