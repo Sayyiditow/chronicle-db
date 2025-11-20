@@ -1023,32 +1023,32 @@ public final class ChronicleUtils {
         final Set<Field> newFieldsSet = new HashSet<>(Arrays.asList(newFields)); // Faster lookup
         newFieldsSet.removeAll(Arrays.asList(fields));
 
-        // --- Optimization: Pre-compute field mappings ---
+        // --- Optimization: Pre-compute field mappings with VarHandles ---
         class FieldTransfer {
-            final Field src;
-            final Field dest;
+            final VarHandle srcHandle;
+            final VarHandle destHandle;
+            final Class<?> destType;
             final Object defValue;
             final boolean isDestEnum;
 
-            FieldTransfer(final Field src, final Field dest, final Object defValue) {
-                this.src = src;
-                this.dest = dest;
+            FieldTransfer(final Field src, final Field dest, final Object defValue) throws IllegalAccessException {
+                this.srcHandle = MethodHandles.lookup().unreflectVarHandle(src);
+                this.destHandle = MethodHandles.lookup().unreflectVarHandle(dest);
+                this.destType = dest.getType();
                 this.defValue = defValue;
-                this.isDestEnum = dest.getType().isEnum();
-                this.src.setAccessible(true);
-                this.dest.setAccessible(true);
+                this.isDestEnum = destType.isEnum();
             }
         }
 
         class DefaultTransfer {
-            final Field dest;
+            final VarHandle destHandle;
+            final Class<?> destType;
             final Object value;
 
-            DefaultTransfer(final Field dest, final Object value) {
-                this.dest = dest;
-                this.dest.setAccessible(true);
-                final var type = dest.getType();
-                this.value = type.isEnum() ? toEnum(type, value) : value;
+            DefaultTransfer(final Field dest, final Object value) throws IllegalAccessException {
+                this.destHandle = MethodHandles.lookup().unreflectVarHandle(dest);
+                this.destType = dest.getType();
+                this.value = destType.isEnum() ? toEnum(destType, value) : value;
             }
         }
 
@@ -1083,16 +1083,16 @@ public final class ChronicleUtils {
 
                 // Apply transfers
                 for (final FieldTransfer ft : transfers) {
-                    final Object fieldVal = ft.src.get(currentVal);
+                    final Object fieldVal = ft.srcHandle.get(currentVal);
                     final Object value = ft.defValue != null
-                            ? (ft.isDestEnum ? toEnum(ft.dest.getType(), ft.defValue) : ft.defValue)
-                            : (ft.isDestEnum && fieldVal != null ? toEnum(ft.dest.getType(), fieldVal) : fieldVal);
-                    ft.dest.set(newObj, value);
+                            ? (ft.isDestEnum ? toEnum(ft.destType, ft.defValue) : ft.defValue)
+                            : (ft.isDestEnum && fieldVal != null ? toEnum(ft.destType, fieldVal) : fieldVal);
+                    ft.destHandle.set(newObj, value);
                 }
 
                 // Apply defaults
                 for (final DefaultTransfer dt : defaults) {
-                    dt.dest.set(newObj, dt.value);
+                    dt.destHandle.set(newObj, dt.value);
                 }
 
                 map.put(key, newObj);
@@ -1120,7 +1120,7 @@ public final class ChronicleUtils {
             return sourceData;
         }
 
-        final var limitedMap = new HashMap<K, V>();
+        final var limitedMap = new HashMap<K, V>(limit);
         int count = 0;
         for (final var entry : sourceData.entrySet()) {
             if (count >= limit) {
@@ -1145,7 +1145,7 @@ public final class ChronicleUtils {
             return sourceData;
         }
 
-        final var limitedSet = new HashSet<K>();
+        final var limitedSet = new HashSet<K>(limit);
         int count = 0;
         for (final var key : sourceData) {
             if (count >= limit) {
@@ -1170,7 +1170,7 @@ public final class ChronicleUtils {
             return sourceData;
         }
 
-        final var limitedList = new ArrayList<K>();
+        final var limitedList = new ArrayList<K>(limit);
         int count = 0;
         for (final var key : sourceData) {
             if (count >= limit) {
