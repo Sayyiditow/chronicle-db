@@ -22,6 +22,44 @@ import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
 import org.tinylog.Logger;
 
+/**
+ * Service for managing MapDB-based key mappings and secondary indexes for ChronicleDao.
+ * <p>
+ * This singleton provides two main functionalities:
+ * <ul>
+ *   <li><b>Key Mapping:</b> Maps primary keys to shard file paths (for file rotation)</li>
+ *   <li><b>Secondary Indexes:</b> Maintains sorted indexes on entity fields for fast lookups</li>
+ * </ul>
+ * </p>
+ * <p>
+ * <b>Index Structure:</b> Indexes use composite keys in the format {@code [fieldValue][separator][primaryKey]}
+ * where the separator is {@code 0x1F}. This allows efficient range queries and prefix searches.
+ * </p>
+ * <p>
+ * <b>Reference Counting:</b> Like ChronicleDb, this service uses reference counting to safely
+ * share MapDB instances across multiple callers. Always call {@code close()} on returned
+ * SharedKeyMap and SharedIndexMap instances.
+ * </p>
+ * <p>
+ * <b>Search Operations:</b> Provides indexed search methods for various comparison types:
+ * EQUAL, LESS, GREATER, STARTS_WITH, IN, BETWEEN, etc.
+ * </p>
+ * <p>
+ * Usage example:
+ * <pre>{@code
+ * // Open an index
+ * SharedIndexMap idx = MAP_DB.openIndex("/path/to/index.db");
+ * try {
+ *     // Add an entry: field value "active" for key "user123"
+ *     byte[] compositeKey = MAP_DB.createIndexKey("active", "user123");
+ *     idx.index.add(compositeKey);
+ *     idx.commit();
+ * } finally {
+ *     idx.close();
+ * }
+ * }</pre>
+ * </p>
+ */
 public final class MapDb {
     public static final MapDb MAP_DB = new MapDb();
     private static final ConcurrentMap<String, SharedKeyMap> mapCache = new ConcurrentHashMap<>();
@@ -32,8 +70,17 @@ public final class MapDb {
     private MapDb() {
     }
 
+    /**
+     * Wrapper for a shared MapDB HTreeMap instance with reference counting.
+     * <p>
+     * Used for key-to-file mappings in ChronicleDao's file rotation system.
+     * The map stores primary keys and their corresponding shard file paths.
+     * </p>
+     */
     public static class SharedKeyMap implements AutoCloseable {
+        /** The underlying MapDB HTreeMap */
         public final HTreeMap<String, String> map;
+        
         private final AtomicInteger refCount;
         private final String filePath; // Track file path for cleanup
 
@@ -43,12 +90,19 @@ public final class MapDb {
             this.refCount = new AtomicInteger(1);
         }
 
-        // Increment reference count when sharing this entry
+        /**
+         * Increments the reference count when sharing this map.
+         * 
+         * @return This SharedKeyMap instance for chaining
+         */
         SharedKeyMap retain() {
             refCount.incrementAndGet();
             return this;
         }
 
+        /**
+         * Decrements the reference count and closes the map if no references remain.
+         */
         @Override
         public void close() {
             mapCache.computeIfPresent(filePath, (k, entry) -> {
@@ -61,8 +115,21 @@ public final class MapDb {
         }
     }
 
+    /**
+     * Wrapper for a shared MapDB NavigableSet (TreeSet) instance with reference counting.
+     * <p>
+     * Used for secondary indexes in ChronicleDao. The index stores composite keys
+     * in the format {@code [fieldValue][0x1F][primaryKey]} to enable efficient
+     * range queries and prefix searches.
+     * </p>
+     * <p>
+     * <b>Important:</b> Call {@link #commit()} after modifications to persist changes.
+     * </p>
+     */
     public static class SharedIndexMap implements AutoCloseable {
+        /** The underlying MapDB NavigableSet (sorted index) */
         public final NavigableSet<byte[]> index;
+        
         private final DB db;
         private final AtomicInteger refCount;
         private final String filePath; // Track file path for cleanup
@@ -74,12 +141,22 @@ public final class MapDb {
             this.refCount = new AtomicInteger(1); // Start with a reference count of 1
         }
 
-        // Increment reference count when sharing this entry
+        /**
+         * Increments the reference count when sharing this index.
+         * 
+         * @return This SharedIndexMap instance for chaining
+         */
         SharedIndexMap retain() {
             refCount.incrementAndGet();
             return this;
         }
 
+        /**
+         * Decrements the reference count and closes the index if no references remain.
+         * <p>
+         * Automatically commits pending changes before closing.
+         * </p>
+         */
         @Override
         public void close() {
             treeCache.computeIfPresent(filePath, (k, entry) -> {
@@ -92,6 +169,12 @@ public final class MapDb {
             });
         }
 
+        /**
+         * Commits pending changes to the index.
+         * <p>
+         * Call this after adding or removing entries to persist changes to disk.
+         * </p>
+         */
         public void commit() {
             this.db.commit();
         }

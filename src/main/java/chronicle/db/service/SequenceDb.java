@@ -7,6 +7,25 @@ import java.util.UUID;
 import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
 
+/**
+ * Service for managing auto-incrementing sequences using ChronicleMap.
+ * <p>
+ * This singleton provides thread-safe sequence generation for use cases like
+ * auto-incrementing IDs. Sequences are persisted to disk and survive
+ * application
+ * restarts. Each sequence is identified by a unique key (e.g., "user",
+ * "order").
+ * </p>
+ * <p>
+ * Usage example:
+ * 
+ * <pre>{@code
+ * ChronicleMap<String, Long> db = SEQUENCE_DB.getDb("sequences.dat", 100);
+ * long nextId = SEQUENCE_DB.getNextSequence(db, "user");
+ * String formatted = SEQUENCE_DB.formatSequence(6, nextId); // "000001"
+ * }</pre>
+ * </p>
+ */
 public final class SequenceDb {
     private SequenceDb() {
     };

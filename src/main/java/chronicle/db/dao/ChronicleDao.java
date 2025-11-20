@@ -45,12 +45,95 @@ import net.openhft.chronicle.bytes.UTFDataFormatRuntimeException;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
- *
- * @param <V> Type of the single element
+ * High-performance, disk-persisted data access object built on ChronicleMap and MapDB.
+ * <p>
+ * ChronicleDao provides a complete CRUD interface with advanced features including:
+ * <ul>
+ *   <li><b>File Rotation (Sharding):</b> Automatically splits data across multiple files when size limits are reached</li>
+ *   <li><b>Secondary Indexes:</b> Fast lookups on any field using MapDB indexes</li>
+ *   <li><b>Advanced Search:</b> Support for EQUAL, RANGE, LIKE, IN, BETWEEN, and more</li>
+ *   <li><b>CSV Export:</b> Query results can be returned in CSV format</li>
+ *   <li><b>Subset Queries:</b> Retrieve only specific fields to reduce memory usage</li>
+ *   <li><b>Batch Operations:</b> Efficient bulk insert/update/delete</li>
+ *   <li><b>Backup & Recovery:</b> Built-in backup and data recovery mechanisms</li>
+ *   <li><b>Vacuum:</b> Reclaim disk space from deleted records</li>
+ * </ul>
+ * </p>
+ * 
+ * <p>
+ * <b>Implementation:</b> To use ChronicleDao, create an interface that extends this interface
+ * and implement the required configuration methods. The interface uses default methods to
+ * provide all CRUD functionality.
+ * </p>
+ * 
+ * <p>
+ * <b>Example:</b>
+ * <pre>{@code
+ * public interface UserDao extends ChronicleDao<User> {
+ *     UserDao USER_DAO = new UserDao() {};
+ *     
+ *     @Override
+ *     default String dataPath() { return "users"; }
+ *     
+ *     @Override
+ *     default long entries() { return 10000; }
+ *     
+ *     @Override
+ *     default String averageKey() { return "user123"; }
+ *     
+ *     @Override
+ *     default User averageValue() { return new User(); }
+ *     
+ *     @Override
+ *     default User using() { return new User(); }
+ *     
+ *     @Override
+ *     default TypeLiteral<User> jsonType() { return new TypeLiteral<User>() {}; }
+ * }
+ * 
+ * // Usage
+ * User user = new User("user123", "John Doe");
+ * USER_DAO.put("user123", user);
+ * User retrieved = USER_DAO.get("user123");
+ * }</pre>
+ * </p>
+ * 
+ * <p>
+ * <b>Thread Safety:</b> All operations are thread-safe. Write operations use synchronized
+ * locks per data path to prevent conflicts during file rotation and index updates.
+ * </p>
+ * 
+ * <p>
+ * <b>File Structure:</b>
+ * <ul>
+ *   <li>{@code /data/} - ChronicleMap data files (sharded)</li>
+ *   <li>{@code /indexes/} - MapDB secondary indexes</li>
+ *   <li>{@code /files/} - Metadata files (keys, entry sizes)</li>
+ *   <li>{@code /backup/} - Backup files</li>
+ * </ul>
+ * </p>
+ * 
+ * @param <V> The entity type stored in this DAO
  */
 @SuppressWarnings("unchecked")
 public interface ChronicleDao<V> {
+    /**
+     * Represents the state of data files for a DAO instance.
+     * <p>
+     * Tracks all data file names (shards) and the current active file for writes.
+     * Used internally for file rotation management.
+     * </p>
+     * 
+     * @param fileNames Set of all data file names for this DAO
+     * @param currentFile The currently active file for write operations
+     */
     static record DataFileState(Set<String> fileNames, String currentFile) {
+        /**
+         * Creates a new DataFileState with an updated current file.
+         * 
+         * @param currentFile The new current file name
+         * @return A new DataFileState instance
+         */
         public DataFileState withCurrentFile(final String currentFile) {
             return new DataFileState(this.fileNames, currentFile);
         }
@@ -65,61 +148,122 @@ public interface ChronicleDao<V> {
     int HARD_LIMIT = 100_000;
 
     /**
-     * Name of db for logging purposes
+     * Returns the name of this DAO for logging and identification purposes.
+     * <p>
+     * Defaults to the simple class name of the entity type.
+     * Override to provide a custom name.
+     * </p>
+     * 
+     * @return The DAO name (defaults to entity class simple name)
      */
     default String name() {
         return averageValue().getClass().getSimpleName();
     }
 
     /**
-     * Everage entries per file, resize when required
+     * Returns the expected number of entries per data file (shard).
+     * <p>
+     * This value is used to pre-allocate ChronicleMap capacity. When a file
+     * reaches this limit, a new file is created (file rotation). Set this to
+     * a reasonable estimate of your data size to optimize performance.
+     * </p>
+     * 
+     * @return Expected entries per file
      */
     long entries();
 
     /**
-     * The average key value = String
+     * Returns a representative average key for sizing calculations.
+     * <p>
+     * ChronicleMap uses this to estimate memory requirements. Provide a
+     * typical key that represents the average length and structure.
+     * </p>
+     * 
+     * @return A sample key (e.g., "user12345")
      */
     String averageKey();
 
     /**
-     * The average key value
+     * Returns a representative average entity instance for sizing calculations.
+     * <p>
+     * ChronicleMap uses this to estimate memory requirements. Provide a
+     * typical entity that represents the average size and structure.
+     * </p>
+     * 
+     * @return A sample entity instance
      */
     V averageValue();
 
     /**
-     * Path to the directory where the files will reside
+     * Returns the base directory path where all DAO files will be stored.
+     * <p>
+     * This path is relative to the system's chronicle.db.path property.
+     * All data files, indexes, and metadata will be created under this path.
+     * </p>
+     * 
+     * @return The data path (e.g., "users", "transactions")
      */
     String dataPath();
 
     /**
-     * Reusable value object
+     * Returns a reusable entity instance for deserialization.
+     * <p>
+     * This instance is used internally for JSON deserialization to avoid
+     * repeated object allocation. Should return a new instance each time.
+     * </p>
+     * 
+     * @return A new entity instance
      */
     V using();
 
     /**
-     * Typeliteral to be used when casting a json object into the required java
-     * class
+     * Returns the TypeLiteral for JSON deserialization.
+     * <p>
+     * Used by JsonIter to deserialize JSON strings back to entity objects.
+     * Typically implemented as: {@code return new TypeLiteral<MyEntity>() {};}
+     * </p>
+     * 
+     * @return TypeLiteral for the entity type
      */
     TypeLiteral<V> jsonType();
 
     /**
-     * The bloatFactor is used when the file contents can grow much more than the
-     * average value,
-     * defaults to 1
+     * Returns the bloat factor for ChronicleMap capacity planning.
+     * <p>
+     * Use values > 1.0 when entities can grow significantly larger than the
+     * average value. For example, if your average entity is 1KB but some can
+     * be 5KB, use a bloat factor of 5.0. Defaults to 1.0.
+     * </p>
+     * 
+     * @return The bloat factor (default: 1.0)
      */
     default double bloatFactor() {
         return 1;
     }
 
     /**
-     * If an object needs indexes, use this to declare.
+     * Returns the set of field names that should have secondary indexes.
+     * <p>
+     * Indexed fields enable fast lookups using the search methods. Only index
+     * fields that are frequently queried. Each index adds overhead to write
+     * operations.
+     * </p>
+     * 
+     * @return Set of field names to index (default: empty)
      */
     default Set<String> indexFileNames() {
         return Collections.emptySet();
     }
 
     /**
-     * If an object needs indexes, use this to declare.
+     * Returns a map of index exclusions for specific field values.
+     * <p>
+     * Use this to exclude certain values from being indexed. For example,
+     * you might exclude null or empty values from a status index.
+     * Map key is the field name, value is the set of excluded values.
+     * </p>
+     * 
+     * @return Map of field names to excluded values (default: empty)
      */
     default Map<String, Set<String>> indexExclusions() {
         return Collections.emptyMap();

@@ -22,8 +22,45 @@ import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
 
 /**
- * Using this DB requires to use Value interfaces from Chronical Map:
- * https://github.com/OpenHFT/Chronicle-Values
+ * Service for managing ChronicleMap instances with reference counting and
+ * caching.
+ * <p>
+ * This singleton provides shared access to ChronicleMap instances, ensuring
+ * that
+ * multiple callers can safely share the same map file without conflicts. It
+ * implements
+ * reference counting to track active users and automatically closes maps when
+ * no longer needed.
+ * </p>
+ * <p>
+ * <b>Key Features:</b>
+ * <ul>
+ * <li>Reference-counted shared map instances</li>
+ * <li>Automatic map recovery from abnormal terminations</li>
+ * <li>Thread-safe concurrent access</li>
+ * <li>Support for ChronicleDao reflective operations</li>
+ * </ul>
+ * </p>
+ * <p>
+ * <b>Important:</b> Using ChronicleMap with complex value types requires
+ * implementing
+ * Value interfaces from Chronicle-Values. See:
+ * <a href="https://github.com/OpenHFT/Chronicle-Values">Chronicle-Values
+ * Documentation</a>
+ * </p>
+ * <p>
+ * Usage example:
+ * 
+ * <pre>{@code
+ * SharedChronicleMap<String, MyEntity> shared = CHRONICLE_DB.open(
+ *         "mydb", 10000, "key", new MyEntity(), "/path/to/file.dat", 1.0);
+ * try {
+ *     shared.map.put("key1", entity);
+ * } finally {
+ *     shared.close(); // Decrements ref count
+ * }
+ * }</pre>
+ * </p>
  */
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
@@ -34,8 +71,26 @@ public final class ChronicleDb {
     private ChronicleDb() {
     }
 
+    /**
+     * Wrapper for a shared ChronicleMap instance with reference counting.
+     * <p>
+     * This class ensures that a ChronicleMap file can be safely shared across
+     * multiple callers. The underlying map is only closed when all references
+     * have been released via {@link #close()}.
+     * </p>
+     * <p>
+     * <b>Important:</b> Do not use try-with-resources when obtaining this from
+     * {@link ChronicleDb#open}, as it will prematurely close the shared instance.
+     * Instead, manually call {@link #close()} when done.
+     * </p>
+     * 
+     * @param <K> The key type
+     * @param <V> The value type
+     */
     public static class SharedChronicleMap<K, V> implements AutoCloseable {
+        /** The underlying ChronicleMap instance */
         public final ChronicleMap<K, V> map;
+        
         private final AtomicInteger refCount;
         private final String filePath; // Track file path for cleanup
 
@@ -45,12 +100,27 @@ public final class ChronicleDb {
             this.refCount = new AtomicInteger(1);
         }
 
-        // Increment reference count when sharing this entry
+        /**
+         * Increments the reference count when sharing this map instance.
+         * <p>
+         * Call this method when passing the shared map to another component
+         * that will independently manage its lifecycle.
+         * </p>
+         * 
+         * @return This SharedChronicleMap instance for chaining
+         */
         SharedChronicleMap retain() {
             refCount.incrementAndGet();
             return this;
         }
 
+        /**
+         * Decrements the reference count and closes the map if no references remain.
+         * <p>
+         * This method is thread-safe and ensures the underlying ChronicleMap is
+         * only closed when the last reference is released.
+         * </p>
+         */
         @Override
         public void close() {
             mapCache.computeIfPresent(filePath, (k, entry) -> {

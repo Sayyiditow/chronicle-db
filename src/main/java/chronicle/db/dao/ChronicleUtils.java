@@ -43,6 +43,36 @@ import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.MapDb.SharedIndexMap;
 import net.openhft.chronicle.map.ChronicleMap;
 
+/**
+ * Utility class providing core functionality for ChronicleDao operations.
+ * <p>
+ * This singleton contains helper methods for:
+ * <ul>
+ *   <li><b>Reflection & Field Access:</b> High-performance field access using VarHandles and MethodHandles</li>
+ *   <li><b>Search Operations:</b> Manual filtering logic for non-indexed searches</li>
+ *   <li><b>Index Management:</b> Building, updating, and removing secondary indexes</li>
+ *   <li><b>CSV Operations:</b> Converting entities to CSV rows and headers</li>
+ *   <li><b>Data Migration:</b> Moving records between different entity versions</li>
+ *   <li><b>File Operations:</b> File management utilities</li>
+ *   <li><b>Type Conversion:</b> Converting between types (enums, numbers, strings)</li>
+ * </ul>
+ * </p>
+ * 
+ * <p>
+ * <b>Performance Optimizations:</b>
+ * <ul>
+ *   <li>Uses VarHandles for fast field access (faster than reflection)</li>
+ *   <li>Caches MethodHandles and field metadata per class</li>
+ *   <li>Parallel processing for batch operations</li>
+ *   <li>Thread-local StringBuilder for string concatenation</li>
+ * </ul>
+ * </p>
+ * 
+ * <p>
+ * <b>Internal Use:</b> This class is primarily used internally by ChronicleDao.
+ * Most applications should not need to interact with it directly.
+ * </p>
+ */
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
