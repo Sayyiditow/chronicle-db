@@ -163,7 +163,7 @@ public final class ChronicleUtils {
         }
     }
 
-    private String toStringOptimized(final Object value) {
+    public String toStringOptimized(final Object value) {
         return value instanceof final String s ? s : String.valueOf(value);
     }
 

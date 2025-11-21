@@ -2835,7 +2835,7 @@ public interface ChronicleDao<V> {
         }
 
         final SearchType searchType = search.searchType();
-        final String searchTerm = String.valueOf(search.searchTerm());
+        final String searchTerm = CHRONICLE_UTILS.toStringOptimized(search.searchTerm());
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
                 ? new HashSet<>((List<String>) search.searchTerm())
                 : null;
@@ -2874,7 +2874,7 @@ public interface ChronicleDao<V> {
         }
 
         final SearchType searchType = search.searchType();
-        final String searchTerm = String.valueOf(search.searchTerm());
+        final String searchTerm = CHRONICLE_UTILS.toStringOptimized(search.searchTerm());
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
                 ? new HashSet<>((List<String>) search.searchTerm())
                 : null;
