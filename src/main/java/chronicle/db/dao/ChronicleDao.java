@@ -45,71 +45,100 @@ import net.openhft.chronicle.bytes.UTFDataFormatRuntimeException;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
- * High-performance, disk-persisted data access object built on ChronicleMap and MapDB.
+ * High-performance, disk-persisted data access object built on ChronicleMap and
+ * MapDB.
  * <p>
- * ChronicleDao provides a complete CRUD interface with advanced features including:
+ * ChronicleDao provides a complete CRUD interface with advanced features
+ * including:
  * <ul>
- *   <li><b>File Rotation (Sharding):</b> Automatically splits data across multiple files when size limits are reached</li>
- *   <li><b>Secondary Indexes:</b> Fast lookups on any field using MapDB indexes</li>
- *   <li><b>Advanced Search:</b> Support for EQUAL, RANGE, LIKE, IN, BETWEEN, and more</li>
- *   <li><b>CSV Export:</b> Query results can be returned in CSV format</li>
- *   <li><b>Subset Queries:</b> Retrieve only specific fields to reduce memory usage</li>
- *   <li><b>Batch Operations:</b> Efficient bulk insert/update/delete</li>
- *   <li><b>Backup & Recovery:</b> Built-in backup and data recovery mechanisms</li>
- *   <li><b>Vacuum:</b> Reclaim disk space from deleted records</li>
+ * <li><b>File Rotation (Sharding):</b> Automatically splits data across
+ * multiple files when size limits are reached</li>
+ * <li><b>Secondary Indexes:</b> Fast lookups on any field using MapDB
+ * indexes</li>
+ * <li><b>Advanced Search:</b> Support for EQUAL, RANGE, LIKE, IN, BETWEEN, and
+ * more</li>
+ * <li><b>CSV Export:</b> Query results can be returned in CSV format</li>
+ * <li><b>Subset Queries:</b> Retrieve only specific fields to reduce memory
+ * usage</li>
+ * <li><b>Batch Operations:</b> Efficient bulk insert/update/delete</li>
+ * <li><b>Backup & Recovery:</b> Built-in backup and data recovery
+ * mechanisms</li>
+ * <li><b>Vacuum:</b> Reclaim disk space from deleted records</li>
  * </ul>
  * </p>
  * 
  * <p>
- * <b>Implementation:</b> To use ChronicleDao, create an interface that extends this interface
- * and implement the required configuration methods. The interface uses default methods to
+ * <b>Implementation:</b> To use ChronicleDao, create an interface that extends
+ * this interface
+ * and implement the required configuration methods. The interface uses default
+ * methods to
  * provide all CRUD functionality.
  * </p>
  * 
  * <p>
  * <b>Example:</b>
- * <pre>{@code
- * public interface UserDao extends ChronicleDao<User> {
- *     UserDao USER_DAO = new UserDao() {};
- *     
- *     @Override
- *     default String dataPath() { return "users"; }
- *     
- *     @Override
- *     default long entries() { return 10000; }
- *     
- *     @Override
- *     default String averageKey() { return "user123"; }
- *     
- *     @Override
- *     default User averageValue() { return new User(); }
- *     
- *     @Override
- *     default User using() { return new User(); }
- *     
- *     @Override
- *     default TypeLiteral<User> jsonType() { return new TypeLiteral<User>() {}; }
- * }
  * 
- * // Usage
- * User user = new User("user123", "John Doe");
- * USER_DAO.put("user123", user);
- * User retrieved = USER_DAO.get("user123");
- * }</pre>
+ * <pre>
+ * {
+ *     &#64;code
+ *     public interface UserDao extends ChronicleDao<User> {
+ *         UserDao USER_DAO = new UserDao() {
+ *         };
+ * 
+ *         &#64;Override
+ *         default String dataPath() {
+ *             return "users";
+ *         }
+ * 
+ *         &#64;Override
+ *         default long entries() {
+ *             return 10000;
+ *         }
+ * 
+ *         &#64;Override
+ *         default String averageKey() {
+ *             return "user123";
+ *         }
+ * 
+ *         &#64;Override
+ *         default User averageValue() {
+ *             return new User();
+ *         }
+ * 
+ *         &#64;Override
+ *         default User using() {
+ *             return new User();
+ *         }
+ * 
+ *         @Override
+ *         default TypeLiteral<User> jsonType() {
+ *             return new TypeLiteral<User>() {
+ *             };
+ *         }
+ *     }
+ * 
+ *     // Usage
+ *     User user = new User("user123", "John Doe");
+ *     USER_DAO.put("user123", user);
+ *     User retrieved = USER_DAO.get("user123");
+ * }
+ * </pre>
  * </p>
  * 
  * <p>
- * <b>Thread Safety:</b> All operations are thread-safe. Write operations use synchronized
- * locks per data path to prevent conflicts during file rotation and index updates.
+ * <b>Thread Safety:</b> All operations are thread-safe. Write operations use
+ * synchronized
+ * locks per data path to prevent conflicts during file rotation and index
+ * updates.
  * </p>
  * 
  * <p>
  * <b>File Structure:</b>
  * <ul>
- *   <li>{@code /data/} - ChronicleMap data files (sharded)</li>
- *   <li>{@code /indexes/} - MapDB secondary indexes</li>
- *   <li>{@code /files/} - Metadata files (keys, entry sizes)</li>
- *   <li>{@code /backup/} - Backup files</li>
+ * <li>{@code /data/} - ChronicleMap data files (sharded)</li>
+ * <li>{@code /indexes/} - MapDB secondary indexes</li>
+ * <li>{@code /files/} - Metadata files (keys, entry sizes)</li>
+ * <li>{@code /backup/} - Backup files</li>
  * </ul>
  * </p>
  * 
@@ -124,7 +153,7 @@ public interface ChronicleDao<V> {
      * Used internally for file rotation management.
      * </p>
      * 
-     * @param fileNames Set of all data file names for this DAO
+     * @param fileNames   Set of all data file names for this DAO
      * @param currentFile The currently active file for write operations
      */
     static record DataFileState(Set<String> fileNames, String currentFile) {
@@ -2908,8 +2937,8 @@ public interface ChronicleDao<V> {
     }
 
     default Map<String, V> search(final Search search) {
-        final Map<String, V> result = new ConcurrentHashMap<>();
         final int limit = search.limit() == -1 ? HARD_LIMIT : search.limit();
+        final Map<String, V> result = new ConcurrentHashMap<>(limit);
         final AtomicInteger counter = new AtomicInteger(0);
 
         getDataFileState().fileNames().parallelStream().forEach(file -> {
@@ -2947,8 +2976,8 @@ public interface ChronicleDao<V> {
     }
 
     default Map<String, V> search(final Search search, final Set<String> excludedKeys) {
-        final Map<String, V> result = new ConcurrentHashMap<>();
         final int limit = search.limit() == -1 ? HARD_LIMIT : search.limit();
+        final Map<String, V> result = new ConcurrentHashMap<>(limit);
         final AtomicInteger counter = new AtomicInteger(0);
 
         getDataFileState().fileNames().parallelStream().forEach(file -> {
@@ -3459,7 +3488,7 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final Map<String, V> result = new ConcurrentHashMap<>();
+                final Map<String, V> result = new ConcurrentHashMap<>(limit);
                 final var counter = new AtomicInteger(0);
                 getDataFileState().fileNames().parallelStream().forEach(file -> {
                     if (counter.get() >= limit) {
