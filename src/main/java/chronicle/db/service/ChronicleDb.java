@@ -198,12 +198,24 @@ public final class ChronicleDb {
     /**
      * Use this only when jvm hangs on shutdown
      */
+    public void close(final String filePath) {
+        final var mapEntry = mapCache.get(filePath);
+        if (mapEntry != null) {
+            mapEntry.map.close();
+            mapCache.remove(filePath);
+            Logger.info("Closed ChronicleMap at [{}]", filePath);
+        }
+    }
+
+    /**
+     * Use this only when jvm hangs on shutdown
+     */
     public void closeAll() {
         for (final var entry : mapCache.entrySet()) {
             final String filePath = entry.getKey();
             final SharedChronicleMap mapEntry = entry.getValue();
             mapEntry.map.close();
-            Logger.info("Closed ChronicleMap for [{}]", filePath);
+            Logger.info("Closed ChronicleMap at [{}]", filePath);
         }
         mapCache.clear(); // Clear all cached entries
         Logger.info("All ChronicleMaps have been closed and mapCache cleared.");
