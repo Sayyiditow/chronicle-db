@@ -163,6 +163,10 @@ public final class ChronicleUtils {
         }
     }
 
+    private String toStringOptimized(final Object value) {
+        return value instanceof final String s ? s : String.valueOf(value);
+    }
+
     /**
      * Compares two objects. Handles Numbers specifically as Doubles, otherwise uses
      * String comparison.
@@ -176,7 +180,7 @@ public final class ChronicleUtils {
         if (obj1 instanceof final Number n1 && obj2 instanceof final Number n2) {
             return Double.compare(n1.doubleValue(), n2.doubleValue());
         }
-        return String.valueOf(obj1).compareTo(String.valueOf(obj2));
+        return toStringOptimized(obj1).compareTo(toStringOptimized(obj2));
     }
 
     /**
@@ -188,8 +192,8 @@ public final class ChronicleUtils {
      * @return true if the string contains the search term, false otherwise.
      */
     public boolean containsIgnoreCase(final Object str, final Object searchTerm) {
-        final String strValue = String.valueOf(str);
-        final String termValue = String.valueOf(searchTerm);
+        final String strValue = toStringOptimized(str);
+        final String termValue = toStringOptimized(searchTerm);
         final int termLen = termValue.length();
 
         if (termLen == 0)
@@ -212,8 +216,8 @@ public final class ChronicleUtils {
      * @return true if the string starts with the search term, false otherwise.
      */
     public boolean startsWithIgnoreCase(final Object value, final Object searchTerm) {
-        final String str = String.valueOf(value);
-        final String term = String.valueOf(searchTerm);
+        final String str = toStringOptimized(value);
+        final String term = toStringOptimized(searchTerm);
         return str.regionMatches(true, 0, term, 0, term.length());
     }
 
@@ -226,8 +230,8 @@ public final class ChronicleUtils {
      * @return true if the string ends with the search term, false otherwise.
      */
     public boolean endsWithIgnoreCase(final Object value, final Object searchTerm) {
-        final String str = String.valueOf(value);
-        final String term = String.valueOf(searchTerm);
+        final String str = toStringOptimized(value);
+        final String term = toStringOptimized(searchTerm);
         return str.regionMatches(true, str.length() - term.length(), term, 0, term.length());
     }
 
@@ -240,7 +244,7 @@ public final class ChronicleUtils {
      */
     public Enum toEnum(final Class<?> enumClass, final Object value) {
         try {
-            return Enum.valueOf((Class<Enum>) enumClass, value.toString());
+            return Enum.valueOf((Class<Enum>) enumClass, toStringOptimized(value));
         } catch (final Exception e) {
             return null;
         }
@@ -262,7 +266,7 @@ public final class ChronicleUtils {
                 searchTermSet.add(toEnum(fieldClass, searchTerm));
             } else if (fieldClass == long.class
                     && (searchTerm instanceof String || searchTerm instanceof Integer)) {
-                searchTermSet.add(Long.parseLong(searchTerm.toString()));
+                searchTermSet.add(Long.parseLong(toStringOptimized(searchTerm)));
             } else {
                 searchTermSet.add(searchTerm);
             }
@@ -282,7 +286,7 @@ public final class ChronicleUtils {
         if (fieldClass.isEnum() && (searchTerm instanceof String)) {
             return toEnum(fieldClass, searchTerm);
         } else if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
-            return Long.parseLong(searchTerm.toString());
+            return Long.parseLong(toStringOptimized(searchTerm));
         }
 
         return searchTerm;
@@ -373,6 +377,22 @@ public final class ChronicleUtils {
             MAP_DB.closeIndex(indexPath);
             deleteFileIfExists(indexPath);
             return false;
+        }
+    }
+
+    private void appendValue(final StringBuilder sb, final Object objVal) {
+        if (objVal instanceof final String s) {
+            sb.append(s);
+        } else if (objVal instanceof final Integer i) {
+            sb.append(i.intValue());
+        } else if (objVal instanceof final Long l) {
+            sb.append(l.longValue());
+        } else if (objVal instanceof final Double d) {
+            sb.append(d.doubleValue());
+        } else if (objVal instanceof final Boolean b) {
+            sb.append(b.booleanValue());
+        } else {
+            sb.append(objVal);
         }
     }
 
@@ -529,12 +549,17 @@ public final class ChronicleUtils {
                         boolean shouldSkip = false;
 
                         for (final FieldData fd : fieldDataList) {
-                            final var val = String.valueOf(fd.varHandle.get(value));
-                            if (excluded.contains(val)) {
-                                shouldSkip = true;
-                                break;
+                            final Object objVal = fd.varHandle.get(value);
+                            if (excluded.isEmpty()) {
+                                appendValue(sb, objVal);
+                            } else {
+                                final var val = toStringOptimized(objVal);
+                                if (excluded.contains(val)) {
+                                    shouldSkip = true;
+                                    break;
+                                }
+                                sb.append(val);
                             }
-                            sb.append(val);
                         }
 
                         if (!shouldSkip) {
@@ -644,8 +669,8 @@ public final class ChronicleUtils {
                     final var sb = sbThreadLocal.get();
                     sb.setLength(0);
                     for (final FieldData fd : fieldGetters) {
-                        final var val = String.valueOf(fd.varHandle.get(value));
-                        sb.append(val);
+                        final Object objVal = fd.varHandle.get(value);
+                        appendValue(sb, objVal);
                     }
 
                     if (!safeIndexRemove(sharedIndexMap, MAP_DB.createIndexKey(sb.toString(), key.toString()),
@@ -737,19 +762,24 @@ public final class ChronicleUtils {
                     boolean skipAdd = false;
 
                     for (final FieldData fd : fieldGetters) {
-                        final var value = String.valueOf(fd.varHandle.get(newVal));
-                        if (excluded.contains(value)) {
-                            skipAdd = true;
+                        final Object objVal = fd.varHandle.get(newVal);
+                        if (excluded.isEmpty()) {
+                            appendValue(sb, objVal);
+                        } else {
+                            final var value = toStringOptimized(objVal);
+                            if (excluded.contains(value)) {
+                                skipAdd = true;
+                            }
+                            sb.append(value);
                         }
-                        sb.append(value);
                     }
                     final var newValStr = sb.toString();
 
                     if (prevVal != null) {
                         sb.setLength(0);
                         for (final FieldData fd : fieldGetters) {
-                            final var value = String.valueOf(fd.varHandle.get(prevVal));
-                            sb.append(value);
+                            final Object objVal = fd.varHandle.get(prevVal);
+                            appendValue(sb, objVal);
                         }
                         final var oldValStr = sb.toString();
 
