@@ -818,7 +818,7 @@ public interface ChronicleDao<V> {
             try (final var shared = openDb(file)) {
                 shared.map.forEachEntryWhile(entry -> {
                     result.put(entry.key().get(),
-                            CHRONICLE_UTILS.getSubsetFromObject(classData, fields, entry.value().get()));
+                            CHRONICLE_UTILS.getSubsetFromObject(classData, fields, entry.value().getUsing(using())));
                     return result.size() < limit;
                 });
             }
@@ -839,7 +839,7 @@ public interface ChronicleDao<V> {
             try (final var shared = openDb(file)) {
                 shared.map.forEachEntryWhile(entry -> {
                     rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, entry.key().get(), fields,
-                            entry.value().get()));
+                            entry.value().getUsing(using())));
                     return rowQueue.size() < limit;
                 });
             }
