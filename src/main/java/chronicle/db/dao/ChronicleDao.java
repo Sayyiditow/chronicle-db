@@ -2473,13 +2473,16 @@ public interface ChronicleDao<V> {
             final Map<String, V> result, final AtomicInteger counter) {
         Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
 
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2496,12 +2499,15 @@ public interface ChronicleDao<V> {
         Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2558,12 +2564,15 @@ public interface ChronicleDao<V> {
             final Collection<String> results) {
         Logger.info("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
             final V value = entry.value().get();
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2578,6 +2587,9 @@ public interface ChronicleDao<V> {
         Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
@@ -2586,8 +2598,8 @@ public interface ChronicleDao<V> {
             }
 
             final V value = entry.value().getUsing(using());
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2604,6 +2616,9 @@ public interface ChronicleDao<V> {
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
@@ -2612,8 +2627,8 @@ public interface ChronicleDao<V> {
             }
 
             final V value = entry.value().getUsing(using());
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2631,6 +2646,9 @@ public interface ChronicleDao<V> {
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
@@ -2639,8 +2657,8 @@ public interface ChronicleDao<V> {
             }
 
             final V value = entry.value().getUsing(using());
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2657,6 +2675,9 @@ public interface ChronicleDao<V> {
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
@@ -2665,8 +2686,8 @@ public interface ChronicleDao<V> {
             }
 
             final V value = entry.value().getUsing(using());
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2681,6 +2702,9 @@ public interface ChronicleDao<V> {
         Logger.info("Searching DB keys at [{}] using [{}] filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
@@ -2689,8 +2713,8 @@ public interface ChronicleDao<V> {
             }
 
             final V value = entry.value().get();
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2704,12 +2728,15 @@ public interface ChronicleDao<V> {
         Logger.info("Counting DB at [{}] for {} filters.", dataPath(), filters.size());
         final var count = new AtomicInteger();
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
             final V value = entry.value().get();
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }

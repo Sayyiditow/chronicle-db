@@ -164,11 +164,13 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Compares two objects. Handles Numbers specifically as Doubles, otherwise uses String comparison.
+     * Compares two objects. Handles Numbers specifically as Doubles, otherwise uses
+     * String comparison.
      *
      * @param obj1 The first object.
      * @param obj2 The second object.
-     * @return A negative integer, zero, or a positive integer as the first argument is less than, equal to, or greater than the second.
+     * @return A negative integer, zero, or a positive integer as the first argument
+     *         is less than, equal to, or greater than the second.
      */
     public int compare(final Object obj1, final Object obj2) {
         if (obj1 instanceof final Number n1 && obj2 instanceof final Number n2) {
@@ -178,7 +180,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Checks if a string representation of an object contains a search term, ignoring case.
+     * Checks if a string representation of an object contains a search term,
+     * ignoring case.
      *
      * @param str        The object to search within.
      * @param searchTerm The term to search for.
@@ -201,7 +204,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Checks if a string representation of an object starts with a search term, ignoring case.
+     * Checks if a string representation of an object starts with a search term,
+     * ignoring case.
      *
      * @param value      The object to check.
      * @param searchTerm The prefix to search for.
@@ -214,7 +218,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Checks if a string representation of an object ends with a search term, ignoring case.
+     * Checks if a string representation of an object ends with a search term,
+     * ignoring case.
      *
      * @param value      The object to check.
      * @param searchTerm The suffix to search for.
@@ -242,7 +247,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Prepares a set of search terms for non-indexed search, converting types if necessary.
+     * Prepares a set of search terms for non-indexed search, converting types if
+     * necessary.
      *
      * @param searchTerms The list of raw search terms.
      * @param fieldClass  The target field type.
@@ -265,7 +271,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Prepares a single search term for non-indexed search, converting types if necessary.
+     * Prepares a single search term for non-indexed search, converting types if
+     * necessary.
      *
      * @param searchTerm The raw search term.
      * @param fieldClass The target field type.
@@ -398,7 +405,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Safely adds an entry to a shared index, handling potential corruption by resetting the index.
+     * Safely adds an entry to a shared index, handling potential corruption by
+     * resetting the index.
      *
      * @param sharedIndexMap The shared index map.
      * @param add            The byte array to add.
@@ -418,8 +426,66 @@ public final class ChronicleUtils {
         }
     }
 
+    public static class PreparedSearch {
+        final List<FieldData> fields;
+        final SearchType searchType;
+        final Object searchTerm;
+        final Set<Object> searchTermSet;
+        final List<Object> searchTermBetween;
+
+        PreparedSearch(final List<FieldData> fields, final SearchType searchType, final Object searchTerm,
+                final Set<Object> searchTermSet, final List<Object> searchTermBetween) {
+            this.fields = fields;
+            this.searchType = searchType;
+            this.searchTerm = searchTerm;
+            this.searchTermSet = searchTermSet;
+            this.searchTermBetween = searchTermBetween;
+        }
+    }
+
+    public PreparedSearch prepareSearch(final Search search, final Class<?> valueClass) {
+        final String[] fieldNames = search.field().split("\\|");
+        final List<FieldData> fields = new ArrayList<>(fieldNames.length);
+        Class<?> fieldType = String.class;
+
+        for (final String fieldName : fieldNames) {
+            final FieldData fd = getFieldData(valueClass, fieldName);
+            if (fd != null) {
+                fields.add(fd);
+                fieldType = fd.field.getType();
+            }
+        }
+
+        final SearchType searchType = search.searchType();
+        Object searchTerm = null;
+        Set<Object> searchTermSet = null;
+        List<Object> searchTermBetween = null;
+
+        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
+            searchTermSet = setSearchTermNonIndexed((List<Object>) search.searchTerm(), fieldType);
+        } else if (searchType == SearchType.BETWEEN) {
+            searchTermBetween = (List<Object>) search.searchTerm();
+        } else {
+            searchTerm = setSearchTermNonIndexed(search.searchTerm(), fieldType);
+        }
+
+        return new PreparedSearch(fields, searchType, searchTerm, searchTermSet, searchTermBetween);
+    }
+
+    public <V> boolean search(final PreparedSearch search, final String key, final V value) {
+        for (final FieldData fieldData : search.fields) {
+            final Object currentValue = fieldData.varHandle.get(value);
+            if (matchesSearch(currentValue, search.searchTerm, search.searchTermSet, search.searchTermBetween,
+                    search.searchType)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
-     * Safely removes an entry from a shared index, handling potential corruption by resetting the index.
+     * Safely removes an entry from a shared index, handling potential corruption by
+     * resetting the index.
      *
      * @param sharedIndexMap The shared index map.
      * @param remove         The byte array to remove.
@@ -663,7 +729,8 @@ public final class ChronicleUtils {
      * @param values         The map of new key-value pairs.
      * @param previousValues The map of previous key-value pairs (for comparison).
      * @param valueClass     The class of the value object.
-     * @param exclusions     A map of values to exclude from indexing for specific fields.
+     * @param exclusions     A map of values to exclude from indexing for specific
+     *                       fields.
      */
     public <V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
             final Map<String, V> values, final Map<String, V> previousValues, final Class<?> valueClass,
@@ -980,7 +1047,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Moves contents of a directory that start with a specific prefix to a destination directory.
+     * Moves contents of a directory that start with a specific prefix to a
+     * destination directory.
      *
      * @param src        The source directory.
      * @param dest       The destination directory.
@@ -1269,7 +1337,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Concatenates two Iterables into a single Iterable, limited by a maximum count.
+     * Concatenates two Iterables into a single Iterable, limited by a maximum
+     * count.
      *
      * @param <T>    The type of elements.
      * @param first  The first iterable.
