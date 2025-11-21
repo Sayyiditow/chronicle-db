@@ -355,56 +355,6 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Performs a non-indexed search on a value object.
-     *
-     * @param <V>        The type of the value object.
-     * @param search     The search criteria.
-     * @param key        The key associated with the value.
-     * @param value      The value object to search within.
-     * @param valueClass The class of the value object.
-     * @return true if the value matches the search criteria.
-     */
-    public <V> boolean search(final Search search, final String key, final V value, final Class<?> valueClass) {
-        final String[] fields = search.field().split("\\|");
-        final SearchType searchType = search.searchType();
-
-        // Compute once, reuse for all fields
-        Set<Object> searchTermSet;
-        List<Object> searchTermBetween;
-        Object searchTerm;
-
-        for (final String field : fields) {
-            final FieldData fieldData = getFieldData(valueClass, field);
-            if (fieldData == null)
-                continue;
-
-            final var fieldType = fieldData.field.getType();
-            if (searchType == SearchType.IN || searchType == SearchType.NOT_IN
-                    || searchType == SearchType.CONTAINS || searchType == SearchType.NOT_CONTAINS) {
-                searchTermSet = setSearchTermNonIndexed((List<Object>) search.searchTerm(), fieldType);
-                searchTerm = null;
-                searchTermBetween = null;
-            } else if (searchType == SearchType.BETWEEN) {
-                searchTermBetween = (List<Object>) search.searchTerm();
-                searchTerm = null;
-                searchTermSet = null;
-            } else {
-                searchTerm = setSearchTermNonIndexed(search.searchTerm(), fieldType);
-                searchTermSet = null;
-                searchTermBetween = null;
-            }
-
-            final Object currentValue = fieldData.varHandle.get(value);
-
-            if (matchesSearch(currentValue, searchTerm, searchTermSet, searchTermBetween, searchType)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
      * Safely adds an entry to a shared index, handling potential corruption by
      * resetting the index.
      *

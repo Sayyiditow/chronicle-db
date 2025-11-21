@@ -1825,6 +1825,9 @@ public interface ChronicleDao<V> {
         Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, V>(limit);
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
@@ -1834,8 +1837,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -1862,8 +1865,8 @@ public interface ChronicleDao<V> {
                     if (value == null)
                         return false;
 
-                    for (final var search : filters) {
-                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                    for (final var search : preparedFilters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value)) {
                             return false;
                         }
                     }
@@ -1886,6 +1889,9 @@ public interface ChronicleDao<V> {
         Logger.info("Querying CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
 
@@ -1897,8 +1903,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -1926,8 +1932,8 @@ public interface ChronicleDao<V> {
                     if (value == null)
                         return false;
 
-                    for (final var search : filters) {
-                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                    for (final var search : preparedFilters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value)) {
                             return false;
                         }
                     }
@@ -1951,6 +1957,9 @@ public interface ChronicleDao<V> {
         Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1961,8 +1970,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -1989,8 +1998,8 @@ public interface ChronicleDao<V> {
                     if (value == null)
                         return false;
 
-                    for (final var search : filters) {
-                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                    for (final var search : preparedFilters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value)) {
                             return false;
                         }
                     }
@@ -2015,6 +2024,9 @@ public interface ChronicleDao<V> {
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -2025,8 +2037,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2053,8 +2065,8 @@ public interface ChronicleDao<V> {
                     if (value == null)
                         return false;
 
-                    for (final var search : filters) {
-                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                    for (final var search : preparedFilters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value)) {
                             return false;
                         }
                     }
@@ -2076,6 +2088,9 @@ public interface ChronicleDao<V> {
 
         Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
@@ -2085,8 +2100,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2109,8 +2124,8 @@ public interface ChronicleDao<V> {
                     if (value == null)
                         return false;
 
-                    for (final var search : filters) {
-                        if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                    for (final var search : preparedFilters) {
+                        if (!CHRONICLE_UTILS.search(search, key, value)) {
                             return false;
                         }
                     }
@@ -2132,6 +2147,9 @@ public interface ChronicleDao<V> {
                 filters.size(), excludedKeys.size());
         final var map = new ConcurrentHashMap<String, V>(limit);
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
@@ -2144,8 +2162,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2176,8 +2194,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2201,6 +2219,9 @@ public interface ChronicleDao<V> {
                 filters.size(), excludedKeys.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
 
@@ -2215,8 +2236,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2248,8 +2269,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2276,6 +2297,9 @@ public interface ChronicleDao<V> {
                 dataPath(), filters.size(), excludedKeys.size());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -2289,8 +2313,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2321,8 +2345,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2347,6 +2371,9 @@ public interface ChronicleDao<V> {
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -2360,8 +2387,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2392,8 +2419,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2419,6 +2446,9 @@ public interface ChronicleDao<V> {
         // Determine minimum positive limit across all filters
         final var count = new LongAdder();
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
@@ -2428,8 +2458,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2454,8 +2484,8 @@ public interface ChronicleDao<V> {
                             if (value == null)
                                 return false;
 
-                            for (final var search : filters) {
-                                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+                            for (final var search : preparedFilters) {
+                                if (!CHRONICLE_UTILS.search(search, key, value)) {
                                     return false;
                                 }
                             }
@@ -2523,13 +2553,16 @@ public interface ChronicleDao<V> {
             final String[] fields) {
         Logger.info("Subset searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2543,14 +2576,17 @@ public interface ChronicleDao<V> {
             final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter, final String[] fields) {
         Logger.info("Subset CSV searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
 
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
                 }
             }
@@ -2756,6 +2792,9 @@ public interface ChronicleDao<V> {
         Logger.info("Searching in-memory map of [{}] with [{}] filters.", size, filters.size());
         final Map<String, V> result = new ConcurrentHashMap<>(Math.min(size, 10_000));
         final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
 
         db.entrySet().parallelStream().forEach(entry -> {
             final String key = entry.getKey();
@@ -2766,8 +2805,8 @@ public interface ChronicleDao<V> {
             }
 
             boolean match = true;
-            for (final Search search : filters) {
-                if (!CHRONICLE_UTILS.search(search, key, value, averageValueClass)) {
+            for (final var search : preparedFilters) {
+                if (!CHRONICLE_UTILS.search(search, key, value)) {
                     match = false;
                     break;
                 }
