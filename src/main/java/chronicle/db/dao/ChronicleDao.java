@@ -743,6 +743,11 @@ public interface ChronicleDao<V> {
 
     default void vacuum() throws IOException {
         // backup all files then read from these files and insert afresh
+        if (getDataFileState().fileNames().size() <= 1) {
+            Logger.info("Vacuuming not required at [{}]", dataPath());
+            return;
+        }
+
         final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         Logger.info("Vacuuming database at [{}]", dataPath());
 
