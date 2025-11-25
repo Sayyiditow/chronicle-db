@@ -170,6 +170,7 @@ public interface ChronicleDao<V> {
 
     ConcurrentMap<String, Object> WRITE_LOCKS = new ConcurrentHashMap<>();
     ConcurrentMap<String, DataFileState> DATA_FILE_CACHE = new ConcurrentHashMap<>();
+    ConcurrentMap<String, String> KEY_MAP_PATH_CACHE = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
             DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
             KEY_FILE = "keys";
@@ -320,8 +321,8 @@ public interface ChronicleDao<V> {
         return openDb(DATA_DIR, fileName, entries);
     }
 
-    private String getKeyMapPath() {
-        return dataPath() + DATA_DIR + KEY_FILE;
+    default String getKeyMapPath() {
+        return KEY_MAP_PATH_CACHE.computeIfAbsent(dataPath(), k -> k + DATA_DIR + KEY_FILE);
     }
 
     private void populateKeyMap(final Set<String> dataFiles, final HTreeMap<String, String> keyMap) {
