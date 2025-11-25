@@ -41,7 +41,6 @@ import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.ChronicleDb.SharedChronicleMap;
 import chronicle.db.service.MapDb.SearchResult;
 import chronicle.db.service.MapDb.SharedIndexMap;
-import net.openhft.chronicle.bytes.UTFDataFormatRuntimeException;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -562,28 +561,6 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * In cases of UTFDataFormatRuntimeException, we can recover the db using this
-     * method
-     */
-    default void checkUtf8Exceptions(final String dataFileName) {
-        final var deleteKeys = new HashSet<String>();
-        try (final var shared = openDb(dataFileName)) {
-            Logger.info("Total db size [{}]", shared.map.size());
-            shared.map.forEachEntry(entry -> {
-                final var key = entry.key().get();
-                try {
-                    shared.map.getUsing(key, using());
-                } catch (final UTFDataFormatRuntimeException e) {
-                    deleteKeys.add(key);
-                }
-            });
-
-            Logger.info("Found [{}] entries with malformed data at [{}] and file [{}]", deleteKeys.size(), dataPath(),
-                    dataFileName);
-        }
-    }
-
-    /**
      * Get the db file for this key from cache or default file is new key
      * if cache is empty, use default file
      */
@@ -781,7 +758,7 @@ public interface ChronicleDao<V> {
             try (final var shared = openDb(file)) {
                 shared.map.forEachEntryWhile(entry -> {
                     final var key = entry.key().get();
-                    result.put(key, entry.value().getUsing(using()));
+                    result.put(key, entry.value().getUsing(null));
                     return result.size() < limit;
                 });
             }
@@ -913,11 +890,26 @@ public interface ChronicleDao<V> {
         }
 
         try (final var shared = openDb(file)) {
-            return shared.map.getUsing(key, using());
+            return shared.map.get(key);
         }
     }
 
     private void processKeysByFile(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        keyFiles.entrySet().parallelStream().forEach(entry -> {
+            final var file = entry.getKey();
+            try (final var shared = openDb(file)) {
+                for (final var key : entry.getValue()) {
+                    final var value = shared.map.get(key);
+                    if (value != null) {
+                        valueConsumer.accept(key, value);
+                    }
+                }
+            }
+        });
+    }
+
+    private void processKeysByFileUsing(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
         final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
         keyFiles.entrySet().parallelStream().forEach(entry -> {
             final var file = entry.getKey();
@@ -933,6 +925,26 @@ public interface ChronicleDao<V> {
     }
 
     private void processKeysByFile(final Iterable<String> keys, final int limit,
+            final BiConsumer<String, V> valueConsumer) {
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        int count = 0;
+        outer: for (final var entry : keyFiles.entrySet()) {
+            final var file = entry.getKey();
+            try (final var shared = openDb(file)) {
+                for (final var key : entry.getValue()) {
+                    final var value = shared.map.get(key);
+                    if (value != null) {
+                        valueConsumer.accept(key, value);
+                        if (++count >= limit) {
+                            break outer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
         final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
         int count = 0;
@@ -961,6 +973,28 @@ public interface ChronicleDao<V> {
             try (final var shared = openDb(file)) {
                 for (final var key : entry.getValue()) {
                     if (!excludedKeys.contains(key)) {
+                        final var value = shared.map.get(key);
+                        if (value != null) {
+                            valueConsumer.accept(key, value);
+                            if (++count >= limit) {
+                                break outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
+            final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
+        final var keyFiles = getDbFiles(keys, getDataFileState().fileNames());
+        int count = 0;
+        outer: for (final var entry : keyFiles.entrySet()) {
+            final var file = entry.getKey();
+            try (final var shared = openDb(file)) {
+                for (final var key : entry.getValue()) {
+                    if (!excludedKeys.contains(key)) {
                         final var value = shared.map.getUsing(key, using());
                         if (value != null) {
                             valueConsumer.accept(key, value);
@@ -977,6 +1011,17 @@ public interface ChronicleDao<V> {
     private void processKeys(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
         try (final var shared = openDb()) {
             for (final var key : keys) {
+                final var value = shared.map.get(key);
+                if (value != null) {
+                    valueConsumer.accept(key, value);
+                }
+            }
+        }
+    }
+
+    private void processKeysUsing(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
+        try (final var shared = openDb()) {
+            for (final var key : keys) {
                 final var value = shared.map.getUsing(key, using());
                 if (value != null) {
                     valueConsumer.accept(key, value);
@@ -986,6 +1031,21 @@ public interface ChronicleDao<V> {
     }
 
     private void processKeys(final Iterable<String> keys, final int limit, final BiConsumer<String, V> valueConsumer) {
+        var count = 0;
+        try (final var shared = openDb()) {
+            for (final var key : keys) {
+                final var value = shared.map.get(key);
+                if (value != null) {
+                    valueConsumer.accept(key, value);
+                    if (++count >= limit)
+                        break;
+                }
+            }
+        }
+    }
+
+    private void processKeysUsing(final Iterable<String> keys, final int limit,
+            final BiConsumer<String, V> valueConsumer) {
         var count = 0;
         try (final var shared = openDb()) {
             for (final var key : keys) {
@@ -1000,6 +1060,23 @@ public interface ChronicleDao<V> {
     }
 
     private void processKeys(final Iterable<String> keys, final int limit, final Set<String> excludedKeys,
+            final BiConsumer<String, V> valueConsumer) {
+        var count = 0;
+        try (final var shared = openDb()) {
+            for (final var key : keys) {
+                if (!excludedKeys.contains(key)) {
+                    final var value = shared.map.get(key);
+                    if (value != null) {
+                        valueConsumer.accept(key, value);
+                        if (++count >= limit)
+                            break;
+                    }
+                }
+            }
+        }
+    }
+
+    private void processKeysUsing(final Iterable<String> keys, final int limit, final Set<String> excludedKeys,
             final BiConsumer<String, V> valueConsumer) {
         var count = 0;
         try (final var shared = openDb()) {
@@ -1051,7 +1128,7 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys, (key, value) -> {
+            processKeysUsing(keys, (key, value) -> {
                 headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
                 rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
             });
@@ -1059,7 +1136,7 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
         }
 
-        processKeysByFile(keys, (key, value) -> {
+        processKeysByFileUsing(keys, (key, value) -> {
             headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
@@ -1077,13 +1154,13 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys,
+            processKeysUsing(keys,
                     (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
 
             return map;
         }
 
-        processKeysByFile(keys,
+        processKeysByFileUsing(keys,
                 (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
 
         return map;
@@ -1100,13 +1177,13 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys, (key, value) -> rowQueue
+            processKeysUsing(keys, (key, value) -> rowQueue
                     .add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
 
             return new CsvObject(headers, new ArrayList<>(rowQueue));
         }
 
-        processKeysByFile(keys,
+        processKeysByFileUsing(keys,
                 (key, value) -> rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
 
         return new CsvObject(headers, new ArrayList<>(rowQueue));
@@ -1141,7 +1218,7 @@ public interface ChronicleDao<V> {
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys, limit, (key, value) -> {
+            processKeysUsing(keys, limit, (key, value) -> {
                 headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
                 rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
             });
@@ -1149,7 +1226,7 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
         }
 
-        processKeysByFile(keys, limit, (key, value) -> {
+        processKeysByFileUsing(keys, limit, (key, value) -> {
             headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
@@ -1168,13 +1245,13 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys, limit,
+            processKeysUsing(keys, limit,
                     (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
 
             return map;
         }
 
-        processKeysByFile(keys, limit,
+        processKeysByFileUsing(keys, limit,
                 (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
 
         return map;
@@ -1191,13 +1268,13 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys, limit, (key, value) -> rowQueue
+            processKeysUsing(keys, limit, (key, value) -> rowQueue
                     .add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
 
             return new CsvObject(headers, new ArrayList<>(rowQueue));
         }
 
-        processKeysByFile(keys, limit,
+        processKeysByFileUsing(keys, limit,
                 (key, value) -> rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
 
         return new CsvObject(headers, new ArrayList<>(rowQueue));
@@ -1233,7 +1310,7 @@ public interface ChronicleDao<V> {
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys, limit, excludedKeys, (key, value) -> {
+            processKeysUsing(keys, limit, excludedKeys, (key, value) -> {
                 headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
                 rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
             });
@@ -1241,7 +1318,7 @@ public interface ChronicleDao<V> {
             return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
         }
 
-        processKeysByFile(keys, limit, excludedKeys, (key, value) -> {
+        processKeysByFileUsing(keys, limit, excludedKeys, (key, value) -> {
             headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
@@ -1260,13 +1337,13 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys, limit, excludedKeys,
+            processKeysUsing(keys, limit, excludedKeys,
                     (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
 
             return map;
         }
 
-        processKeysByFile(keys, limit, excludedKeys,
+        processKeysByFileUsing(keys, limit, excludedKeys,
                 (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
 
         return map;
@@ -1284,13 +1361,13 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
-            processKeys(keys, limit, excludedKeys, (key, value) -> rowQueue
+            processKeysUsing(keys, limit, excludedKeys, (key, value) -> rowQueue
                     .add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
 
             return new CsvObject(headers, new ArrayList<>(rowQueue));
         }
 
-        processKeysByFile(keys, limit, excludedKeys,
+        processKeysByFileUsing(keys, limit, excludedKeys,
                 (key, value) -> rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
 
         return new CsvObject(headers, new ArrayList<>(rowQueue));
@@ -1839,7 +1916,7 @@ public interface ChronicleDao<V> {
             try (final var shared = openDb()) {
                 CHRONICLE_UTILS.parallelIterable(keys, limit,
                         key -> {
-                            final V value = shared.map.getUsing(key, using());
+                            final V value = shared.map.get(key);
                             if (value == null)
                                 return false;
 
@@ -1867,7 +1944,7 @@ public interface ChronicleDao<V> {
 
             try (final var shared = openDb(file)) {
                 CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count, key -> {
-                    final V value = shared.map.getUsing(key, using());
+                    final V value = shared.map.get(key);
                     if (value == null)
                         return false;
 
@@ -2164,7 +2241,7 @@ public interface ChronicleDao<V> {
                             if (excludedKeys.contains(key))
                                 return false;
 
-                            final V value = shared.map.getUsing(key, using());
+                            final V value = shared.map.get(key);
                             if (value == null)
                                 return false;
 
@@ -2196,7 +2273,7 @@ public interface ChronicleDao<V> {
                             if (excludedKeys.contains(key))
                                 return false;
 
-                            final V value = shared.map.getUsing(key, using());
+                            final V value = shared.map.get(key);
                             if (value == null)
                                 return false;
 
@@ -2281,8 +2358,7 @@ public interface ChronicleDao<V> {
                                 }
                             }
 
-                            headers.compareAndSet(null,
-                                    CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
                             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
                             return true;
                         });
@@ -2515,7 +2591,7 @@ public interface ChronicleDao<V> {
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
-            final V value = entry.value().getUsing(using());
+            final V value = entry.value().getUsing(null);
 
             for (final var search : preparedFilters) {
                 if (!CHRONICLE_UTILS.search(search, key, value)) {
@@ -2612,7 +2688,7 @@ public interface ChronicleDao<V> {
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
-            final V value = entry.value().get();
+            final V value = entry.value().getUsing(using());
             for (final var search : preparedFilters) {
                 if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
@@ -2639,7 +2715,7 @@ public interface ChronicleDao<V> {
                 return true;
             }
 
-            final V value = entry.value().getUsing(using());
+            final V value = entry.value().getUsing(null);
             for (final var search : preparedFilters) {
                 if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
@@ -2754,7 +2830,7 @@ public interface ChronicleDao<V> {
                 return true;
             }
 
-            final V value = entry.value().get();
+            final V value = entry.value().getUsing(using());
             for (final var search : preparedFilters) {
                 if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;
@@ -2776,7 +2852,7 @@ public interface ChronicleDao<V> {
 
         db.forEachEntryWhile(entry -> {
             final String key = entry.key().get();
-            final V value = entry.value().get();
+            final V value = entry.value().getUsing(using());
             for (final var search : preparedFilters) {
                 if (!CHRONICLE_UTILS.search(search, key, value)) {
                     return true;

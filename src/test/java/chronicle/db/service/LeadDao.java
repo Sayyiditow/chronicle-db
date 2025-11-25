@@ -15,7 +15,7 @@ public class LeadDao implements ChronicleDao<Lead> {
         createDataDirs();
     }
 
-    private static final ThreadLocal<Lead> USING = new ThreadLocal<>();
+    private static final ThreadLocal<Lead> USING = ThreadLocal.withInitial(Lead::new);
 
     @Override
     public long entries() {
