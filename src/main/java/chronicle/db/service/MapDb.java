@@ -497,8 +497,7 @@ public final class MapDb {
 
     private NavigableSet<byte[]> getEqualIndexSubset(final NavigableSet<byte[]> index, final String searchTerm) {
         final byte[] fieldBytes = getSanitizedByte(searchTerm);
-        return index.subSet(createLowerBoundKey(fieldBytes), true,
-                createUpperBoundKey(fieldBytes), false);
+        return index.subSet(createLowerBoundKey(fieldBytes), true, createUpperBoundKey(fieldBytes), false);
     }
 
     public SearchResult getEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
