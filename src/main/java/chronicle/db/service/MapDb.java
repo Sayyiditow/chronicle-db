@@ -294,10 +294,10 @@ public final class MapDb {
                 return new SharedIndexMap(db, tree, filePath);
             } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
-                Logger.error("Reinitializing IndexMap at [{}]", filePath);
+                Logger.error("Reinitializing Index at [{}]", filePath);
                 throw new RuntimeException(e);
             } catch (final Exception e) {
-                Logger.error("Failed to open IndexMap at [{}]", filePath);
+                Logger.error("Failed to open Index at [{}]", filePath);
                 throw new RuntimeException(e);
             }
         });
