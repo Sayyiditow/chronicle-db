@@ -16,7 +16,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
@@ -598,34 +597,37 @@ public interface ChronicleDao<V> {
 
         // Lazy batch-based distribution - scan once, buffer in chunks
         final int BATCH_SIZE = 50_000; // Process 50K keys at a time
-        final Map<String, LinkedList<String>> fileBuffers = new HashMap<>();
+        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new HashMap<>();
         for (final String file : dbFiles) {
-            fileBuffers.put(file, new LinkedList<>());
+            fileBuffers.put(file, new ConcurrentLinkedQueue<>());
         }
 
         // Shared state
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
+        final Object refillLock = new Object(); // Lock for thread-safe iterator access
 
-        // Refill all buffers by processing next batch from source
+        // Refill all buffers by processing next batch from source (MUST be synchronized for iterator)
         final Runnable refillBuffers = () -> {
-            if (sourceExhausted.get())
-                return;
+            synchronized (refillLock) {
+                if (sourceExhausted.get())
+                    return;
 
-            int count = 0;
-            while (sourceIterator.hasNext() && count < BATCH_SIZE) {
-                final String key = sourceIterator.next();
-                final String file = sharedKeyMap.map.get(key);
-                if (file != null) {
-                    final var buffer = fileBuffers.get(file);
-                    if (buffer != null) {
-                        buffer.add(key);
+                int count = 0;
+                while (sourceIterator.hasNext() && count < BATCH_SIZE) {
+                    final String key = sourceIterator.next();
+                    final String file = sharedKeyMap.map.get(key);
+                    if (file != null) {
+                        final var buffer = fileBuffers.get(file);
+                        if (buffer != null) {
+                            buffer.add(key); // Thread-safe add
+                        }
                     }
+                    count++;
                 }
-                count++;
-            }
 
-            if (!sourceIterator.hasNext()) {
-                sourceExhausted.set(true);
+                if (!sourceIterator.hasNext()) {
+                    sourceExhausted.set(true);
+                }
             }
         };
 
@@ -649,7 +651,11 @@ public interface ChronicleDao<V> {
                 public String next() {
                     if (!hasNext())
                         throw new NoSuchElementException();
-                    return fileBuffers.get(file).removeFirst();
+                    // ConcurrentLinkedQueue.poll() is thread-safe, no lock needed
+                    final String key = fileBuffers.get(file).poll();
+                    if (key == null)
+                        throw new NoSuchElementException();
+                    return key;
                 }
             });
         }
