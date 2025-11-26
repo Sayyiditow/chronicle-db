@@ -592,58 +592,72 @@ public interface ChronicleDao<V> {
     }
 
     private GroupedKeys getDbFiles(final Iterable<String> keys, final Set<String> dbFiles) {
+        // 1. Open the map once
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
         final Iterator<String> sourceIterator = keys.iterator();
 
-        // Lazy batch-based distribution - scan once, buffer in chunks
-        final int BATCH_SIZE = 50_000; // Process 50K keys at a time
+        // 2. Setup buffers using ConcurrentLinkedQueue (Thread-safe, non-blocking)
         final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new HashMap<>();
         for (final String file : dbFiles) {
             fileBuffers.put(file, new ConcurrentLinkedQueue<>());
         }
 
-        // Shared state
+        final int BATCH_SIZE = 25_000;
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
-        final Object refillLock = new Object(); // Lock for thread-safe iterator access
 
-        // Refill all buffers by processing next batch from source (MUST be synchronized for iterator)
+        // Lock ONLY for accessing the source iterator
+        final Object sourceLock = new Object();
+
         final Runnable refillBuffers = () -> {
-            synchronized (refillLock) {
-                if (sourceExhausted.get())
-                    return;
+            // Double-check locking optimization
+            if (sourceExhausted.get())
+                return;
 
+            if (sourceExhausted.get())
+                return;
+
+            // Step A: Quickly grab a batch of raw keys (Critical Section: FAST)
+            final List<String> keyBatch = new ArrayList<>(BATCH_SIZE);
+            synchronized (sourceLock) {
                 int count = 0;
                 while (sourceIterator.hasNext() && count < BATCH_SIZE) {
-                    final String key = sourceIterator.next();
-                    final String file = sharedKeyMap.map.get(key);
-                    if (file != null) {
-                        final var buffer = fileBuffers.get(file);
-                        if (buffer != null) {
-                            buffer.add(key); // Thread-safe add
-                        }
-                    }
+                    keyBatch.add(sourceIterator.next());
                     count++;
                 }
-
                 if (!sourceIterator.hasNext()) {
                     sourceExhausted.set(true);
                 }
+
+                if (keyBatch.isEmpty())
+                    return;
+
+                // Step B: Parallel Processing (Outside Lock: SLOW but PARALLEL)
+                // We group keys by file using a parallel stream to maximize IO/CPU usage
+                final Map<String, List<String>> groupedBatch = keyBatch.parallelStream()
+                        .map(key -> Map.entry(key, sharedKeyMap.map.get(key))) // Tuple<Key, File>
+                        .filter(entry -> entry.getValue() != null && fileBuffers.containsKey(entry.getValue()))
+                        .collect(Collectors.groupingBy(
+                                Map.Entry::getValue,
+                                Collectors.mapping(Map.Entry::getKey, Collectors.toList())));
+
+                // Step C: Bulk Update Buffers
+                groupedBatch.forEach((file, foundKeys) -> {
+                    fileBuffers.get(file).addAll(foundKeys);
+                });
             }
         };
 
-        // Create lazy iterables that pull from buffers
+        // 3. Create Iterators
         final Map<String, Iterable<String>> fileGroups = new HashMap<>();
         for (final String file : dbFiles) {
             fileGroups.put(file, () -> new Iterator<>() {
                 @Override
                 public boolean hasNext() {
                     final var buffer = fileBuffers.get(file);
-
-                    // If buffer empty and source not exhausted, refill
+                    // While buffer is empty and we still have source data, try to refill
                     while (buffer.isEmpty() && !sourceExhausted.get()) {
                         refillBuffers.run();
                     }
-
                     return !buffer.isEmpty();
                 }
 
@@ -651,16 +665,12 @@ public interface ChronicleDao<V> {
                 public String next() {
                     if (!hasNext())
                         throw new NoSuchElementException();
-                    // ConcurrentLinkedQueue.poll() is thread-safe, no lock needed
-                    final String key = fileBuffers.get(file).poll();
-                    if (key == null)
-                        throw new NoSuchElementException();
-                    return key;
+                    return fileBuffers.get(file).poll();
                 }
             });
         }
 
-        return new GroupedKeys(fileGroups, () -> sharedKeyMap.close());
+        return new GroupedKeys(fileGroups, sharedKeyMap::close);
     }
 
     private void removeFromKeyMap(final String key) {
@@ -2376,23 +2386,23 @@ public interface ChronicleDao<V> {
 
                 try (final var shared = openDb(file)) {
                     CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
-                        key -> {
-                            if (!excludedKeys.contains(key)) {
-                                final V value = shared.map.get(key);
-                                if (value == null)
-                                    return false;
-
-                                for (final var search : preparedFilters) {
-                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                            key -> {
+                                if (!excludedKeys.contains(key)) {
+                                    final V value = shared.map.get(key);
+                                    if (value == null)
                                         return false;
-                                    }
-                                }
 
-                                map.put(key, value);
-                                return true;
-                            }
-                            return false;
-                        });
+                                    for (final var search : preparedFilters) {
+                                        if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                            return false;
+                                        }
+                                    }
+
+                                    map.put(key, value);
+                                    return true;
+                                }
+                                return false;
+                            });
                 }
             }
         } catch (final Exception e) {
@@ -2454,24 +2464,24 @@ public interface ChronicleDao<V> {
 
                 try (final var shared = openDb(file)) {
                     CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
-                        key -> {
-                            if (!excludedKeys.contains(key)) {
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
-                                    return false;
-
-                                for (final var search : preparedFilters) {
-                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                            key -> {
+                                if (!excludedKeys.contains(key)) {
+                                    final V value = shared.map.getUsing(key, using());
+                                    if (value == null)
                                         return false;
-                                    }
-                                }
 
-                                headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
-                                rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
-                                return true;
-                            }
-                            return false;
-                        });
+                                    for (final var search : preparedFilters) {
+                                        if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                            return false;
+                                        }
+                                    }
+
+                                    headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                    rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+                                    return true;
+                                }
+                                return false;
+                            });
                 }
             }
         } catch (final Exception e) {
@@ -2532,23 +2542,23 @@ public interface ChronicleDao<V> {
 
                 try (final var shared = openDb(file)) {
                     CHRONICLE_UTILS.parallelIterable(keysForFile, limit - count.get(), count,
-                        key -> {
-                            if (!excludedKeys.contains(key)) {
-                                final V value = shared.map.getUsing(key, using());
-                                if (value == null)
-                                    return false;
-
-                                for (final var search : preparedFilters) {
-                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                            key -> {
+                                if (!excludedKeys.contains(key)) {
+                                    final V value = shared.map.getUsing(key, using());
+                                    if (value == null)
                                         return false;
-                                    }
-                                }
 
-                                map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
-                                return true;
-                            }
-                            return false;
-                        });
+                                    for (final var search : preparedFilters) {
+                                        if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                            return false;
+                                        }
+                                    }
+
+                                    map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
+                                    return true;
+                                }
+                                return false;
+                            });
                 }
             }
         } catch (final Exception e) {
