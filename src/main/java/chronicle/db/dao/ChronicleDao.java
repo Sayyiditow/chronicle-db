@@ -609,16 +609,18 @@ public interface ChronicleDao<V> {
         final Object sourceLock = new Object();
 
         final Runnable refillBuffers = () -> {
-            // Double-check locking optimization
+            // 1. Fast Path Check (Avoids acquiring the lock if exhausted)
             if (sourceExhausted.get())
                 return;
 
-            if (sourceExhausted.get())
-                return;
-
-            // Step A: Quickly grab a batch of raw keys (Critical Section: FAST)
             final List<String> keyBatch = new ArrayList<>(BATCH_SIZE);
+
+            // --- PHASE 1: FAST FETCH (Synchronized - Critical Section) ---
             synchronized (sourceLock) {
+                // 2. Second Check (Safety re-check after acquiring the lock)
+                if (sourceExhausted.get())
+                    return;
+
                 int count = 0;
                 while (sourceIterator.hasNext() && count < BATCH_SIZE) {
                     keyBatch.add(sourceIterator.next());
@@ -627,24 +629,25 @@ public interface ChronicleDao<V> {
                 if (!sourceIterator.hasNext()) {
                     sourceExhausted.set(true);
                 }
+            } // <-- LOCK RELEASED HERE! (Crucial for performance)
 
-                if (keyBatch.isEmpty())
-                    return;
+            if (keyBatch.isEmpty())
+                return;
 
-                // Step B: Parallel Processing (Outside Lock: SLOW but PARALLEL)
-                // We group keys by file using a parallel stream to maximize IO/CPU usage
-                final Map<String, List<String>> groupedBatch = keyBatch.parallelStream()
-                        .map(key -> Map.entry(key, sharedKeyMap.map.get(key))) // Tuple<Key, File>
-                        .filter(entry -> entry.getValue() != null && fileBuffers.containsKey(entry.getValue()))
-                        .collect(Collectors.groupingBy(
-                                Map.Entry::getValue,
-                                Collectors.mapping(Map.Entry::getKey, Collectors.toList())));
+            // --- PHASE 2: PARALLEL PROCESSING (Outside Lock - Maximum Speed) ---
 
-                // Step C: Bulk Update Buffers
-                groupedBatch.forEach((file, foundKeys) -> {
-                    fileBuffers.get(file).addAll(foundKeys);
-                });
-            }
+            // Step B: Parallel Processing (Now runs concurrently with other threads)
+            final Map<String, List<String>> groupedBatch = keyBatch.parallelStream()
+                    .map(key -> Map.entry(key, sharedKeyMap.map.get(key))) // Tuple<Key, File>
+                    .filter(entry -> entry.getValue() != null && fileBuffers.containsKey(entry.getValue()))
+                    .collect(Collectors.groupingBy(
+                            Map.Entry::getValue,
+                            Collectors.mapping(Map.Entry::getKey, Collectors.toList())));
+
+            // Step C: Bulk Update Buffers (Thread-safe addition)
+            groupedBatch.forEach((file, foundKeys) -> {
+                fileBuffers.get(file).addAll(foundKeys);
+            });
         };
 
         // 3. Create Iterators
