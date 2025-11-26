@@ -240,12 +240,11 @@ public final class MapDb {
      * Use this only when jvm hangs on shutdown
      */
     public void closeMap(final String filePath) {
-        final SharedKeyMap mapEntry = mapCache.get(filePath);
-        if (mapEntry != null) {
+        mapCache.computeIfPresent(filePath, (k, mapEntry) -> {
             mapEntry.map.close();
-            mapCache.remove(filePath);
             Logger.info("Closed KeyMap at [{}]", filePath);
-        }
+            return null;
+        });
     }
 
     /**
@@ -310,12 +309,11 @@ public final class MapDb {
      * Use this only when jvm hangs on shutdown
      */
     public void closeIndex(final String filePath) {
-        final var treeEntry = treeCache.get(filePath);
-        if (treeEntry != null) {
+        treeCache.computeIfPresent(filePath, (k, treeEntry) -> {
             treeEntry.db.close();
-            treeCache.remove(filePath);
             Logger.info("Closed Index at [{}]", filePath);
-        }
+            return null;
+        });
     }
 
     /**

@@ -90,7 +90,7 @@ public final class ChronicleDb {
     public static class SharedChronicleMap<K, V> implements AutoCloseable {
         /** The underlying ChronicleMap instance */
         public final ChronicleMap<K, V> map;
-        
+
         private final AtomicInteger refCount;
         private final String filePath; // Track file path for cleanup
 
@@ -199,12 +199,11 @@ public final class ChronicleDb {
      * Use this only when jvm hangs on shutdown
      */
     public void close(final String filePath) {
-        final var mapEntry = mapCache.get(filePath);
-        if (mapEntry != null) {
+        mapCache.computeIfPresent(filePath, (k, mapEntry) -> {
             mapEntry.map.close();
-            mapCache.remove(filePath);
             Logger.info("Closed ChronicleMap at [{}]", filePath);
-        }
+            return null;
+        });
     }
 
     /**
