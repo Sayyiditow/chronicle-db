@@ -635,18 +635,17 @@ public interface ChronicleDao<V> {
                 return;
 
             // --- PHASE 2: PARALLEL PROCESSING (Outside Lock - Maximum Speed) ---
-
+            
             // Step B: Parallel Processing (Now runs concurrently with other threads)
-            final Map<String, List<String>> groupedBatch = keyBatch.parallelStream()
-                    .map(key -> Map.entry(key, sharedKeyMap.map.get(key))) // Tuple<Key, File>
-                    .filter(entry -> entry.getValue() != null && fileBuffers.containsKey(entry.getValue()))
-                    .collect(Collectors.groupingBy(
-                            Map.Entry::getValue,
-                            Collectors.mapping(Map.Entry::getKey, Collectors.toList())));
-
-            // Step C: Bulk Update Buffers (Thread-safe addition)
-            groupedBatch.forEach((file, foundKeys) -> {
-                fileBuffers.get(file).addAll(foundKeys);
+            // Direct insertion into concurrent queues - avoids Map.entry NPE and intermediate allocations
+            keyBatch.parallelStream().forEach(key -> {
+                final String file = sharedKeyMap.map.get(key);
+                if (file != null) {
+                    final var buffer = fileBuffers.get(file);
+                    if (buffer != null) {
+                        buffer.add(key);
+                    }
+                }
             });
         };
 
