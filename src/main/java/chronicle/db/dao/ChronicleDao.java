@@ -1930,7 +1930,7 @@ public interface ChronicleDao<V> {
 
             CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues,
                     averageValue().getClass(), indexExclusions());
-            Logger.info("Updated {} records at [{}].", prevValueSize, dataPath());
+            Logger.info("Updated [{}] records at [{}].", prevValueSize, dataPath());
 
             return status;
         }
