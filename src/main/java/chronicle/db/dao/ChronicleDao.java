@@ -567,8 +567,8 @@ public interface ChronicleDao<V> {
      * Get the db file for this key from cache or default file is new key
      * if cache is empty, use default file
      */
-    private String getDbFile(final String key, final Set<String> dbFiles) {
-        if (dbFiles.size() <= 1) {
+    private String getDbFile(final String key) {
+        if (getDataFileState().fileNames().size() <= 1) {
             return DATA_FILE;
         }
 
@@ -607,106 +607,82 @@ public interface ChronicleDao<V> {
      * @return A {@link GroupedKeys} record containing the file groups and an
      *         {@link AutoCloseable} to close the shared index map.
      */
-    private GroupedKeys getDbFiles(final Iterable<String> keys, final Set<String> dbFiles) {
-        // 1. Open the Key-to-File Index Map once. This map is the critical shared
-        // resource.
+    private GroupedKeys getDbFiles(final Iterable<String> keys) {
+        // 1. Open the Key-to-File Index Map once.
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
         final Iterator<String> sourceIterator = keys.iterator();
+        final var dbFiles = getDataFileState().fileNames();
 
-        // 2. Setup thread-safe, non-blocking buffers to hold keys, organized by the
-        // file they belong to.
-        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new HashMap<>();
-        for (final String file : dbFiles) {
-            fileBuffers.put(file, new ConcurrentLinkedQueue<>());
-        }
+        // 2. Setup dynamic, thread-safe buffers.
+        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
 
         final int BATCH_SIZE = 25_000;
-        // Atomic flag to signal when all keys have been read from the source iterator.
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
 
-        // Lock ONLY for accessing the source iterator (ensures atomic iteration).
-        final Object sourceLock = new Object();
-        // CRITICAL: Lock for the entire refill process (ensures sequential access to
-        // sharedKeyMap).
+        // CRITICAL: Lock for the entire refill process.
         final Object refillLock = new Object();
 
         final Runnable refillBuffers = () -> {
-            // Enforce sequential execution for the entire key fetching and mapping process
-            // to stabilize sharedKeyMap access.
             synchronized (refillLock) {
-
-                // 1. Fast Path Check (Avoids acquiring the iterator lock if exhausted)
                 if (sourceExhausted.get())
                     return;
 
                 final List<String> keyBatch = new ArrayList<>(BATCH_SIZE);
 
-                // --- PHASE 1: KEY FETCH (Extremely Quick Critical Section) ---
-                // Acquiring the sourceLock ensures only one thread can advance the
-                // sourceIterator.
-                synchronized (sourceLock) {
-                    // 2. Second Check (Safety re-check after acquiring the lock)
-                    if (sourceExhausted.get())
-                        return;
+                // --- PHASE 1: KEY FETCH ---
+                int count = 0;
+                while (sourceIterator.hasNext() && count < BATCH_SIZE) {
+                    keyBatch.add(sourceIterator.next());
+                    count++;
+                }
+                if (!sourceIterator.hasNext()) {
+                    sourceExhausted.set(true);
+                }
 
-                    int count = 0;
-                    while (sourceIterator.hasNext() && count < BATCH_SIZE) {
-                        keyBatch.add(sourceIterator.next());
-                        count++;
-                    }
-                    if (!sourceIterator.hasNext()) {
-                        sourceExhausted.set(true);
-                    }
-                } // sourceLock released immediately.
-
-                if (keyBatch.isEmpty())
-                    return;
-
-                // --- PHASE 2: PARALLEL KEY MAPPING (Inside the refillLock) ---
-                // The refillLock ensures that although the mapping runs on parallel threads,
-                // only one batch is processed at a time, protecting the sharedKeyMap.
+                // --- PHASE 2: PARALLEL KEY MAPPING ---
                 keyBatch.parallelStream().forEach(key -> {
-                    // Read from the shared index map
                     final String file = sharedKeyMap.map.get(key);
                     if (file != null) {
-                        final var buffer = fileBuffers.get(file);
-                        if (buffer != null) {
-                            // Add key to the appropriate, thread-safe file buffer
-                            buffer.add(key);
-                        }
+                        fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
                     }
                 });
-            } // refillLock released here.
+            }
         };
 
-        // 3. Create Lazy Iterators that trigger the refill process when their buffers
-        // are empty.
+        // 3. Pre-fill buffers to see if we can optimize
+        refillBuffers.run();
+
+        // 4. Create Iterators
         final Map<String, Iterable<String>> fileGroups = new HashMap<>();
-        for (final String file : dbFiles) {
+        
+        // OPTIMIZATION: If source is exhausted after first refill, we know EXACTLY which files are needed.
+        // We can return ONLY the discovered files, avoiding iteration over empty files.
+        // This makes update() extremely fast.
+        final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
+
+        for (final String file : filesToIterate) {
             fileGroups.put(file, () -> new Iterator<>() {
                 @Override
                 public boolean hasNext() {
-                    final var buffer = fileBuffers.get(file);
-                    // While buffer is empty and we still have source data, try to refill
-                    while (buffer.isEmpty() && !sourceExhausted.get()) {
-                        // Refill is triggered concurrently by various threads accessing different file
-                        // iterators.
+                    var buffer = fileBuffers.get(file);
+                    // While buffer is missing or empty and we still have source data, try to refill
+                    while ((buffer == null || buffer.isEmpty()) && !sourceExhausted.get()) {
                         refillBuffers.run();
+                        buffer = fileBuffers.get(file); // Re-fetch buffer as it might have been created
                     }
-                    return !buffer.isEmpty();
+                    return buffer != null && !buffer.isEmpty();
                 }
 
                 @Override
                 public String next() {
                     if (!hasNext())
                         throw new NoSuchElementException();
+                    // hasNext() guarantees buffer exists and is not empty
                     return fileBuffers.get(file).poll();
                 }
             });
         }
 
-        // Return the grouped files and the AutoCloseable reference to clean up the
-        // shared index map.
         return new GroupedKeys(fileGroups, sharedKeyMap::close);
     }
 
@@ -996,7 +972,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.info("Querying key [{}] at [{}].", key, dataPath());
-        final var file = getDbFile(key, getDataFileState().fileNames());
+        final var file = getDbFile(key);
         if (file == null) {
             return null;
         }
@@ -1007,7 +983,7 @@ public interface ChronicleDao<V> {
     }
 
     private void processKeysByFile(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
@@ -1025,7 +1001,7 @@ public interface ChronicleDao<V> {
     }
 
     private void processKeysByFileUsing(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
@@ -1044,7 +1020,7 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFile(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             int count = 0;
             outer: for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
@@ -1067,7 +1043,7 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             int count = 0;
             outer: for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
@@ -1090,7 +1066,7 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFile(final Iterable<String> keys, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             int count = 0;
             outer: for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
@@ -1115,7 +1091,7 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             int count = 0;
             outer: for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
@@ -1516,7 +1492,7 @@ public interface ChronicleDao<V> {
 
         final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var file = getDbFile(key, getDataFileState().fileNames());
+            final var file = getDbFile(key);
             if (file == null) {
                 return false;
             }
@@ -1582,7 +1558,7 @@ public interface ChronicleDao<V> {
                 return true;
             }
 
-            try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+            try (final var grouped = getDbFiles(keys)) {
                 if (grouped.fileGroups().isEmpty()) {
                     return false;
                 }
@@ -1676,16 +1652,15 @@ public interface ChronicleDao<V> {
         var file = DATA_FILE;
         final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var dataFileState = getDataFileState();
-            file = getDbFile(key, dataFileState.fileNames());
+            file = getDbFile(key);
             if (file == null) {
-                file = dataFileState.currentFile();
+                file = getDataFileState().currentFile();
             }
 
             var shared = openDb(file); // no try with resource here for rotation
             // only rotate if current file is full and insert mode
             try {
-                if (dataFileState.currentFile().equals(file) && !shared.map.containsKey(key)) {
+                if (getDataFileState().currentFile().equals(file) && !shared.map.containsKey(key)) {
                     shared = checkAndRotate(shared);
                 }
                 prevValue = shared.map.put(key, value);
@@ -1737,7 +1712,7 @@ public interface ChronicleDao<V> {
 
         final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         synchronized (lock) {
-            final var file = getDbFile(key, getDataFileState().fileNames());
+            final var file = getDbFile(key);
             try (final var shared = openDb(file)) {
                 if (shared.map.containsKey(key)) {
                     status = PutStatus.UPDATED;
@@ -1833,7 +1808,7 @@ public interface ChronicleDao<V> {
                     }
                 }
             } else {
-                try (final var grouped = getDbFiles(keysToInsert, getDataFileState().fileNames())) {
+                try (final var grouped = getDbFiles(keysToInsert)) {
                     grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
                         final var file = entry.getKey();
                         try (final var shared = openDb(file)) {
@@ -1932,7 +1907,7 @@ public interface ChronicleDao<V> {
                 }
             } else {
                 // Multi-file
-                try (final var grouped = getDbFiles(map.keySet(), getDataFileState().fileNames())) {
+                try (final var grouped = getDbFiles(map.keySet())) {
                     grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
                         final var file = entry.getKey();
                         try (final var shared = openDb(file)) {
@@ -2073,7 +2048,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2143,7 +2118,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2212,7 +2187,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2282,7 +2257,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2347,7 +2322,7 @@ public interface ChronicleDao<V> {
             return;
         }
 
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
                 final var keysForFile = entry.getValue(); // Iterable<String>
@@ -2413,7 +2388,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2491,7 +2466,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2569,7 +2544,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2646,7 +2621,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2720,7 +2695,7 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger counter = new AtomicInteger(0);
-        try (final var grouped = getDbFiles(keys, getDataFileState().fileNames())) {
+        try (final var grouped = getDbFiles(keys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
                 final var keysForFile = entry.getValue(); // Iterable<String>
