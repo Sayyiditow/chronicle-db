@@ -591,34 +591,59 @@ public interface ChronicleDao<V> {
         };
     }
 
+    /**
+     * Groups a collection of keys by the database file they belong to, performing
+     * the key-to-file mapping
+     * lazily and concurrently via a buffered, staged approach.
+     *
+     * This method is thread-safe. It uses a custom {@code Iterator} structure that
+     * triggers batch key processing
+     * only when a consumer thread needs data, allowing the expensive index lookup
+     * to run in parallel
+     * with other file processing, but safely controlled by specialized locks.
+     *
+     * @param keys    The source collection of keys to be looked up and grouped.
+     * @param dbFiles The set of all possible data file names (destinations).
+     * @return A {@link GroupedKeys} record containing the file groups and an
+     *         {@link AutoCloseable} to close the shared index map.
+     */
     private GroupedKeys getDbFiles(final Iterable<String> keys, final Set<String> dbFiles) {
-        // 1. Open the map once
+        // 1. Open the Key-to-File Index Map once. This map is the critical shared
+        // resource.
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
         final Iterator<String> sourceIterator = keys.iterator();
 
-        // 2. Setup buffers using ConcurrentLinkedQueue (Thread-safe, non-blocking)
+        // 2. Setup thread-safe, non-blocking buffers to hold keys, organized by the
+        // file they belong to.
         final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new HashMap<>();
         for (final String file : dbFiles) {
             fileBuffers.put(file, new ConcurrentLinkedQueue<>());
         }
 
         final int BATCH_SIZE = 25_000;
+        // Atomic flag to signal when all keys have been read from the source iterator.
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
 
-        // Lock ONLY for accessing the source iterator
+        // Lock ONLY for accessing the source iterator (ensures atomic iteration).
         final Object sourceLock = new Object();
-        // Add a new lock for the index lookup process
+        // CRITICAL: Lock for the entire refill process (ensures sequential access to
+        // sharedKeyMap).
         final Object refillLock = new Object();
 
         final Runnable refillBuffers = () -> {
+            // Enforce sequential execution for the entire key fetching and mapping process
+            // to stabilize sharedKeyMap access.
             synchronized (refillLock) {
-                // 1. Fast Path Check (Avoids acquiring the lock if exhausted)
+
+                // 1. Fast Path Check (Avoids acquiring the iterator lock if exhausted)
                 if (sourceExhausted.get())
                     return;
 
                 final List<String> keyBatch = new ArrayList<>(BATCH_SIZE);
 
-                // --- PHASE 1: FAST FETCH (Synchronized - Critical Section) ---
+                // --- PHASE 1: KEY FETCH (Extremely Quick Critical Section) ---
+                // Acquiring the sourceLock ensures only one thread can advance the
+                // sourceIterator.
                 synchronized (sourceLock) {
                     // 2. Second Check (Safety re-check after acquiring the lock)
                     if (sourceExhausted.get())
@@ -632,29 +657,30 @@ public interface ChronicleDao<V> {
                     if (!sourceIterator.hasNext()) {
                         sourceExhausted.set(true);
                     }
-                } // <-- LOCK RELEASED HERE! (Crucial for performance)
+                } // sourceLock released immediately.
 
                 if (keyBatch.isEmpty())
                     return;
 
-                // --- PHASE 2: PARALLEL PROCESSING (Outside Lock - Maximum Speed) ---
-
-                // Step B: Parallel Processing (Now runs concurrently with other threads)
-                // Direct insertion into concurrent queues - avoids Map.entry NPE and
-                // intermediate allocations
+                // --- PHASE 2: PARALLEL KEY MAPPING (Inside the refillLock) ---
+                // The refillLock ensures that although the mapping runs on parallel threads,
+                // only one batch is processed at a time, protecting the sharedKeyMap.
                 keyBatch.parallelStream().forEach(key -> {
+                    // Read from the shared index map
                     final String file = sharedKeyMap.map.get(key);
                     if (file != null) {
                         final var buffer = fileBuffers.get(file);
                         if (buffer != null) {
+                            // Add key to the appropriate, thread-safe file buffer
                             buffer.add(key);
                         }
                     }
                 });
-            }
+            } // refillLock released here.
         };
 
-        // 3. Create Iterators
+        // 3. Create Lazy Iterators that trigger the refill process when their buffers
+        // are empty.
         final Map<String, Iterable<String>> fileGroups = new HashMap<>();
         for (final String file : dbFiles) {
             fileGroups.put(file, () -> new Iterator<>() {
@@ -663,6 +689,8 @@ public interface ChronicleDao<V> {
                     final var buffer = fileBuffers.get(file);
                     // While buffer is empty and we still have source data, try to refill
                     while (buffer.isEmpty() && !sourceExhausted.get()) {
+                        // Refill is triggered concurrently by various threads accessing different file
+                        // iterators.
                         refillBuffers.run();
                     }
                     return !buffer.isEmpty();
@@ -677,6 +705,8 @@ public interface ChronicleDao<V> {
             });
         }
 
+        // Return the grouped files and the AutoCloseable reference to clean up the
+        // shared index map.
         return new GroupedKeys(fileGroups, sharedKeyMap::close);
     }
 
