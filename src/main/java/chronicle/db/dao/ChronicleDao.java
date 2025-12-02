@@ -616,7 +616,7 @@ public interface ChronicleDao<V> {
         // 2. Setup dynamic, thread-safe buffers.
         final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
 
-        final int BATCH_SIZE = 25_000;
+        final int batchSize = 25_000;
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
 
         // CRITICAL: Lock for the entire refill process.
@@ -627,11 +627,11 @@ public interface ChronicleDao<V> {
                 if (sourceExhausted.get())
                     return;
 
-                final List<String> keyBatch = new ArrayList<>(BATCH_SIZE);
+                final List<String> keyBatch = new ArrayList<>(batchSize);
 
                 // --- PHASE 1: KEY FETCH ---
                 int count = 0;
-                while (sourceIterator.hasNext() && count < BATCH_SIZE) {
+                while (sourceIterator.hasNext() && count < batchSize) {
                     keyBatch.add(sourceIterator.next());
                     count++;
                 }
@@ -654,8 +654,185 @@ public interface ChronicleDao<V> {
 
         // 4. Create Iterators
         final Map<String, Iterable<String>> fileGroups = new HashMap<>();
-        
-        // OPTIMIZATION: If source is exhausted after first refill, we know EXACTLY which files are needed.
+
+        // OPTIMIZATION: If source is exhausted after first refill, we know EXACTLY
+        // which files are needed.
+        // We can return ONLY the discovered files, avoiding iteration over empty files.
+        // This makes update() extremely fast.
+        final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
+
+        for (final String file : filesToIterate) {
+            fileGroups.put(file, () -> new Iterator<>() {
+                @Override
+                public boolean hasNext() {
+                    var buffer = fileBuffers.get(file);
+                    // While buffer is missing or empty and we still have source data, try to refill
+                    while ((buffer == null || buffer.isEmpty()) && !sourceExhausted.get()) {
+                        refillBuffers.run();
+                        buffer = fileBuffers.get(file); // Re-fetch buffer as it might have been created
+                    }
+                    return buffer != null && !buffer.isEmpty();
+                }
+
+                @Override
+                public String next() {
+                    if (!hasNext())
+                        throw new NoSuchElementException();
+                    // hasNext() guarantees buffer exists and is not empty
+                    return fileBuffers.get(file).poll();
+                }
+            });
+        }
+
+        return new GroupedKeys(fileGroups, sharedKeyMap::close);
+    }
+
+    private GroupedKeys getDbFiles(final Iterable<String> keys, final int limit) {
+        // 1. Open the Key-to-File Index Map once.
+        final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
+        final Iterator<String> sourceIterator = keys.iterator();
+        final var dbFiles = getDataFileState().fileNames();
+
+        // 2. Setup dynamic, thread-safe buffers.
+        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
+
+        final int standardBatchSize = 25_000;
+        final AtomicInteger totalFilled = new AtomicInteger();
+        final AtomicInteger dynamicBatchSize = new AtomicInteger(Math.min(limit, standardBatchSize));
+        final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
+
+        // CRITICAL: Lock for the entire refill process.
+        final Object refillLock = new Object();
+
+        final Runnable refillBuffers = () -> {
+            synchronized (refillLock) {
+                if (sourceExhausted.get())
+                    return;
+
+                final var batchSize = dynamicBatchSize.get();
+                final List<String> keyBatch = new ArrayList<>(batchSize);
+
+                // --- PHASE 1: KEY FETCH ---
+                int count = 0;
+                while (sourceIterator.hasNext() && count < batchSize) {
+                    keyBatch.add(sourceIterator.next());
+                    count++;
+                }
+
+                if (!sourceIterator.hasNext()) {
+                    sourceExhausted.set(true);
+                }
+
+                // --- PHASE 2: PARALLEL KEY MAPPING ---
+                keyBatch.parallelStream().forEach(key -> {
+                    final String file = sharedKeyMap.map.get(key);
+                    if (file != null) {
+                        totalFilled.incrementAndGet();
+                        fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
+                    }
+                });
+
+                final int remainingToFetch = limit - totalFilled.get();
+                if (remainingToFetch > 0) {
+                    dynamicBatchSize.set(Math.min(remainingToFetch, standardBatchSize));
+                }
+            }
+        };
+
+        // 3. Pre-fill buffers to see if we can optimize
+        refillBuffers.run();
+
+        // 4. Create Iterators
+        final Map<String, Iterable<String>> fileGroups = new HashMap<>();
+
+        // OPTIMIZATION: If source is exhausted after first refill, we know EXACTLY
+        // which files are needed.
+        // We can return ONLY the discovered files, avoiding iteration over empty files.
+        // This makes update() extremely fast.
+        final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
+
+        for (final String file : filesToIterate) {
+            fileGroups.put(file, () -> new Iterator<>() {
+                @Override
+                public boolean hasNext() {
+                    var buffer = fileBuffers.get(file);
+                    // While buffer is missing or empty and we still have source data, try to refill
+                    while ((buffer == null || buffer.isEmpty()) && !sourceExhausted.get()) {
+                        refillBuffers.run();
+                        buffer = fileBuffers.get(file); // Re-fetch buffer as it might have been created
+                    }
+                    return buffer != null && !buffer.isEmpty();
+                }
+
+                @Override
+                public String next() {
+                    if (!hasNext())
+                        throw new NoSuchElementException();
+                    // hasNext() guarantees buffer exists and is not empty
+                    return fileBuffers.get(file).poll();
+                }
+            });
+        }
+
+        return new GroupedKeys(fileGroups, sharedKeyMap::close);
+    }
+
+    private GroupedKeys getDbFiles(final Iterable<String> keys, final int limit, final Set<String> excludedKeys) {
+        // 1. Open the Key-to-File Index Map once.
+        final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
+        final Iterator<String> sourceIterator = keys.iterator();
+        final var dbFiles = getDataFileState().fileNames();
+
+        // 2. Setup dynamic, thread-safe buffers.
+        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
+
+        final AtomicInteger totalLeft = new AtomicInteger(limit);
+        final int batchSize = Math.min(limit, 25_000);
+        final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
+
+        // CRITICAL: Lock for the entire refill process.
+        final Object refillLock = new Object();
+
+        final Runnable refillBuffers = () -> {
+            synchronized (refillLock) {
+                if (sourceExhausted.get())
+                    return;
+
+                final List<String> keyBatch = new ArrayList<>(batchSize);
+
+                // --- PHASE 1: KEY FETCH ---
+                int count = 0;
+                while (sourceIterator.hasNext() && count < batchSize && totalLeft.get() > 0) {
+                    final var key = sourceIterator.next();
+                    if (!excludedKeys.contains(key)) {
+                        keyBatch.add(key);
+                        count++;
+                    }
+                }
+
+                if (!sourceIterator.hasNext() || totalLeft.get() <= 0) {
+                    sourceExhausted.set(true);
+                }
+
+                // --- PHASE 2: PARALLEL KEY MAPPING ---
+                keyBatch.parallelStream().filter(key -> totalLeft.get() > 0).forEach(key -> {
+                    final String file = sharedKeyMap.map.get(key);
+                    if (file != null) {
+                        if (totalLeft.getAndDecrement() > 0)
+                            fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
+                    }
+                });
+            }
+        };
+
+        // 3. Pre-fill buffers to see if we can optimize
+        refillBuffers.run();
+
+        // 4. Create Iterators
+        final Map<String, Iterable<String>> fileGroups = new HashMap<>();
+
+        // OPTIMIZATION: If source is exhausted after first refill, we know EXACTLY
+        // which files are needed.
         // We can return ONLY the discovered files, avoiding iteration over empty files.
         // This makes update() extremely fast.
         final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
@@ -1020,22 +1197,18 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFile(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys)) {
-            int count = 0;
-            outer: for (final var entry : grouped.fileGroups().entrySet()) {
+        try (final var grouped = getDbFiles(keys, limit)) {
+            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
                         final var value = shared.map.get(key);
                         if (value != null) {
                             valueConsumer.accept(key, value);
-                            if (++count >= limit) {
-                                break outer;
-                            }
                         }
                     }
                 }
-            }
+            });
         } catch (final Exception e) {
             throw new RuntimeException(e);
         }
@@ -1043,22 +1216,18 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys)) {
-            int count = 0;
-            outer: for (final var entry : grouped.fileGroups().entrySet()) {
+        try (final var grouped = getDbFiles(keys, limit)) {
+            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
                         final var value = shared.map.getUsing(key, using());
                         if (value != null) {
                             valueConsumer.accept(key, value);
-                            if (++count >= limit) {
-                                break outer;
-                            }
                         }
                     }
                 }
-            }
+            });
         } catch (final Exception e) {
             throw new RuntimeException(e);
         }
@@ -1066,24 +1235,18 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFile(final Iterable<String> keys, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys)) {
-            int count = 0;
-            outer: for (final var entry : grouped.fileGroups().entrySet()) {
+        try (final var grouped = getDbFiles(keys, limit, excludedKeys)) {
+            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
-                        if (!excludedKeys.contains(key)) {
-                            final var value = shared.map.get(key);
-                            if (value != null) {
-                                valueConsumer.accept(key, value);
-                                if (++count >= limit) {
-                                    break outer;
-                                }
-                            }
+                        final var value = shared.map.get(key);
+                        if (value != null) {
+                            valueConsumer.accept(key, value);
                         }
                     }
                 }
-            }
+            });
         } catch (final Exception e) {
             throw new RuntimeException(e);
         }
@@ -1091,24 +1254,18 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys)) {
-            int count = 0;
-            outer: for (final var entry : grouped.fileGroups().entrySet()) {
+        try (final var grouped = getDbFiles(keys, limit, excludedKeys)) {
+            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
-                        if (!excludedKeys.contains(key)) {
-                            final var value = shared.map.getUsing(key, using());
-                            if (value != null) {
-                                valueConsumer.accept(key, value);
-                                if (++count >= limit) {
-                                    break outer;
-                                }
-                            }
+                        final var value = shared.map.getUsing(key, using());
+                        if (value != null) {
+                            valueConsumer.accept(key, value);
                         }
                     }
                 }
-            }
+            });
         } catch (final Exception e) {
             throw new RuntimeException(e);
         }
