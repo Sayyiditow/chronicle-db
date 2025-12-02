@@ -735,6 +735,8 @@ public interface ChronicleDao<V> {
                 final int remainingToFetch = limit - totalFilled.get();
                 if (remainingToFetch > 0) {
                     dynamicBatchSize.set(Math.min(remainingToFetch, standardBatchSize));
+                } else {
+                    sourceExhausted.set(true);
                 }
             }
         };
