@@ -607,47 +607,51 @@ public interface ChronicleDao<V> {
 
         // Lock ONLY for accessing the source iterator
         final Object sourceLock = new Object();
+        // Add a new lock for the index lookup process
+        final Object refillLock = new Object();
 
         final Runnable refillBuffers = () -> {
-            // 1. Fast Path Check (Avoids acquiring the lock if exhausted)
-            if (sourceExhausted.get())
-                return;
-
-            final List<String> keyBatch = new ArrayList<>(BATCH_SIZE);
-
-            // --- PHASE 1: FAST FETCH (Synchronized - Critical Section) ---
-            synchronized (sourceLock) {
-                // 2. Second Check (Safety re-check after acquiring the lock)
+            synchronized (refillLock) {
+                // 1. Fast Path Check (Avoids acquiring the lock if exhausted)
                 if (sourceExhausted.get())
                     return;
 
-                int count = 0;
-                while (sourceIterator.hasNext() && count < BATCH_SIZE) {
-                    keyBatch.add(sourceIterator.next());
-                    count++;
-                }
-                if (!sourceIterator.hasNext()) {
-                    sourceExhausted.set(true);
-                }
-            } // <-- LOCK RELEASED HERE! (Crucial for performance)
+                final List<String> keyBatch = new ArrayList<>(BATCH_SIZE);
 
-            if (keyBatch.isEmpty())
-                return;
+                // --- PHASE 1: FAST FETCH (Synchronized - Critical Section) ---
+                synchronized (sourceLock) {
+                    // 2. Second Check (Safety re-check after acquiring the lock)
+                    if (sourceExhausted.get())
+                        return;
 
-            // --- PHASE 2: PARALLEL PROCESSING (Outside Lock - Maximum Speed) ---
-
-            // Step B: Parallel Processing (Now runs concurrently with other threads)
-            // Direct insertion into concurrent queues - avoids Map.entry NPE and
-            // intermediate allocations
-            keyBatch.parallelStream().forEach(key -> {
-                final String file = sharedKeyMap.map.get(key);
-                if (file != null) {
-                    final var buffer = fileBuffers.get(file);
-                    if (buffer != null) {
-                        buffer.add(key);
+                    int count = 0;
+                    while (sourceIterator.hasNext() && count < BATCH_SIZE) {
+                        keyBatch.add(sourceIterator.next());
+                        count++;
                     }
-                }
-            });
+                    if (!sourceIterator.hasNext()) {
+                        sourceExhausted.set(true);
+                    }
+                } // <-- LOCK RELEASED HERE! (Crucial for performance)
+
+                if (keyBatch.isEmpty())
+                    return;
+
+                // --- PHASE 2: PARALLEL PROCESSING (Outside Lock - Maximum Speed) ---
+
+                // Step B: Parallel Processing (Now runs concurrently with other threads)
+                // Direct insertion into concurrent queues - avoids Map.entry NPE and
+                // intermediate allocations
+                keyBatch.parallelStream().forEach(key -> {
+                    final String file = sharedKeyMap.map.get(key);
+                    if (file != null) {
+                        final var buffer = fileBuffers.get(file);
+                        if (buffer != null) {
+                            buffer.add(key);
+                        }
+                    }
+                });
+            }
         };
 
         // 3. Create Iterators
