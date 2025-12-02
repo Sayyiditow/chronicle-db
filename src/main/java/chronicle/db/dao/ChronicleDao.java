@@ -635,9 +635,10 @@ public interface ChronicleDao<V> {
                 return;
 
             // --- PHASE 2: PARALLEL PROCESSING (Outside Lock - Maximum Speed) ---
-            
+
             // Step B: Parallel Processing (Now runs concurrently with other threads)
-            // Direct insertion into concurrent queues - avoids Map.entry NPE and intermediate allocations
+            // Direct insertion into concurrent queues - avoids Map.entry NPE and
+            // intermediate allocations
             keyBatch.parallelStream().forEach(key -> {
                 final String file = sharedKeyMap.map.get(key);
                 if (file != null) {
@@ -1922,7 +1923,7 @@ public interface ChronicleDao<V> {
                 mapKeySet.removeAll(prevValues.keySet());
                 final var extraSize = mapKeySet.size();
 
-                Logger.error("{} extra keys found during update at [{}]. New keys: [{}].", extraSize, dataPath(),
+                Logger.error("{} extra keys found during update at [{}]. New keys: {}.", extraSize, dataPath(),
                         mapKeySet);
                 status = PutStatus.PARTIAL;
             }
