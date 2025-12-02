@@ -1913,7 +1913,7 @@ public interface ChronicleDao<V> {
 
             final var prevValueSize = prevValues.size();
             if (prevValueSize == 0) {
-                Logger.error("All [{}] values given do not exist during update at [{}", mapSize, dataPath());
+                Logger.error("All [{}] values given do not exist during update at [{}]", mapSize, dataPath());
                 return PutStatus.FAILED;
             }
 
