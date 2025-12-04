@@ -3372,7 +3372,8 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, V> searchMatchingKeys(final Set<String> matchingKeys, final Search search) throws Throwable {
+    default Map<String, V> searchMatchingKeys(final Collection<String> matchingKeys, final Search search)
+            throws Throwable {
         if (matchingKeys == null || matchingKeys.isEmpty()) {
             return Collections.emptyMap();
         }
@@ -4193,27 +4194,29 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, V> multiSearch(final Set<String> matchingKeys, final List<Search> searches) throws Throwable {
+    default Map<String, V> multiSearch(final Collection<String> matchingKeys, final List<Search> searches)
+            throws Throwable {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         return search(matchingKeys, searches, limit);
     }
 
-    default CsvObject multiSearchCsv(final Set<String> matchingKeys, final List<Search> searches) throws Throwable {
+    default CsvObject multiSearchCsv(final Collection<String> matchingKeys, final List<Search> searches)
+            throws Throwable {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         return searchCsv(matchingKeys, searches, limit);
     }
 
-    default Map<String, Map<String, Object>> multiSearchSubset(final Set<String> matchingKeys,
+    default Map<String, Map<String, Object>> multiSearchSubset(final Collection<String> matchingKeys,
             final List<Search> searches, final String[] fields) throws Throwable {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         return searchSubset(matchingKeys, searches, fields, limit);
     }
 
-    default CsvObject multiSearchSubsetCsv(final Set<String> matchingKeys,
-            final List<Search> searches, final String[] fields) throws Throwable {
+    default CsvObject multiSearchSubsetCsv(final Collection<String> matchingKeys, final List<Search> searches,
+            final String[] fields) throws Throwable {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
 
         return searchSubsetCsv(matchingKeys, searches, fields, limit);
