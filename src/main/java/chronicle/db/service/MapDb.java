@@ -172,11 +172,22 @@ public final class MapDb {
         public void close() {
             treeCache.computeIfPresent(filePath, (k, entry) -> {
                 if (entry.refCount.decrementAndGet() == 0) {
+                    entry.db.commit();
                     entry.db.close();
                     return null;
                 }
                 return entry; // Keep the entry
             });
+        }
+
+        /**
+         * Commits pending changes to the index.
+         * <p>
+         * Call this after adding or removing entries to persist changes to disk.
+         * </p>
+         */
+        public void commit() {
+            this.db.commit();
         }
     }
 
@@ -275,6 +286,7 @@ public final class MapDb {
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable()
+                        .transactionEnable()
                         .make();
                 final var tree = db.treeSet("index")
                         .serializer(Serializer.BYTE_ARRAY)
