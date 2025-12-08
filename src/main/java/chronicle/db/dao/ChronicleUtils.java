@@ -578,7 +578,6 @@ public final class ChronicleUtils {
                                 batch.parallelStream().forEach(add -> {
                                     safeIndexAdd(sharedIndexMap, add, indexPath);
                                 });
-                                sharedIndexMap.commit();
                                 batch.clear();
                             }
                         });
@@ -599,7 +598,6 @@ public final class ChronicleUtils {
                     batch.parallelStream().forEach(add -> {
                         safeIndexAdd(sharedIndexMap, add, indexPath);
                     });
-                    sharedIndexMap.commit();
                 }
             });
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
@@ -682,7 +680,6 @@ public final class ChronicleUtils {
                 });
 
                 if (!failed.get() && recordCount.get() != 0) {
-                    sharedIndexMap.commit();
                     Logger.info("Removed [{}] records from index at [{}]", recordCount.get(), indexPath);
                 }
             });
@@ -814,7 +811,6 @@ public final class ChronicleUtils {
                 });
 
                 if (!failed.get() && recordCount.get() != 0) {
-                    sharedIndexMap.commit();
                     Logger.info("Updated [{}] records for index: [{}]", recordCount.get(), indexName);
                 }
             });
