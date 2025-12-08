@@ -30,12 +30,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-import org.mapdb.DBException;
 import org.tinylog.Logger;
 
 import chronicle.db.entity.Search;
@@ -358,28 +356,6 @@ public final class ChronicleUtils {
         };
     }
 
-    /**
-     * Safely adds an entry to a shared index, handling potential corruption by
-     * resetting the index.
-     *
-     * @param sharedIndexMap The shared index map.
-     * @param add            The byte array to add.
-     * @param indexPath      The path to the index file (for recovery).
-     * @return true if successful, false if the index was corrupted and reset.
-     */
-    private boolean safeIndexAdd(final SharedIndexMap sharedIndexMap, final byte[] add, final String indexPath) {
-        try {
-            sharedIndexMap.index.add(add);
-            return true;
-        } catch (final DBException.PointerChecksumBroken e) {
-            Logger.warn("PointerChecksumBroken on index {} at [{}] when adding. Refreshing.",
-                    Arrays.toString(MAP_DB.extractIndexValueAndKey(add)), indexPath);
-            MAP_DB.closeIndex(indexPath);
-            deleteFileIfExists(indexPath);
-            return false;
-        }
-    }
-
     private void appendValue(final StringBuilder sb, final Object objVal) {
         if (objVal instanceof final String s) {
             sb.append(s);
@@ -451,28 +427,6 @@ public final class ChronicleUtils {
             }
         }
         return false;
-    }
-
-    /**
-     * Safely removes an entry from a shared index, handling potential corruption by
-     * resetting the index.
-     *
-     * @param sharedIndexMap The shared index map.
-     * @param remove         The byte array to remove.
-     * @param indexPath      The path to the index file (for recovery).
-     * @return true if successful, false if the index was corrupted and reset.
-     */
-    private boolean safeIndexRemove(final SharedIndexMap sharedIndexMap, final byte[] remove, final String indexPath) {
-        try {
-            sharedIndexMap.index.remove(remove);
-            return true;
-        } catch (final DBException.PointerChecksumBroken e) {
-            Logger.warn("PointerChecksumBroken on index {} at [{}] when removing. Refreshing.",
-                    Arrays.toString(MAP_DB.extractIndexValueAndKey(remove)), indexPath);
-            MAP_DB.closeIndex(indexPath);
-            deleteFileIfExists(indexPath);
-            return false;
-        }
     }
 
     /**
@@ -575,10 +529,7 @@ public final class ChronicleUtils {
                             if (!batch.isEmpty()) {
                                 final var indexPath = indexDirPath + field;
                                 final var sharedIndexMap = openIndexes.get(indexPath);
-                                batch.parallelStream().forEach(add -> {
-                                    safeIndexAdd(sharedIndexMap, add, indexPath);
-                                });
-                                sharedIndexMap.commit();
+                                sharedIndexMap.index.addAll(batch);
                                 batch.clear();
                             }
                         });
@@ -596,10 +547,7 @@ public final class ChronicleUtils {
                 if (!batch.isEmpty()) {
                     final var indexPath = indexDirPath + field;
                     final var sharedIndexMap = openIndexes.get(indexPath);
-                    batch.parallelStream().forEach(add -> {
-                        safeIndexAdd(sharedIndexMap, add, indexPath);
-                    });
-                    sharedIndexMap.commit();
+                    sharedIndexMap.index.addAll(batch);
                 }
             });
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
@@ -655,14 +603,9 @@ public final class ChronicleUtils {
                 final var sharedIndexMap = openIndexes.get(indexPath);
 
                 final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
-                final var failed = new AtomicBoolean(false);
                 final var recordCount = new AtomicInteger();
 
                 values.entrySet().parallelStream().forEach(e -> {
-                    if (failed.get()) {
-                        return; // Exit early if already failed
-                    }
-
                     final var key = e.getKey();
                     final V value = e.getValue();
 
@@ -673,16 +616,11 @@ public final class ChronicleUtils {
                         appendValue(sb, objVal);
                     }
 
-                    if (!safeIndexRemove(sharedIndexMap, MAP_DB.createIndexKey(sb.toString(), key.toString()),
-                            indexPath)) {
-                        failed.set(true);
-                        return;
-                    }
+                    sharedIndexMap.index.remove(MAP_DB.createIndexKey(sb.toString(), key.toString()));
                     recordCount.incrementAndGet();
                 });
 
-                if (!failed.get() && recordCount.get() != 0) {
-                    sharedIndexMap.commit();
+                if (recordCount.get() != 0) {
                     Logger.info("Removed [{}] records from index at [{}]", recordCount.get(), indexPath);
                 }
             });
@@ -746,13 +684,8 @@ public final class ChronicleUtils {
 
                 final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
                 final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
-                final var failed = new AtomicBoolean(false);
 
                 values.entrySet().parallelStream().forEach(valEntry -> {
-                    if (failed.get()) {
-                        return; // Exit early if already failed
-                    }
-
                     final var key = valEntry.getKey();
                     final V newVal = valEntry.getValue();
                     final V prevVal = previousValues.get(key);
@@ -785,36 +718,23 @@ public final class ChronicleUtils {
 
                         if (!Objects.equals(oldValStr, newValStr)) {
                             // Always remove if changed (regardless of exclusion)
-                            if (!safeIndexRemove(sharedIndexMap, MAP_DB.createIndexKey(oldValStr, key.toString()),
-                                    indexPath)) {
-                                failed.set(true);
-                                return;
-                            }
+                            sharedIndexMap.index.remove(MAP_DB.createIndexKey(oldValStr, key.toString()));
                             // Add new value only if not excluded and not empty
                             if (!skipAdd) {
-                                if (!safeIndexAdd(sharedIndexMap, MAP_DB.createIndexKey(newValStr, key.toString()),
-                                        indexPath)) {
-                                    failed.set(true);
-                                    return;
-                                }
+                                sharedIndexMap.index.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                             }
                             recordCount.incrementAndGet();
                         }
                     } else {
                         // Add new value only if not excluded
                         if (!skipAdd) {
-                            if (!safeIndexAdd(sharedIndexMap, MAP_DB.createIndexKey(newValStr, key.toString()),
-                                    indexPath)) {
-                                failed.set(true);
-                                return;
-                            }
+                            sharedIndexMap.index.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                             recordCount.incrementAndGet();
                         }
                     }
                 });
 
-                if (!failed.get() && recordCount.get() != 0) {
-                    sharedIndexMap.commit();
+                if (recordCount.get() != 0) {
                     Logger.info("Updated [{}] records for index: [{}]", recordCount.get(), indexName);
                 }
             });
