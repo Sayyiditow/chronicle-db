@@ -2448,7 +2448,7 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
-    default void searchKeys(final Iterable<String> keys, final List<Search> filters, final Collection<String> results)
+    private void searchKeys(final Iterable<String> keys, final List<Search> filters, final Collection<String> results)
             throws Throwable {
         if (keys == null || !keys.iterator().hasNext()) {
             return;
@@ -3465,6 +3465,18 @@ public interface ChronicleDao<V> {
         return new ArrayList<>(result);
     }
 
+    default Set<String> searchKeys(final Iterable<String> keys, final List<Search> filters) throws Throwable {
+        final var results = ConcurrentHashMap.<String>newKeySet();
+        searchKeys(keys, filters, results);
+        return new HashSet<>(results);
+    }
+
+    default List<String> searchKeysList(final Iterable<String> keys, final List<Search> filters) throws Throwable {
+        final var results = new ConcurrentLinkedQueue<String>();
+        searchKeys(keys, filters, results);
+        return new ArrayList<>(results);
+    }
+
     default Map<String, Map<String, Object>> multiSearchSubset(final List<Search> searches,
             final String[] fields) throws Throwable {
         if (searches == null || searches.isEmpty()) {
@@ -3818,9 +3830,7 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 return searchKeys(searches);
             } else {
-                final var results = ConcurrentHashMap.<String>newKeySet();
-                searchKeys(searchResult.results(), remainingSearches, results);
-                return results;
+                return searchKeys(searchResult.results(), remainingSearches);
             }
         } finally {
             if (sharedIndexMap != null) {
@@ -3875,9 +3885,7 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 return searchKeysList(searches);
             } else {
-                final var results = new ConcurrentLinkedQueue<String>();
-                searchKeys(searchResult.results(), remainingSearches, results);
-                return new ArrayList<>(results);
+                return searchKeysList(searchResult.results(), remainingSearches);
             }
         } finally {
             if (sharedIndexMap != null) {
