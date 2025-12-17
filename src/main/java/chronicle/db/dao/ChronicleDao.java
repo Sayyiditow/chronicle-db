@@ -3372,7 +3372,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, V> searchMatchingKeys(final Collection<String> matchingKeys, final Search search)
+    default Map<String, V> searchMatching(final Collection<String> matchingKeys, final Search search)
             throws Throwable {
         if (matchingKeys == null || matchingKeys.isEmpty()) {
             return Collections.emptyMap();
