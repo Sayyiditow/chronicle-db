@@ -941,17 +941,30 @@ public interface ChronicleDao<V> {
         return containsList;
     }
 
-    private List<String> getKeyMapNotExistsList(final Collection<String> keys) {
-        final var containsList = new ArrayList<String>(keys.size());
+    private Set<String> getKeyMapNotExists(final Collection<String> keys) {
+        final var notContainsSet = new HashSet<String>(keys.size());
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             for (final String k : keys) {
                 if (!sharedKeyMap.map.containsKey(k)) {
-                    containsList.add(k);
+                    notContainsSet.add(k);
                 }
             }
         }
 
-        return containsList;
+        return notContainsSet;
+    }
+
+    private List<String> getKeyMapNotExistsList(final Collection<String> keys) {
+        final var notContainsList = new ArrayList<String>(keys.size());
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            for (final String k : keys) {
+                if (!sharedKeyMap.map.containsKey(k)) {
+                    notContainsList.add(k);
+                }
+            }
+        }
+
+        return notContainsList;
     }
 
     default void resizeDb(final String fileName, final long newSize) throws IOException {
@@ -4330,7 +4343,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    default Map<String, Boolean> existsMultiple(final Collection<String> keys) {
+    default Map<String, Boolean> exists(final Collection<String> keys) {
         Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
 
         if (getDataFileState().fileNames().size() > 1) {
@@ -4375,6 +4388,32 @@ public interface ChronicleDao<V> {
         }
 
         return list;
+    }
+
+    /**
+     * Returns only the keys that dont exist
+     */
+    default Set<String> notExists(final Collection<String> keys) {
+        Logger.info("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
+
+        if (getDataFileState().fileNames().size() > 1) {
+            return getKeyMapNotExists(keys);
+        }
+
+        final var set = new HashSet<String>(keys.size());
+        try (var shared = openDb()) {
+            if (shared.map.size() == 0) {
+                return new HashSet<>(keys);
+            }
+
+            for (final var key : keys) {
+                if (!shared.map.containsKey(key)) {
+                    set.add(key);
+                }
+            }
+        }
+
+        return set;
     }
 
     /**
