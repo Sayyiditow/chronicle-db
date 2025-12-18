@@ -4390,7 +4390,7 @@ public interface ChronicleDao<V> {
         final var list = new ArrayList<String>(keys.size());
         try (var shared = openDb()) {
             if (shared.map.size() == 0) {
-                return list;
+                return new ArrayList<>(keys);
             }
 
             for (final var key : keys) {
