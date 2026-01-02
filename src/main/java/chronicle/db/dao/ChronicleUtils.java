@@ -735,7 +735,7 @@ public final class ChronicleUtils {
                 });
 
                 if (recordCount.get() != 0) {
-                    Logger.info("Updated [{}] records for index: [{}]", recordCount.get(), indexName);
+                    Logger.info("Updated [{}] indexes at [{}]", recordCount.get(), indexPath);
                 }
             });
         } finally {
