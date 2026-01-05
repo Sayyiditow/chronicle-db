@@ -130,8 +130,7 @@ import net.openhft.chronicle.map.ChronicleMap;
  * 
  * <p>
  * <b>Thread Safety:</b> All operations are thread-safe. Write operations use
- * synchronized
- * locks per data path to prevent conflicts during file rotation and index
+ * reentrant locks per data path to prevent conflicts during file rotation and index
  * updates.
  * </p>
  * 
@@ -993,6 +992,22 @@ public interface ChronicleDao<V> {
         }, "Resize DB - " + dataPath() + fileName));
     }
 
+    /**
+     * Reclaims disk space by consolidating multiple data files into a single file.
+     * <p>
+     * This operation backs up all existing data files, deletes them, and re-inserts
+     * all records from the backup. This eliminates fragmentation and removes deleted
+     * record space.
+     * </p>
+     * <p>
+     * <b>Thread Safety:</b> This method acquires a write lock on the entire database.
+     * Note that {@code insert()} is called within the locked section, which will
+     * re-acquire the same lock (reentrant behavior). This is safe because ReentrantLock
+     * allows the same thread to acquire a lock it already holds.
+     * </p>
+     *
+     * @throws IOException If backup, deletion, or re-insertion fails
+     */
     default void vacuum() throws IOException {
         // backup all files then read from these files and insert afresh
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1008,6 +1023,8 @@ public interface ChronicleDao<V> {
             CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
             DATA_FILE_CACHE.remove(dataPath());
 
+            // Re-insert all records from backup files
+            // Note: insert() will re-acquire the same lock (reentrant lock behavior)
             for (final String file : CHRONICLE_UTILS.getFileList(dataPath() + BACKUP_DIR)) {
                 try (final var shared = openDb(BACKUP_DIR, file)) {
                     insert(shared.map);
