@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -170,7 +171,7 @@ public interface ChronicleDao<V> {
         }
     }
 
-    ConcurrentMap<String, Object> WRITE_LOCKS = new ConcurrentHashMap<>();
+    ConcurrentMap<String, ReentrantLock> WRITE_LOCKS = new ConcurrentHashMap<>();
     ConcurrentMap<String, DataFileState> DATA_FILE_CACHE = new ConcurrentHashMap<>();
     ConcurrentMap<String, String> KEY_MAP_PATH_CACHE = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
@@ -336,8 +337,7 @@ public interface ChronicleDao<V> {
     }
 
     default void rebuildKeyMap() {
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
             final var dataFileState = getDataFileState();
             if (dataFileState.fileNames().size() > 1) {
@@ -345,7 +345,7 @@ public interface ChronicleDao<V> {
                     populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
                 }
             }
-        }
+        });
     }
 
     /**
@@ -366,8 +366,7 @@ public interface ChronicleDao<V> {
             }
         }
 
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             final var dataFileState = getDataFileState();
             if (dataFileState.fileNames().size() > 1 && !Files.exists(Path.of(getKeyMapPath()))) {
                 Logger.info("Populating KeyMap at [{}]", dataPath());
@@ -377,7 +376,7 @@ public interface ChronicleDao<V> {
                     }
                 }
             }
-        }
+        });
     }
 
     /**
@@ -487,8 +486,7 @@ public interface ChronicleDao<V> {
     default void refreshIndexes() {
         final var indexFiles = indexFileNames();
         if (!indexFiles.isEmpty()) {
-            final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-            synchronized (lock) {
+            CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
                 Logger.info("Re-initializing indexes at [{}].", dataPath());
                 for (final String field : indexFiles) {
                     final var indexPath = getIndexPath(field);
@@ -496,13 +494,12 @@ public interface ChronicleDao<V> {
                     CHRONICLE_UTILS.deleteFileIfExists(indexPath);
                 }
                 initIndex(indexFiles);
-            }
+            });
         }
     }
 
     default void refreshKeyMap() {
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             final var dataFileState = getDataFileState();
             if (dataFileState.fileNames().size() > 1) {
                 Logger.info("Refreshing KeyMap at [{}]", dataPath());
@@ -513,7 +510,7 @@ public interface ChronicleDao<V> {
                     populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
                 }
             }
-        }
+        });
     }
 
     default List<String> availableIndexes() throws IOException {
@@ -528,9 +525,7 @@ public interface ChronicleDao<V> {
      */
     default void initDefaultIndexes() throws IOException {
         if (!getDataFileState().fileNames().isEmpty()) {
-            final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-
-            synchronized (lock) {
+            CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
                 final var availableIndexes = availableIndexes();
                 final var indexFileNames = indexFileNames();
                 if (availableIndexes.size() != indexFileNames.size()) {
@@ -542,7 +537,7 @@ public interface ChronicleDao<V> {
                         initIndex(missingIndexes);
                     }
                 }
-            }
+            }, "Init Indexes - " + dataPath()));
         }
     }
 
@@ -968,8 +963,7 @@ public interface ChronicleDao<V> {
     }
 
     default void resizeDb(final String fileName, final long newSize) throws IOException {
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
             final var dataFilePath = dataPath() + DATA_DIR + fileName;
             final var backupDataFilePath = dataPath() + BACKUP_DIR + fileName;
             final var tempFileName = "data.tmp";
@@ -996,7 +990,7 @@ public interface ChronicleDao<V> {
                 Files.move(Path.of(tempFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
                 Logger.info("Resized DB at [{}] from {} to {}.", dataPath(), currentEntrySize, newSize);
             }
-        }
+        }, "Resize DB - " + dataPath() + fileName));
     }
 
     default void vacuum() throws IOException {
@@ -1006,10 +1000,8 @@ public interface ChronicleDao<V> {
             return;
         }
 
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
         Logger.info("Vacuuming database at [{}]", dataPath());
-
-        synchronized (lock) {
+        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
             backup();
             deleteDataFiles();
             deleteIndexes();
@@ -1021,7 +1013,7 @@ public interface ChronicleDao<V> {
                     insert(shared.map);
                 }
             }
-        }
+        }, "Vacuum DB - " + dataPath()));
     }
 
     /**
@@ -1662,8 +1654,7 @@ public interface ChronicleDao<V> {
             return false;
         }
 
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             final var file = getDbFile(key);
             if (file == null) {
                 return false;
@@ -1690,7 +1681,7 @@ public interface ChronicleDao<V> {
 
             Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
             return true;
-        }
+        });
     }
 
     private void removeFromIndex(final Map<String, V> deletedMap) {
@@ -1710,8 +1701,7 @@ public interface ChronicleDao<V> {
         }
 
         final var deletedMap = new ConcurrentHashMap<String, V>(1000);
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             if (getDataFileState().fileNames().size() <= 1) {
                 try (final var shared = openDb()) {
                     for (final String key : keys) {
@@ -1757,7 +1747,7 @@ public interface ChronicleDao<V> {
             CHRONICLE_UTILS.processInParallel(tasks);
 
             return true;
-        }
+        });
     }
 
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared) {
@@ -1820,10 +1810,9 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        V prevValue = null;
-        var file = DATA_FILE;
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+            V prevValue = null;
+            var file = DATA_FILE;
             file = getDbFile(key);
             if (file == null) {
                 file = getDataFileState().currentFile();
@@ -1856,7 +1845,7 @@ public interface ChronicleDao<V> {
             }
 
             return status;
-        }
+        });
     }
 
     /**
@@ -1879,11 +1868,9 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        V prevValue = null;
-        var status = PutStatus.FAILED;
-
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+            V prevValue = null;
+            var status = PutStatus.FAILED;
             final var file = getDbFile(key);
             try (final var shared = openDb(file)) {
                 if (shared.map.containsKey(key)) {
@@ -1899,7 +1886,7 @@ public interface ChronicleDao<V> {
             }
 
             return status;
-        }
+        });
     }
 
     /**
@@ -1922,8 +1909,7 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             var shared = openDb();
             try {
                 shared = checkAndRotate(shared);
@@ -1941,7 +1927,7 @@ public interface ChronicleDao<V> {
             Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
 
             return PutStatus.INSERTED;
-        }
+        });
     }
 
     /**
@@ -1965,10 +1951,9 @@ public interface ChronicleDao<V> {
         final var prevValues = new ConcurrentHashMap<String, V>(putSize);
         final Set<String> keysToInsert = new HashSet<>(map.keySet());
         final var keyMapUpdate = new HashMap<String, String>(putSize);
-        var status = PutStatus.INSERTED;
 
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+            var status = PutStatus.INSERTED;
             // update old records first then only move to new record inserts.
             if (getDataFileState().fileNames().size() <= 1) {
                 // Single file
@@ -2047,7 +2032,7 @@ public interface ChronicleDao<V> {
             CHRONICLE_UTILS.processInParallel(tasks);
 
             return status;
-        }
+        });
     }
 
     /**
@@ -2062,12 +2047,11 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        var status = PutStatus.UPDATED;
         final var mapSize = map.size();
         final var prevValues = new ConcurrentHashMap<String, V>(mapSize);
 
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+            var status = PutStatus.UPDATED;
             if (getDataFileState().fileNames().size() <= 1) {
                 // Single file
                 try (final var shared = openDb()) {
@@ -2114,7 +2098,7 @@ public interface ChronicleDao<V> {
             Logger.info("Updated [{}] records at [{}].", prevValueSize, dataPath());
 
             return status;
-        }
+        });
     }
 
     /**
@@ -2137,8 +2121,8 @@ public interface ChronicleDao<V> {
         }
 
         final var keyMapUpdate = new HashMap<String, String>();
-        final Object lock = WRITE_LOCKS.computeIfAbsent(dataPath(), k -> new Object());
-        synchronized (lock) {
+
+        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             // insert in batches by checking remaining entries
             var shared = openDb();
             try {
@@ -2182,7 +2166,7 @@ public interface ChronicleDao<V> {
             Logger.info("Inserted {} records at [{}].", map.size(), dataPath());
 
             return PutStatus.INSERTED;
-        }
+        });
     }
 
     default Map<String, V> search(final Iterable<String> keys, final List<Search> filters, final int limit)

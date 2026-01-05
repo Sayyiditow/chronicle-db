@@ -26,12 +26,15 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.tinylog.Logger;
@@ -1290,6 +1293,28 @@ public final class ChronicleUtils {
                 Thread.currentThread().interrupt();
                 Logger.error(e);
             }
+        }
+    }
+
+    public <K> void doWithLock(final ConcurrentMap<K, ReentrantLock> LOCKS, final K lockKey,
+            final Runnable action) {
+        final var lock = LOCKS.computeIfAbsent(lockKey, k -> new ReentrantLock(true));
+        lock.lock();
+        try {
+            action.run();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public <K, V> V doWithLock(final ConcurrentMap<K, ReentrantLock> LOCKS, final K lockKey,
+            final Supplier<V> action) {
+        final var lock = LOCKS.computeIfAbsent(lockKey, k -> new ReentrantLock(true));
+        lock.lock();
+        try {
+            return action.get();
+        } finally {
+            lock.unlock();
         }
     }
 }
