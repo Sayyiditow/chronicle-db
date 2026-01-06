@@ -130,7 +130,8 @@ import net.openhft.chronicle.map.ChronicleMap;
  * 
  * <p>
  * <b>Thread Safety:</b> All operations are thread-safe. Write operations use
- * reentrant locks per data path to prevent conflicts during file rotation and index
+ * reentrant locks per data path to prevent conflicts during file rotation and
+ * index
  * updates.
  * </p>
  * 
@@ -996,13 +997,16 @@ public interface ChronicleDao<V> {
      * Reclaims disk space by consolidating multiple data files into a single file.
      * <p>
      * This operation backs up all existing data files, deletes them, and re-inserts
-     * all records from the backup. This eliminates fragmentation and removes deleted
+     * all records from the backup. This eliminates fragmentation and removes
+     * deleted
      * record space.
      * </p>
      * <p>
-     * <b>Thread Safety:</b> This method acquires a write lock on the entire database.
+     * <b>Thread Safety:</b> This method acquires a write lock on the entire
+     * database.
      * Note that {@code insert()} is called within the locked section, which will
-     * re-acquire the same lock (reentrant behavior). This is safe because ReentrantLock
+     * re-acquire the same lock (reentrant behavior). This is safe because
+     * ReentrantLock
      * allows the same thread to acquire a lock it already holds.
      * </p>
      *
@@ -1026,8 +1030,10 @@ public interface ChronicleDao<V> {
             // Re-insert all records from backup files
             // Note: insert() will re-acquire the same lock (reentrant lock behavior)
             for (final String file : CHRONICLE_UTILS.getFileList(dataPath() + BACKUP_DIR)) {
-                try (final var shared = openDb(BACKUP_DIR, file)) {
-                    insert(shared.map);
+                if (file.startsWith("data")) {
+                    try (final var shared = openDb(BACKUP_DIR, file)) {
+                        insert(shared.map);
+                    }
                 }
             }
         }, "Vacuum DB - " + dataPath()));
