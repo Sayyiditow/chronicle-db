@@ -1032,7 +1032,8 @@ public interface ChronicleDao<V> {
             for (final String file : CHRONICLE_UTILS.getFileList(dataPath() + BACKUP_DIR)) {
                 if (file.startsWith("data")) {
                     try (final var shared = openDb(BACKUP_DIR, file)) {
-                        insert(shared.map);
+                        // Copy to HashMap for thread-safe parallel processing in updateIndex()
+                        insert(new HashMap<>(shared.map));
                     }
                 }
             }
