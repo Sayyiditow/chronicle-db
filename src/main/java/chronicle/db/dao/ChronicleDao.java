@@ -2186,7 +2186,7 @@ public interface ChronicleDao<V> {
                             averageValue().getClass(), indexExclusions()));
             CHRONICLE_UTILS.processInParallel(tasks);
 
-            Logger.info("Inserted {} records at [{}].", map.size(), dataPath());
+            Logger.info("Inserted [{}] records at [{}].", map.size(), dataPath());
 
             return PutStatus.INSERTED;
         });
