@@ -606,7 +606,10 @@ public final class ChronicleUtils {
                 final var sharedIndexMap = openIndexes.get(indexPath);
 
                 final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
-                final var recordCount = new AtomicInteger();
+                var recordCount = 0;
+
+                final int BATCH_SIZE = 100_000;
+                final List<byte[]> batchToRemove = new ArrayList<>(Math.min(values.size(), BATCH_SIZE));
 
                 for (final var e : values.entrySet()) {
                     final var key = e.getKey();
@@ -619,12 +622,22 @@ public final class ChronicleUtils {
                         appendValue(sb, objVal);
                     }
 
-                    sharedIndexMap.index.remove(MAP_DB.createIndexKey(sb.toString(), key.toString()));
-                    recordCount.incrementAndGet();
+                    batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), key.toString()));
+
+                    if (batchToRemove.size() >= BATCH_SIZE) {
+                        sharedIndexMap.index.removeAll(batchToRemove);
+                        recordCount += batchToRemove.size();
+                        batchToRemove.clear();
+                    }
                 }
 
-                if (recordCount.get() != 0) {
-                    Logger.info("Removed [{}] records from index at [{}]", recordCount.get(), indexPath);
+                if (!batchToRemove.isEmpty()) {
+                    sharedIndexMap.index.removeAll(batchToRemove);
+                    recordCount += batchToRemove.size();
+                }
+
+                if (recordCount != 0) {
+                    Logger.info("Removed [{}] records from index at [{}]", recordCount, indexPath);
                 }
             });
         } finally {
@@ -683,10 +696,14 @@ public final class ChronicleUtils {
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = indexDirPath + indexName;
                 final var sharedIndexMap = openIndexes.get(indexPath);
-                final var recordCount = new AtomicInteger();
+                var recordCount = 0;
 
                 final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
                 final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
+
+                final int BATCH_SIZE = 100_000;
+                final List<byte[]> batchToRemove = new ArrayList<>(BATCH_SIZE);
+                final List<byte[]> batchToAdd = new ArrayList<>(BATCH_SIZE);
 
                 for (final var valEntry : values.entrySet()) {
                     final var key = valEntry.getKey();
@@ -721,24 +738,40 @@ public final class ChronicleUtils {
 
                         if (!Objects.equals(oldValStr, newValStr)) {
                             // Always remove if changed (regardless of exclusion)
-                            sharedIndexMap.index.remove(MAP_DB.createIndexKey(oldValStr, key.toString()));
+                            batchToRemove.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
                             // Add new value only if not excluded and not empty
                             if (!skipAdd) {
-                                sharedIndexMap.index.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                                batchToAdd.add(MAP_DB.createIndexKey(newValStr, key.toString()));
                             }
-                            recordCount.incrementAndGet();
+                            recordCount++;
                         }
                     } else {
                         // Add new value only if not excluded
                         if (!skipAdd) {
-                            sharedIndexMap.index.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                            recordCount.incrementAndGet();
+                            batchToAdd.add(MAP_DB.createIndexKey(newValStr, key.toString()));
+                            recordCount++;
                         }
+                    }
+
+                    if (batchToRemove.size() >= BATCH_SIZE) {
+                        sharedIndexMap.index.removeAll(batchToRemove);
+                        batchToRemove.clear();
+                    }
+                    if (batchToAdd.size() >= BATCH_SIZE) {
+                        sharedIndexMap.index.addAll(batchToAdd);
+                        batchToAdd.clear();
                     }
                 }
 
-                if (recordCount.get() != 0) {
-                    Logger.info("Updated [{}] indexes at [{}]", recordCount.get(), indexPath);
+                if (!batchToRemove.isEmpty()) {
+                    sharedIndexMap.index.removeAll(batchToRemove);
+                }
+                if (!batchToAdd.isEmpty()) {
+                    sharedIndexMap.index.addAll(batchToAdd);
+                }
+
+                if (recordCount != 0) {
+                    Logger.info("Updated [{}] indexes at [{}]", recordCount, indexPath);
                 }
             });
         } finally {
