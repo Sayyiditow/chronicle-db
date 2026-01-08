@@ -608,7 +608,7 @@ public final class ChronicleUtils {
                 final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
                 final var recordCount = new AtomicInteger();
 
-                values.entrySet().parallelStream().forEach(e -> {
+                for (final var e : values.entrySet()) {
                     final var key = e.getKey();
                     final V value = e.getValue();
 
@@ -621,7 +621,7 @@ public final class ChronicleUtils {
 
                     sharedIndexMap.index.remove(MAP_DB.createIndexKey(sb.toString(), key.toString()));
                     recordCount.incrementAndGet();
-                });
+                }
 
                 if (recordCount.get() != 0) {
                     Logger.info("Removed [{}] records from index at [{}]", recordCount.get(), indexPath);
@@ -688,7 +688,7 @@ public final class ChronicleUtils {
                 final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
                 final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
 
-                values.entrySet().parallelStream().forEach(valEntry -> {
+                for (final var valEntry : values.entrySet()) {
                     final var key = valEntry.getKey();
                     final V newVal = valEntry.getValue();
                     final V prevVal = previousValues.get(key);
@@ -735,7 +735,7 @@ public final class ChronicleUtils {
                             recordCount.incrementAndGet();
                         }
                     }
-                });
+                }
 
                 if (recordCount.get() != 0) {
                     Logger.info("Updated [{}] indexes at [{}]", recordCount.get(), indexPath);

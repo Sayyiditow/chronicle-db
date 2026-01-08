@@ -634,13 +634,13 @@ public interface ChronicleDao<V> {
                     sourceExhausted.set(true);
                 }
 
-                // --- PHASE 2: PARALLEL KEY MAPPING ---
-                keyBatch.parallelStream().forEach(key -> {
+                // --- PHASE 2: KEY MAPPING ---
+                for (final var key : keyBatch) {
                     final String file = sharedKeyMap.map.get(key);
                     if (file != null) {
                         fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
                     }
-                });
+                }
             }
         };
 
@@ -718,14 +718,14 @@ public interface ChronicleDao<V> {
                     sourceExhausted.set(true);
                 }
 
-                // --- PHASE 2: PARALLEL KEY MAPPING ---
-                keyBatch.parallelStream().forEach(key -> {
+                // --- PHASE 2: KEY MAPPING ---
+                for (final var key : keyBatch) {
                     final String file = sharedKeyMap.map.get(key);
                     if (file != null) {
                         totalFilled.incrementAndGet();
                         fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
                     }
-                });
+                }
 
                 final int remainingToFetch = limit - totalFilled.get();
                 if (remainingToFetch > 0) {
@@ -811,14 +811,20 @@ public interface ChronicleDao<V> {
                     sourceExhausted.set(true);
                 }
 
-                // --- PHASE 2: PARALLEL KEY MAPPING ---
-                keyBatch.parallelStream().filter(key -> totalLeft.get() > 0).forEach(key -> {
+                // --- PHASE 2: KEY MAPPING ---
+                for (var key : keyBatch) {
+                    if (totalLeft.get() <= 0) {
+                        break; // Stop early if we've already filled the limit
+                    }
+
                     final String file = sharedKeyMap.map.get(key);
                     if (file != null) {
-                        if (totalLeft.getAndDecrement() > 0)
+                        // Check and decrement atomically — same as getAndDecrement() > 0
+                        if (totalLeft.getAndDecrement() > 0) {
                             fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
+                        }
                     }
-                });
+                }
             }
         };
 
