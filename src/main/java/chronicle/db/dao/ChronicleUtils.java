@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -33,6 +34,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -526,7 +528,7 @@ public final class ChronicleUtils {
                     }
 
                     if (recordCount.incrementAndGet() % BATCH_SIZE == 0) {
-                        fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
+                        CHRONICLE_UTILS.processInParallel(fieldBatches.entrySet(), batchEntry -> {
                             final String field = batchEntry.getKey();
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
@@ -544,7 +546,7 @@ public final class ChronicleUtils {
             });
 
             // Flush remaining
-            fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
+            CHRONICLE_UTILS.processInParallel(fieldBatches.entrySet(), batchEntry -> {
                 final String field = batchEntry.getKey();
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
@@ -599,7 +601,7 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Remove from each index
-            indexFieldMap.entrySet().parallelStream().forEach(entry -> {
+            CHRONICLE_UTILS.processInParallel(indexFieldMap.entrySet(), entry -> {
                 final String indexName = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = dataPath + ChronicleDao.INDEX_DIR + indexName;
@@ -691,7 +693,7 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Update indexes
-            indexFieldMap.entrySet().parallelStream().forEach(entry -> {
+            CHRONICLE_UTILS.processInParallel(indexFieldMap.entrySet(), entry -> {
                 final String indexName = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = indexDirPath + indexName;
@@ -1308,23 +1310,25 @@ public final class ChronicleUtils {
      *
      * @param tasks The list of tasks to execute.
      */
-    public void processInParallel(final List<Runnable> tasks) {
-        if (tasks == null || tasks.size() == 0)
+    public void processInParallel(final Collection<Runnable> tasks) {
+        if (tasks == null || tasks.isEmpty()) {
             return;
-
-        final List<Thread> threads = new ArrayList<>();
-        for (final Runnable task : tasks) {
-            if (task != null) {
-                threads.add(Thread.ofVirtual().start(task));
+        }
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (final Runnable task : tasks) {
+                if (task != null) {
+                    executor.submit(task);
+                }
             }
         }
+    }
 
-        for (final Thread thread : threads) {
-            try {
-                thread.join();
-            } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-                Logger.error(e);
+    public <T> void processInParallel(final Collection<T> items, final Consumer<T> action) {
+        if (items == null || items.isEmpty())
+            return;
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (final T item : items) {
+                executor.submit(() -> action.accept(item));
             }
         }
     }

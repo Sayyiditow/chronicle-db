@@ -329,7 +329,7 @@ public interface ChronicleDao<V> {
     }
 
     private void populateKeyMap(final Set<String> dataFiles, final HTreeMap<String, String> keyMap) {
-        dataFiles.parallelStream().forEach(file -> {
+        CHRONICLE_UTILS.processInParallel(dataFiles, file -> {
             try (final var shared = openDb(file)) {
                 shared.map.forEachEntry(entry -> keyMap.put(entry.key().get(), file));
             }
@@ -471,7 +471,7 @@ public interface ChronicleDao<V> {
      * 
      */
     private void initIndex(final Set<String> fields) {
-        getDataFileState().fileNames().parallelStream().forEach(file -> {
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
                 initIndex(shared.map, fields);
             }
@@ -812,7 +812,7 @@ public interface ChronicleDao<V> {
                 }
 
                 // --- PHASE 2: KEY MAPPING ---
-                for (var key : keyBatch) {
+                for (final var key : keyBatch) {
                     if (totalLeft.get() <= 0) {
                         break; // Stop early if we've already filled the limit
                     }
@@ -1198,7 +1198,7 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFile(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
         try (final var grouped = getDbFiles(keys)) {
-            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
@@ -1216,7 +1216,7 @@ public interface ChronicleDao<V> {
 
     private void processKeysByFileUsing(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
         try (final var grouped = getDbFiles(keys)) {
-            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
@@ -1235,7 +1235,7 @@ public interface ChronicleDao<V> {
     private void processKeysByFile(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
         try (final var grouped = getDbFiles(keys, limit)) {
-            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
@@ -1254,7 +1254,7 @@ public interface ChronicleDao<V> {
     private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
         try (final var grouped = getDbFiles(keys, limit)) {
-            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
@@ -1273,7 +1273,7 @@ public interface ChronicleDao<V> {
     private void processKeysByFile(final Iterable<String> keys, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
         try (final var grouped = getDbFiles(keys, limit, excludedKeys)) {
-            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
@@ -1292,7 +1292,7 @@ public interface ChronicleDao<V> {
     private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
         try (final var grouped = getDbFiles(keys, limit, excludedKeys)) {
-            grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     for (final var key : entry.getValue()) {
@@ -1755,7 +1755,7 @@ public interface ChronicleDao<V> {
                     return false;
                 }
 
-                grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+                CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                     final var file = entry.getKey();
                     try (final var shared = openDb(file)) {
                         for (final String key : entry.getValue()) {
@@ -1996,7 +1996,7 @@ public interface ChronicleDao<V> {
                 }
             } else {
                 try (final var grouped = getDbFiles(keysToInsert)) {
-                    grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+                    CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                         final var file = entry.getKey();
                         try (final var shared = openDb(file)) {
                             for (final String key : entry.getValue()) {
@@ -2094,7 +2094,7 @@ public interface ChronicleDao<V> {
             } else {
                 // Multi-file
                 try (final var grouped = getDbFiles(map.keySet())) {
-                    grouped.fileGroups().entrySet().parallelStream().forEach(entry -> {
+                    CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                         final var file = entry.getKey();
                         try (final var shared = openDb(file)) {
                             for (final String key : entry.getValue()) {
@@ -3420,7 +3420,7 @@ public interface ChronicleDao<V> {
         final Map<String, V> result = new ConcurrentHashMap<>(limit);
         final AtomicInteger counter = new AtomicInteger(0);
 
-        getDataFileState().fileNames().parallelStream().forEach(file -> {
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             if (counter.get() >= limit) {
                 return;
             }
@@ -3434,23 +3434,21 @@ public interface ChronicleDao<V> {
 
     default Set<String> searchKeys(final List<Search> searches) {
         final var results = ConcurrentHashMap.<String>newKeySet();
-        getDataFileState().fileNames().parallelStream()
-                .forEach(file -> {
-                    try (final var shared = openDb(file)) {
-                        searchKeys(shared.map, searches, results);
-                    }
-                });
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
+            try (final var shared = openDb(file)) {
+                searchKeys(shared.map, searches, results);
+            }
+        });
         return results;
     }
 
     default List<String> searchKeysList(final List<Search> searches) {
         final var result = new ConcurrentLinkedQueue<String>();
-        getDataFileState().fileNames().parallelStream()
-                .forEach(file -> {
-                    try (final var shared = openDb(file)) {
-                        searchKeys(shared.map, searches, result);
-                    }
-                });
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
+            try (final var shared = openDb(file)) {
+                searchKeys(shared.map, searches, result);
+            }
+        });
         return new ArrayList<>(result);
     }
 
@@ -3459,7 +3457,7 @@ public interface ChronicleDao<V> {
         final Map<String, V> result = new ConcurrentHashMap<>(limit);
         final AtomicInteger counter = new AtomicInteger(0);
 
-        getDataFileState().fileNames().parallelStream().forEach(file -> {
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             if (counter.get() >= limit) {
                 return;
             }
@@ -3473,18 +3471,17 @@ public interface ChronicleDao<V> {
 
     default Set<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) {
         final var results = ConcurrentHashMap.<String>newKeySet();
-        getDataFileState().fileNames().parallelStream()
-                .forEach(file -> {
-                    try (final var shared = openDb(file)) {
-                        searchKeys(shared.map, searches, excludedKeys, results);
-                    }
-                });
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
+            try (final var shared = openDb(file)) {
+                searchKeys(shared.map, searches, excludedKeys, results);
+            }
+        });
         return results;
     }
 
     default List<String> searchKeysList(final List<Search> searches, final Set<String> excludedKeys) {
         final var result = new ConcurrentLinkedQueue<String>();
-        getDataFileState().fileNames().parallelStream().forEach(file -> {
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
                 searchKeys(shared.map, searches, excludedKeys, result);
             }
@@ -3561,7 +3558,7 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 final var result = new ConcurrentHashMap<String, Map<String, Object>>(limit);
                 final var counter = new AtomicInteger();
-                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
                         return;
                     }
@@ -3637,7 +3634,7 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
                 final var counter = new AtomicInteger();
-                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
                         return;
                     }
@@ -3714,7 +3711,7 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 final Map<String, V> result = new ConcurrentHashMap<>(limit);
                 final var counter = new AtomicInteger();
-                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
                         return;
                     }
@@ -3791,7 +3788,7 @@ public interface ChronicleDao<V> {
                 final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
                 final AtomicReference<String[]> headers = new AtomicReference<>(null);
                 final var counter = new AtomicInteger();
-                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
                         return;
                     }
@@ -3977,7 +3974,7 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 final Map<String, V> result = new ConcurrentHashMap<>(limit);
                 final var counter = new AtomicInteger(0);
-                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
                         return;
                     }
@@ -4054,7 +4051,7 @@ public interface ChronicleDao<V> {
                 final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
                 final AtomicReference<String[]> headers = new AtomicReference<>(null);
                 final var counter = new AtomicInteger(0);
-                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
                         return;
                     }
@@ -4131,7 +4128,7 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 final var result = new ConcurrentHashMap<String, Map<String, Object>>(limit);
                 final var counter = new AtomicInteger(0);
-                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
                         return;
                     }
@@ -4208,7 +4205,7 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
                 final var counter = new AtomicInteger(0);
-                getDataFileState().fileNames().parallelStream().forEach(file -> {
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
                         return;
                     }
@@ -4302,13 +4299,13 @@ public interface ChronicleDao<V> {
 
         try {
             if (searchResult == null) {
-                return getDataFileState().fileNames().parallelStream()
-                        .mapToInt(file -> {
-                            try (final var shared = openDb(file)) {
-                                return searchCount(shared.map, searches);
-                            }
-                        })
-                        .sum();
+                final var totalCount = new java.util.concurrent.atomic.LongAdder();
+                CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
+                    try (final var shared = openDb(file)) {
+                        totalCount.add(searchCount(shared.map, searches));
+                    }
+                });
+                return totalCount.intValue();
             } else {
                 return searchCount(searchResult.results(), remainingSearches);
             }
