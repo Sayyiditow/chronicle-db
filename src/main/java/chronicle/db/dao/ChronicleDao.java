@@ -3249,7 +3249,7 @@ public interface ChronicleDao<V> {
         final SearchType searchType = search.searchType();
         final String searchTerm = CHRONICLE_UTILS.toStringOptimized(search.searchTerm());
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? new HashSet<>((List<String>) search.searchTerm())
+                ? new HashSet<>((Collection<String>) search.searchTerm())
                 : null;
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
@@ -3288,7 +3288,7 @@ public interface ChronicleDao<V> {
         final SearchType searchType = search.searchType();
         final String searchTerm = CHRONICLE_UTILS.toStringOptimized(search.searchTerm());
         final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? new HashSet<>((List<String>) search.searchTerm())
+                ? new HashSet<>((Collection<String>) search.searchTerm())
                 : null;
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 

@@ -261,7 +261,7 @@ public final class ChronicleUtils {
      * @param fieldClass  The target field type.
      * @return A Set of converted search terms.
      */
-    private Set<Object> setSearchTermNonIndexed(final List<Object> searchTerms, final Class<?> fieldClass) {
+    private Set<Object> setSearchTermNonIndexed(final Collection<Object> searchTerms, final Class<?> fieldClass) {
         final Set<Object> searchTermSet = new HashSet<>(1000);
         searchTermSet.clear();
         for (final Object searchTerm : searchTerms) {
@@ -413,7 +413,7 @@ public final class ChronicleUtils {
         List<Object> searchTermBetween = null;
 
         if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
-            searchTermSet = setSearchTermNonIndexed((List<Object>) search.searchTerm(), fieldType);
+            searchTermSet = setSearchTermNonIndexed((Collection<Object>) search.searchTerm(), fieldType);
         } else if (searchType == SearchType.BETWEEN) {
             searchTermBetween = (List<Object>) search.searchTerm();
         } else {
