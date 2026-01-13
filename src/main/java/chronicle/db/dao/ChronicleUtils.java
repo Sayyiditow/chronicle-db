@@ -4,6 +4,8 @@ import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -111,7 +113,7 @@ public final class ChronicleUtils {
             this.operator = operator;
         }
 
-        Double evaluate(final Object value) {
+        BigDecimal evaluate(final Object value) {
             final Object leftVal = leftField.varHandle.get(value);
             final Object rightVal = rightField.varHandle.get(value);
 
@@ -119,26 +121,31 @@ public final class ChronicleUtils {
                 return null;
             }
 
-            final double left = toDouble(leftVal);
-            final double right = toDouble(rightVal);
+            final BigDecimal left = toBigDecimal(leftVal);
+            final BigDecimal right = toBigDecimal(rightVal);
 
             return switch (operator) {
-                case '*' -> left * right;
-                case '/' -> right != 0 ? left / right : null;
-                case '+' -> left + right;
-                case '-' -> left - right;
+                case '*' -> left.multiply(right);
+                case '/' -> right.compareTo(BigDecimal.ZERO) != 0
+                        ? left.divide(right, 10, RoundingMode.HALF_UP)
+                        : null;
+                case '+' -> left.add(right);
+                case '-' -> left.subtract(right);
                 default -> null;
             };
         }
 
-        private double toDouble(final Object val) {
+        private BigDecimal toBigDecimal(final Object val) {
+            if (val instanceof final BigDecimal bd) {
+                return bd;
+            }
             if (val instanceof final Number n) {
-                return n.doubleValue();
+                return BigDecimal.valueOf(n.doubleValue());
             }
             try {
-                return Double.parseDouble(String.valueOf(val));
+                return new BigDecimal(String.valueOf(val));
             } catch (final NumberFormatException e) {
-                return 0.0;
+                return BigDecimal.ZERO;
             }
         }
     }
@@ -317,6 +324,8 @@ public final class ChronicleUtils {
             } else if (fieldClass == long.class
                     && (searchTerm instanceof String || searchTerm instanceof Integer)) {
                 searchTermSet.add(Long.parseLong(toStringOptimized(searchTerm)));
+            } else if (fieldClass == BigDecimal.class) {
+                searchTermSet.add(toBigDecimal(searchTerm));
             } else {
                 searchTermSet.add(searchTerm);
             }
@@ -337,9 +346,25 @@ public final class ChronicleUtils {
             return toEnum(fieldClass, searchTerm);
         } else if (fieldClass == long.class && (searchTerm instanceof String || searchTerm instanceof Integer)) {
             return Long.parseLong(toStringOptimized(searchTerm));
+        } else if (fieldClass == BigDecimal.class) {
+            return toBigDecimal(searchTerm);
         }
 
         return searchTerm;
+    }
+
+    private BigDecimal toBigDecimal(final Object val) {
+        if (val instanceof final BigDecimal bd) {
+            return bd;
+        }
+        if (val instanceof final Number n) {
+            return BigDecimal.valueOf(n.doubleValue());
+        }
+        try {
+            return new BigDecimal(String.valueOf(val));
+        } catch (final NumberFormatException e) {
+            return BigDecimal.ZERO;
+        }
     }
 
     /**
@@ -488,13 +513,13 @@ public final class ChronicleUtils {
                 Set<Object> searchTermSet = null;
                 List<Object> searchTermBetween = null;
 
-                // For computed expressions, always use Double for comparison
+                // For computed expressions, always use BigDecimal for comparison
                 if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
-                    searchTermSet = setSearchTermNonIndexed((Collection<Object>) search.searchTerm(), Double.class);
+                    searchTermSet = setSearchTermNonIndexed((Collection<Object>) search.searchTerm(), BigDecimal.class);
                 } else if (searchType == SearchType.BETWEEN) {
                     searchTermBetween = (List<Object>) search.searchTerm();
                 } else {
-                    searchTerm = setSearchTermNonIndexed(search.searchTerm(), Double.class);
+                    searchTerm = setSearchTermNonIndexed(search.searchTerm(), BigDecimal.class);
                 }
 
                 return new PreparedSearch(Collections.emptyList(), searchType, searchTerm, searchTermSet,
@@ -535,7 +560,7 @@ public final class ChronicleUtils {
     public <V> boolean search(final PreparedSearch search, final String key, final V value) {
         // Handle computed expression
         if (search.computedExpression != null) {
-            final Double computedValue = search.computedExpression.evaluate(value);
+            final BigDecimal computedValue = search.computedExpression.evaluate(value);
             if (computedValue == null) {
                 return false;
             }
