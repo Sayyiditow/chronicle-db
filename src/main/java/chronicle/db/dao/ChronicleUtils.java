@@ -412,7 +412,8 @@ public final class ChronicleUtils {
         Set<Object> searchTermSet = null;
         List<Object> searchTermBetween = null;
 
-        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
+        if (searchType == SearchType.IN || searchType == SearchType.NOT_IN || searchType == SearchType.CONTAINS
+                || searchType == SearchType.NOT_CONTAINS) {
             searchTermSet = setSearchTermNonIndexed((Collection<Object>) search.searchTerm(), fieldType);
         } else if (searchType == SearchType.BETWEEN) {
             searchTermBetween = (List<Object>) search.searchTerm();
