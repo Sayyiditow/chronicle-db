@@ -96,6 +96,53 @@ public final class ChronicleUtils {
         }
     }
 
+    /**
+     * Represents a computed expression like {field1*field2}.
+     * Supports operators: * (multiply), / (divide), - (subtract), + (add)
+     */
+    private static class ComputedExpression {
+        final FieldData leftField;
+        final FieldData rightField;
+        final char operator;
+
+        ComputedExpression(final FieldData leftField, final FieldData rightField, final char operator) {
+            this.leftField = leftField;
+            this.rightField = rightField;
+            this.operator = operator;
+        }
+
+        Double evaluate(final Object value) {
+            final Object leftVal = leftField.varHandle.get(value);
+            final Object rightVal = rightField.varHandle.get(value);
+
+            if (leftVal == null || rightVal == null) {
+                return null;
+            }
+
+            final double left = toDouble(leftVal);
+            final double right = toDouble(rightVal);
+
+            return switch (operator) {
+                case '*' -> left * right;
+                case '/' -> right != 0 ? left / right : null;
+                case '+' -> left + right;
+                case '-' -> left - right;
+                default -> null;
+            };
+        }
+
+        private double toDouble(final Object val) {
+            if (val instanceof final Number n) {
+                return n.doubleValue();
+            }
+            try {
+                return Double.parseDouble(String.valueOf(val));
+            } catch (final NumberFormatException e) {
+                return 0.0;
+            }
+        }
+    }
+
     private static class ClassData {
         final Map<String, FieldData> fields = new ConcurrentHashMap<>();
         final MethodHandle headerHandle;
@@ -383,19 +430,80 @@ public final class ChronicleUtils {
         final Object searchTerm;
         final Set<Object> searchTermSet;
         final List<Object> searchTermBetween;
+        final ComputedExpression computedExpression;
 
         PreparedSearch(final List<FieldData> fields, final SearchType searchType, final Object searchTerm,
                 final Set<Object> searchTermSet, final List<Object> searchTermBetween) {
+            this(fields, searchType, searchTerm, searchTermSet, searchTermBetween, null);
+        }
+
+        PreparedSearch(final List<FieldData> fields, final SearchType searchType, final Object searchTerm,
+                final Set<Object> searchTermSet, final List<Object> searchTermBetween,
+                final ComputedExpression computedExpression) {
             this.fields = fields;
             this.searchType = searchType;
             this.searchTerm = searchTerm;
             this.searchTermSet = searchTermSet;
             this.searchTermBetween = searchTermBetween;
+            this.computedExpression = computedExpression;
         }
     }
 
+    /**
+     * Parses a computed expression like {field1*field2}.
+     * Supports operators: * / + -
+     *
+     * @param expression The expression without braces (e.g., "field1*field2")
+     * @param valueClass The class containing the fields
+     * @return ComputedExpression or null if parsing fails
+     */
+    private ComputedExpression parseComputedExpression(final String expression, final Class<?> valueClass) {
+        final char[] operators = { '*', '/', '+', '-' };
+        for (final char op : operators) {
+            final int idx = expression.indexOf(op);
+            if (idx > 0 && idx < expression.length() - 1) {
+                final String leftFieldName = expression.substring(0, idx).trim();
+                final String rightFieldName = expression.substring(idx + 1).trim();
+                final FieldData leftField = getFieldData(valueClass, leftFieldName);
+                final FieldData rightField = getFieldData(valueClass, rightFieldName);
+                if (leftField != null && rightField != null) {
+                    return new ComputedExpression(leftField, rightField, op);
+                }
+            }
+        }
+        return null;
+    }
+
     public PreparedSearch prepareSearch(final Search search, final Class<?> valueClass) {
-        final String[] fieldNames = search.field().split("\\|");
+        final String fieldSpec = search.field();
+        ComputedExpression computedExpression = null;
+
+        // Check for computed expression syntax: {field1*field2}
+        if (fieldSpec.startsWith("{") && fieldSpec.endsWith("}")) {
+            final String expression = fieldSpec.substring(1, fieldSpec.length() - 1);
+            computedExpression = parseComputedExpression(expression, valueClass);
+            if (computedExpression != null) {
+                final SearchType searchType = search.searchType();
+                Object searchTerm = null;
+                Set<Object> searchTermSet = null;
+                List<Object> searchTermBetween = null;
+
+                // For computed expressions, always use Double for comparison
+                if (searchType == SearchType.IN || searchType == SearchType.NOT_IN) {
+                    searchTermSet = setSearchTermNonIndexed((Collection<Object>) search.searchTerm(), Double.class);
+                } else if (searchType == SearchType.BETWEEN) {
+                    searchTermBetween = (List<Object>) search.searchTerm();
+                } else {
+                    searchTerm = setSearchTermNonIndexed(search.searchTerm(), Double.class);
+                }
+
+                return new PreparedSearch(Collections.emptyList(), searchType, searchTerm, searchTermSet,
+                        searchTermBetween, computedExpression);
+            }
+        }
+
+        // Standard field processing
+        final String[] fieldNames = fieldSpec.split("\\|");
         final List<FieldData> fields = new ArrayList<>(fieldNames.length);
         Class<?> fieldType = String.class;
 
@@ -425,6 +533,17 @@ public final class ChronicleUtils {
     }
 
     public <V> boolean search(final PreparedSearch search, final String key, final V value) {
+        // Handle computed expression
+        if (search.computedExpression != null) {
+            final Double computedValue = search.computedExpression.evaluate(value);
+            if (computedValue == null) {
+                return false;
+            }
+            return matchesSearch(computedValue, search.searchTerm, search.searchTermSet, search.searchTermBetween,
+                    search.searchType);
+        }
+
+        // Standard field search
         for (final FieldData fieldData : search.fields) {
             final Object currentValue = fieldData.varHandle.get(value);
             if (matchesSearch(currentValue, search.searchTerm, search.searchTermSet, search.searchTermBetween,
