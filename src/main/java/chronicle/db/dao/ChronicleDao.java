@@ -455,6 +455,43 @@ public interface ChronicleDao<V> {
     }
 
     /**
+     * Checks if this DAO needs vacuuming based on file fragmentation.
+     * <p>
+     * A DAO needs vacuuming when the actual number of data files exceeds the expected
+     * number based on the record count and configured entries per file.
+     * <p>
+     * Expected files = ceil(size() / entries()) or 1 if empty
+     *
+     * @return VacuumInfo if vacuum is needed, null otherwise
+     */
+    default VacuumInfo needsVacuum() {
+        final int size = size();
+        final long entriesPerFile = entries();
+        final int actualFiles = getDataFileState().fileNames().size();
+        final int expectedFiles = size == 0 ? 1 : (int) Math.ceil((double) size / entriesPerFile);
+
+        if (actualFiles > expectedFiles) {
+            return new VacuumInfo(dataPath(), actualFiles, expectedFiles, size, entriesPerFile);
+        }
+        return null;
+    }
+
+    /**
+     * Information about vacuum requirements for a DAO.
+     */
+    record VacuumInfo(String dataPath, int actualFiles, int expectedFiles, int recordCount, long entriesPerFile) {
+        public int excessFiles() {
+            return actualFiles - expectedFiles;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("%s: %d files (expected %d) with %d records (%d entries/file)",
+                    dataPath, actualFiles, expectedFiles, recordCount, entriesPerFile);
+        }
+    }
+
+    /**
      * Only runs to initialize an index on the field first time
      * 
      * @param field the field of the V value object
