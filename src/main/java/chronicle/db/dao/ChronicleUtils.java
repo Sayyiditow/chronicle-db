@@ -4,8 +4,6 @@ import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -13,6 +11,8 @@ import java.lang.invoke.VarHandle;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -126,7 +126,7 @@ public final class ChronicleUtils {
 
             return switch (operator) {
                 case '*' -> left.multiply(right);
-                case '/' -> right.compareTo(BigDecimal.ZERO) != 0
+                case '/' -> right.signum() != 0
                         ? left.divide(right, 10, RoundingMode.HALF_UP)
                         : null;
                 case '+' -> left.add(right);
