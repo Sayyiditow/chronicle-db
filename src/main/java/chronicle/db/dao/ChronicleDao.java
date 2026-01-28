@@ -654,10 +654,11 @@ public interface ChronicleDao<V> {
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
 
         // CRITICAL: Lock for the entire refill process.
-        final Object refillLock = new Object();
+        final ReentrantLock refillLock = new ReentrantLock();
 
         final Runnable refillBuffers = () -> {
-            synchronized (refillLock) {
+            refillLock.lock();
+            try {
                 if (sourceExhausted.get())
                     return;
 
@@ -680,6 +681,8 @@ public interface ChronicleDao<V> {
                         fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
                     }
                 }
+            } finally {
+                refillLock.unlock();
             }
         };
 
@@ -736,10 +739,11 @@ public interface ChronicleDao<V> {
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
 
         // CRITICAL: Lock for the entire refill process.
-        final Object refillLock = new Object();
+        final ReentrantLock refillLock = new ReentrantLock();
 
         final Runnable refillBuffers = () -> {
-            synchronized (refillLock) {
+            refillLock.lock();
+            try {
                 if (sourceExhausted.get())
                     return;
 
@@ -772,6 +776,8 @@ public interface ChronicleDao<V> {
                 } else {
                     sourceExhausted.set(true);
                 }
+            } finally {
+                refillLock.unlock();
             }
         };
 
@@ -827,10 +833,11 @@ public interface ChronicleDao<V> {
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
 
         // CRITICAL: Lock for the entire refill process.
-        final Object refillLock = new Object();
+        final ReentrantLock refillLock = new ReentrantLock();
 
         final Runnable refillBuffers = () -> {
-            synchronized (refillLock) {
+            refillLock.lock();
+            try {
                 if (sourceExhausted.get())
                     return;
 
@@ -864,6 +871,8 @@ public interface ChronicleDao<V> {
                         }
                     }
                 }
+            } finally {
+                refillLock.unlock();
             }
         };
 

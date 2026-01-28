@@ -1392,7 +1392,7 @@ public final class ChronicleUtils {
         }
 
         final var iterator = iterable.iterator();
-        final var iteratorLock = new Object();
+        final var iteratorLock = new ReentrantLock();
         final var batchSize = 100;
         // Use shared executor instead of creating new one
         final int consumerThreads = processors;
@@ -1405,13 +1405,16 @@ public final class ChronicleUtils {
                 while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
                     // Fetch batch
                     batch.clear();
-                    synchronized (iteratorLock) {
+                    iteratorLock.lock();
+                    try {
                         if (!iterator.hasNext()) {
                             return; // No more data
                         }
                         for (int j = 0; j < batchSize && iterator.hasNext(); j++) {
                             batch.add(iterator.next());
                         }
+                    } finally {
+                        iteratorLock.unlock();
                     }
 
                     // Process batch
