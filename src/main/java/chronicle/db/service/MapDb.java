@@ -1,6 +1,6 @@
 package chronicle.db.service;
 
-import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
+import static chronicle.db.utils.ChronicleUtils.CHRONICLE_UTILS;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;

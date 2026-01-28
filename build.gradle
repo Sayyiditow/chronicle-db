@@ -1,6 +1,7 @@
 plugins {
     id 'java-library'
     id 'maven-publish'
+    id 'application'
 }
 
 ext {
@@ -13,6 +14,10 @@ repositories {
 }
 
 dependencies {
+    api 'com.esotericsoftware:kryo:5.6.2'
+    api('net.openhft:chronicle-queue:5.27ea11') {
+        exclude group: 'org.xerial.snappy', module: 'snappy-java'
+    }
     api('net.openhft:chronicle-map:3.27ea2') {
         exclude group: 'com.thoughtworks.xstream', module: 'xstream'
     }
@@ -24,6 +29,22 @@ dependencies {
     testImplementation 'org.apache.logging.log4j:log4j-1.2-api:2.23.1'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.3'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.3'
+}
+
+application {
+    mainClass = 'chronicle.db.Server'
+    applicationDefaultJvmArgs = [
+                "--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED",
+                "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED",
+                "--add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED",
+                "--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+                "--add-opens=jdk.compiler/com.sun.tools.javac=ALL-UNNAMED",
+                "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+                "--add-opens=java.base/java.io=ALL-UNNAMED",
+                "--add-opens=java.base/java.util=ALL-UNNAMED",
+                "--add-exports=java.base/jdk.internal.util=ALL-UNNAMED"
+                ]
 }
 
 group = 'chronicle.db'

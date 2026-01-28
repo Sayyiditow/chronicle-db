@@ -1,4 +1,4 @@
-package chronicle.db.dao;
+package chronicle.db.utils;
 
 import org.tinylog.Logger;
 

@@ -1,4 +1,4 @@
-package chronicle.db.dao;
+package chronicle.db.utils;
 
 /**
  * A functional interface similar to Runnable but allows throwing checked

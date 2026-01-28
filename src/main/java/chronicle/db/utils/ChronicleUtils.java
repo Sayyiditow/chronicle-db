@@ -1,8 +1,9 @@
-package chronicle.db.dao;
+package chronicle.db.utils;
 
 import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -15,10 +16,14 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -43,6 +48,11 @@ import java.util.stream.Collectors;
 
 import org.tinylog.Logger;
 
+import com.jsoniter.JsonIterator;
+import com.jsoniter.output.JsonStream;
+import com.jsoniter.spi.TypeLiteral;
+
+import chronicle.db.dao.ChronicleDao;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.MapDb.SharedIndexMap;
@@ -87,8 +97,12 @@ import net.openhft.chronicle.map.ChronicleMap;
 public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
     private static final int processors = Runtime.getRuntime().availableProcessors();
+    private static final ExecutorService SHARED_EXECUTOR = Executors.newFixedThreadPool(Math.min(processors, 32));
+    private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
+    private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
+    private static final int flushSize = 5_242_880;
 
-    private static class FieldData {
+    public static class FieldData {
         final Field field;
         final VarHandle varHandle;
 
@@ -102,7 +116,7 @@ public final class ChronicleUtils {
      * Represents a computed expression like {field1*field2}.
      * Supports operators: * (multiply), / (divide), - (subtract), + (add)
      */
-    private static class ComputedExpression {
+    public static class ComputedExpression {
         final FieldData leftField;
         final FieldData rightField;
         final char operator;
@@ -150,7 +164,7 @@ public final class ChronicleUtils {
         }
     }
 
-    private static class ClassData {
+    public static class ClassData {
         final Map<String, FieldData> fields = new ConcurrentHashMap<>();
         final MethodHandle headerHandle;
         final MethodHandle rowHandle;
@@ -1133,6 +1147,20 @@ public final class ChronicleUtils {
      * Moves contents of a directory that start with a specific prefix to a
      * destination directory.
      *
+     * @param src  The source directory.
+     * @param dest The destination directory.
+     * @throws IOException If an I/O error occurs.
+     */
+    public void moveDirContents(final Path src, final Path dest)
+            throws IOException {
+        Files.walk(src).filter(path -> !path.equals(src))
+                .forEach(source -> move(source, dest.resolve(src.relativize(source))));
+    }
+
+    /**
+     * Moves contents of a directory that start with a specific prefix to a
+     * destination directory.
+     *
      * @param src        The source directory.
      * @param dest       The destination directory.
      * @param filePrefix The file name prefix to filter by.
@@ -1333,8 +1361,6 @@ public final class ChronicleUtils {
         return limitedList;
     }
 
-    private static final ExecutorService SHARED_EXECUTOR = Executors.newFixedThreadPool(Math.min(processors, 8));
-
     /**
      * Processes an Iterable in parallel using a shared executor service.
      *
@@ -1369,7 +1395,7 @@ public final class ChronicleUtils {
         final var iteratorLock = new Object();
         final var batchSize = 100;
         // Use shared executor instead of creating new one
-        final int consumerThreads = Math.min(processors, 8);
+        final int consumerThreads = processors;
         final var futures = new ArrayList<Future<?>>(consumerThreads);
 
         for (int i = 0; i < consumerThreads; i++) {
@@ -1459,11 +1485,17 @@ public final class ChronicleUtils {
         if (tasks == null || tasks.isEmpty()) {
             return;
         }
-        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (final Runnable task : tasks) {
-                if (task != null) {
-                    executor.submit(task);
-                }
+        final List<Future<?>> futures = new ArrayList<>(tasks.size());
+        for (final Runnable task : tasks) {
+            if (task != null) {
+                futures.add(SHARED_EXECUTOR.submit(task));
+            }
+        }
+        for (final Future<?> future : futures) {
+            try {
+                future.get();
+            } catch (final Exception e) {
+                Logger.error("Parallel task failed", e);
             }
         }
     }
@@ -1471,10 +1503,34 @@ public final class ChronicleUtils {
     public <T> void processInParallel(final Collection<T> items, final Consumer<T> action) {
         if (items == null || items.isEmpty())
             return;
-        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (final T item : items) {
-                executor.submit(() -> action.accept(item));
+        final List<Future<?>> futures = new ArrayList<>(items.size());
+        for (final T item : items) {
+            futures.add(SHARED_EXECUTOR.submit(() -> action.accept(item)));
+        }
+        for (final Future<?> future : futures) {
+            try {
+                future.get();
+            } catch (final Exception e) {
+                Logger.error("Parallel task failed", e);
             }
+        }
+    }
+
+    public void doWithLock(final ReentrantLock lock, final Runnable action) {
+        lock.lock();
+        try {
+            action.run();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public <V> V doWithLock(final ReentrantLock lock, final Supplier<V> action) {
+        lock.lock();
+        try {
+            return action.get();
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -1498,5 +1554,76 @@ public final class ChronicleUtils {
         } finally {
             lock.unlock();
         }
+    }
+
+    public void doWithTryLock(final ReentrantLock lock, final Runnable action, final String ifLockedMsg) {
+        if (!lock.tryLock()) {
+            Logger.info(ifLockedMsg);
+            return;
+        }
+        try {
+            action.run();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public <V> V doWithTryLock(final ReentrantLock lock, final Supplier<V> action, final String ifLockedMsg,
+            final V ifLockedReturn) {
+        if (!lock.tryLock()) {
+            Logger.info(ifLockedMsg);
+            return ifLockedReturn;
+        }
+        try {
+            return action.get();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void logProcessId(final String fileName) throws IOException {
+        final var pid = ProcessHandle.current().pid();
+        Logger.info("Process ID for this task: {}", pid);
+        Files.writeString(Path.of(fileName), String.valueOf(pid));
+    }
+
+    public String getCurrentDate() {
+        return LocalDateTime.ofInstant(new Date().toInstant(), ZoneId.systemDefault()).format(logDateTimeFormatter);
+    }
+
+    /**
+     * Reads a JSON file and converts it to a specific Java object type.
+     * 
+     * @param path        The path to the JSON file
+     * @param typeLiteral The Jsoniter TypeLiteral representing the target type
+     * @param <T>         The type of the target object
+     * @return The deserialized object
+     * @throws IOException If an I/O error occurs
+     */
+    public <T> T fromJsonFileToObj(final String path, final TypeLiteral<T> typeLiteral) throws IOException {
+        return JsonIterator.deserialize(Files.readAllBytes(Path.of(path)), typeLiteral);
+    }
+
+    /**
+     * Saves a Java object to a file as JSON.
+     * 
+     * @param path The full file path
+     * @param prop The Java object to save
+     * @param <T>  The type of the object
+     * @throws IOException If an I/O error occurs
+     */
+    public <T> void toJsonFileFromObj(final String path, final T prop) throws IOException {
+        try (FileOutputStream fos = new FileOutputStream(path); JsonStream stream = new JsonStream(fos, flushSize)) {
+            stream.writeVal(prop);
+            stream.flush();
+        }
+    }
+
+    public String humanReadableByteCount(final long bytes) {
+        if (bytes < 1024)
+            return bytes + "B";
+        final int exp = (int) (Math.log(bytes) / Math.log(1024));
+        final String pre = "KMGTPE".charAt(exp - 1) + "";
+        return String.format("%.1f%sB", bytes / Math.pow(1024, exp), pre);
     }
 }

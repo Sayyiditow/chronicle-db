@@ -1,8 +1,8 @@
 package chronicle.db.dao;
 
-import static chronicle.db.dao.ChronicleUtils.CHRONICLE_UTILS;
 import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import static chronicle.db.service.MapDb.MAP_DB;
+import static chronicle.db.utils.ChronicleUtils.CHRONICLE_UTILS;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
@@ -45,6 +45,7 @@ import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.ChronicleDb.SharedChronicleMap;
 import chronicle.db.service.MapDb.SearchResult;
 import chronicle.db.service.MapDb.SharedIndexMap;
+import chronicle.db.utils.SafeRunnable;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -457,7 +458,8 @@ public interface ChronicleDao<V> {
     /**
      * Checks if this DAO needs vacuuming based on file fragmentation.
      * <p>
-     * A DAO needs vacuuming when the actual number of data files exceeds the expected
+     * A DAO needs vacuuming when the actual number of data files exceeds the
+     * expected
      * number based on the record count and configured entries per file.
      * <p>
      * Expected files = ceil(size() / entries()) or 1 if empty
