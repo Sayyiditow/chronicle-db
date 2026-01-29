@@ -3256,7 +3256,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.entrySet().parallelStream().forEach(entry -> {
+        CHRONICLE_UTILS.processInParallel(db.entrySet(), entry -> {
             final String key = entry.getKey();
             final V value = entry.getValue();
 
