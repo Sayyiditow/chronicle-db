@@ -27,7 +27,7 @@ public class FailOver {
         final var dbDirs = Server.getDbDirs();
         CHRONICLE_UTILS.processInParallel(dbDirs, dir -> {
             final var countMap = new ConcurrentHashMap<String, Integer>();
-            CHRONICLE_UTILS.processInParallel(fqnMap.entrySet(), fqn -> {
+            fqnMap.entrySet().parallelStream().forEach(fqn -> {
                 final var filePath = fqn.getValue();
                 try {
                     final var dao = ChronicleDaoService.CHRONICLE_DAO_SERVICE.getDao(fqn.getKey(), filePath);

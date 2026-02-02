@@ -108,7 +108,7 @@ public class MigrationService {
                 }, "Migration " + sourceObject + destObject + dbDir));
             });
 
-            CHRONICLE_UTILS.processInParallel(runnables);
+            runnables.parallelStream().forEach(Runnable::run);
             moveStatus.put(destObject, true);
             moveStatus.remove(sourceObject);
         }
