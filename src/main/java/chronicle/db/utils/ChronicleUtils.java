@@ -687,7 +687,7 @@ public final class ChronicleUtils {
                     }
 
                     if (recordCount.incrementAndGet() % BATCH_SIZE == 0) {
-                        CHRONICLE_UTILS.processInParallel(fieldBatches.entrySet(), batchEntry -> {
+                        fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
                             final String field = batchEntry.getKey();
                             final Set<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
@@ -705,7 +705,7 @@ public final class ChronicleUtils {
             });
 
             // Flush remaining
-            CHRONICLE_UTILS.processInParallel(fieldBatches.entrySet(), batchEntry -> {
+            fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
                 final String field = batchEntry.getKey();
                 final Set<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
@@ -760,7 +760,7 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Remove from each index
-            CHRONICLE_UTILS.processInParallel(indexFieldMap.entrySet(), entry -> {
+            indexFieldMap.entrySet().parallelStream().forEach(entry -> {
                 final String indexName = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = dataPath + ChronicleDao.INDEX_DIR + indexName;
@@ -852,7 +852,7 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Update indexes
-            CHRONICLE_UTILS.processInParallel(indexFieldMap.entrySet(), entry -> {
+            indexFieldMap.entrySet().parallelStream().forEach(entry -> {
                 final String indexName = entry.getKey();
                 final List<FieldData> fieldGetters = entry.getValue();
                 final String indexPath = indexDirPath + indexName;
