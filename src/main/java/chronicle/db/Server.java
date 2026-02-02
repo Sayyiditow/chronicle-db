@@ -78,6 +78,7 @@ public class Server {
     private static String[] dailySequenceResetNames;
     private static String monthlyTrxArchivalTime;
     private static boolean upgrading = false;
+    public static boolean replicationEnabled = false;
     private static ReplicationQueue replicationQueue = null;
     private static final Server DB_SERVER = new Server();
 
@@ -127,6 +128,7 @@ public class Server {
 
                 final var standbyUrls = properties.getProperty("standbyDbUrls");
                 if (isPrimary && standbyUrls != null && !standbyUrls.isEmpty()) {
+                    replicationEnabled = Boolean.parseBoolean(properties.getProperty("replication", "false"));
                     final var standbyUrlslArr = standbyUrls.split(",");
                     final var standbyPortsArr = properties.getProperty("standbyDbPorts").split(",");
                     final var standBySize = standbyUrlslArr.length;
@@ -136,7 +138,10 @@ public class Server {
                         final var rawPort = standbyPortsArr[i];
                         final var port = Integer.parseInt(rawPort);
                         tailerNames[i] = ReplicationQueue.generateTailerName(url, rawPort);
-                        standbyServers.add(new StandbyServer(url, port, new ClientSocketService(url, port, 1, 0)));
+                        if (replicationEnabled) {
+                            standbyServers
+                                    .add(new StandbyServer(url, port, new ClientSocketService(url, port, 1, 0)));
+                        }
                     }
                     tailerNames[standBySize] = ReplicationQueue.getPrimaryTailerName();
                     replicationQueue = new ReplicationQueue(tailerNames);
@@ -784,18 +789,23 @@ public class Server {
             // send any pending writes
             sendAllPendingPrimaryWrites();
 
-            Logger.info("Starting background replication threads for [{}] standby server(s)...", standbyServers.size());
-            for (final var server : standbyServers) {
-                final String tailerName = ReplicationQueue.generateTailerName(server.url(),
-                        String.valueOf(server.port()));
-                Thread.ofVirtual().start(() -> {
-                    try {
-                        sendAllPendingWrites(tailerName, server.dbService());
-                    } catch (final InterruptedException e) {
-                        Logger.info("Replication thread for [{}] interrupted.", tailerName);
-                        Thread.currentThread().interrupt();
-                    }
-                });
+            if (replicationEnabled) {
+                Logger.info("Starting background replication threads for [{}] standby server(s)...",
+                        standbyServers.size());
+                for (final var server : standbyServers) {
+                    final String tailerName = ReplicationQueue.generateTailerName(server.url(),
+                            String.valueOf(server.port()));
+                    Thread.ofVirtual().start(() -> {
+                        try {
+                            sendAllPendingWrites(tailerName, server.dbService());
+                        } catch (final InterruptedException e) {
+                            Logger.info("Replication thread for [{}] interrupted.", tailerName);
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                }
+            } else {
+                Logger.info("Replication disabled in config. Standby threads will not start.");
             }
         }
 

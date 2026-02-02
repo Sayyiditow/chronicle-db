@@ -15,8 +15,10 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 
@@ -27,11 +29,12 @@ import chronicle.db.config.KryoSerializer;
 import chronicle.db.config.QueryMode;
 import chronicle.db.utils.SafeRunnable;
 import chronicle.db.utils.SafeSupplier;
-import net.openhft.chronicle.bytes.util.DecoratedBufferOverflowException;
 import net.openhft.chronicle.queue.ChronicleQueue;
+import net.openhft.chronicle.queue.ExcerptTailer;
 import net.openhft.chronicle.queue.RollCycle;
 import net.openhft.chronicle.queue.RollCycles;
 import net.openhft.chronicle.queue.TailerDirection;
+import net.openhft.chronicle.wire.DocumentContext;
 
 /**
  * Manages a persistent replication queue using Chronicle Queue.
@@ -48,6 +51,7 @@ public class ReplicationQueue {
     private static final String primaryTailerName = "localhost_9099";
     private final ChronicleQueue queue;
     private final ReentrantLock queueLock = new ReentrantLock();
+    private final ConcurrentMap<String, ConcurrentSkipListSet<Long>> completionSets = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, ReentrantLock> tailerLocks = new ConcurrentHashMap<>();
     private final String[] tailerNames;
     private static final long blockSize = Server.getQueueSize() * 1024L * 1024L;
@@ -89,30 +93,26 @@ public class ReplicationQueue {
      * @param data The serialized byte array to persist.
      * @return true if the append was successful, false otherwise.
      */
-    private boolean append(final byte[] data) {
+    private long append(final byte[] data) {
         return CHRONICLE_UTILS.doWithLock(queueLock, () -> {
             final var len = CHRONICLE_UTILS.humanReadableByteCount(data.length);
-
-            // Chronicle Queue's 20% rule: message must be ≤ 20% of block size
             final var maxMessageSize = blockSize / 5; // 20% of block size
-            final var humanReadableSize = CHRONICLE_UTILS.humanReadableByteCount(maxMessageSize);
+
             if (data.length > maxMessageSize) {
                 Logger.error("Message size {} exceeds maximum allowed size {}. Write will be dropped.",
-                        len, humanReadableSize);
-                return false;
+                        len, CHRONICLE_UTILS.humanReadableByteCount(maxMessageSize));
+                return -1L;
             }
 
             try (final var appender = queue.createAppender()) {
                 appender.writeDocument(w -> w.write("data").bytes(data));
+                final long index = appender.lastIndexAppended();
                 appender.sync();
                 Logger.info("Queued replication data, size={}", len);
-                return true;
-            } catch (final DecoratedBufferOverflowException e) {
-                Logger.error(
-                        "Buffer overflow detected. Size: {} exceeds maximum allowed size {}. Write will be dropped.",
-                        len, humanReadableSize);
-
-                return false;
+                return index;
+            } catch (final Throwable e) {
+                Logger.error(e, "Failed to append to replication queue.");
+                return -1L;
             }
         });
     }
@@ -136,16 +136,18 @@ public class ReplicationQueue {
             }
 
             // Find earliest cycle from all tailers
-            long earliestCycle = Long.MAX_VALUE;
+            final var earliestCycle = new AtomicLong(Long.MAX_VALUE);
             for (final var tailerName : tailerNames) {
-                try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
-                    earliestCycle = Math.min(earliestCycle, tailer.cycle());
-                }
+                CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
+                    try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
+                        earliestCycle.set(Math.min(earliestCycle.get(), tailer.cycle()));
+                    }
+                });
             }
 
             final RollCycle rollCycle = queue.rollCycle();
             final var rollCycleLength = rollCycle.lengthInMillis();
-            final long tailerCycle = earliestCycle;
+            final long tailerCycle = earliestCycle.get();
             final Instant earliestInstant = Instant.ofEpochMilli(tailerCycle * rollCycleLength);
             Logger.info("Queue cleanup. Earliest tailer cycle = {} ({} UTC)", tailerCycle, earliestInstant);
             // Keep previous day's files
@@ -170,28 +172,73 @@ public class ReplicationQueue {
         }, "Queue Cleanup"));
     }
 
-    /**
-     * Marks the current message as processed for the specified tailer.
-     * This advances the tailer's index in the queue.
-     *
-     * @param tailerName The unique name identifying the tailer/consumer.
-     */
-    private void markProcessed(final String tailerName) {
-        CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
-            try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
-                // Only advance by one message (the one that was successfully processed)
-                final boolean advanced = tailer.readDocument(w -> {
-                    // Read the bytes but don't do anything with them
-                    w.read("data").bytes();
-                });
+    private boolean markProcessed(final String tailerName, final ExcerptTailer tailer) {
+        // Only advance by one message (the one that was successfully processed)
+        boolean advanced = false;
+        try (DocumentContext dc = tailer.readingDocument()) {
+            // Just entering and exiting this block advances the tailer
+            // if a document was present.
+            advanced = dc.isPresent();
+        }
 
-                if (advanced) {
-                    final long index = tailer.index();
-                    final int cycle = queue.rollCycle().toCycle(index);
-                    final long sequence = queue.rollCycle().toSequenceNumber(index);
-                    Logger.info("Tailer [{}] advanced to cycle={}, seq={}", tailerName, cycle, sequence);
-                } else {
-                    Logger.warn("No message to advance for tailer [{}]", tailerName);
+        if (advanced) {
+            final long index = tailer.index();
+            final int cycle = queue.rollCycle().toCycle(index);
+            final long sequence = queue.rollCycle().toSequenceNumber(index);
+            Logger.info("Tailer [{}] advanced to cycle={}, seq={}", tailerName, cycle, sequence);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    /**
+     * Marks a specific message index as successfully processed for a given tailer.
+     * This method uses a gap-filling strategy: the tailer only advances past
+     * contiguous completed indices to ensure no data is skipped on crash recovery.
+     *
+     * @param index The specific index that was completed.
+     */
+    private void markPrimaryProcessed(final long index) {
+        if (index == -1L) {
+            return;
+        }
+
+        // 1. Mark this specific index as complete
+        final var completed = completionSets.computeIfAbsent(primaryTailerName, k -> new ConcurrentSkipListSet<>());
+        completed.add(index);
+
+        // 2. Try to advance the tailer as far as possible (filling gaps)
+        CHRONICLE_UTILS.doWithLock(tailerLocks, primaryTailerName, () -> {
+            try (final var tailer = queue.createTailer(primaryTailerName).direction(TailerDirection.FORWARD)) {
+                while (!completed.isEmpty()) {
+                    boolean advanced = false;
+                    // Peek at the NEXT available record in the queue
+                    try (DocumentContext dc = tailer.readingDocument()) {
+                        if (dc.isPresent()) {
+                            final long foundIndex = dc.index();
+                            if (completed.contains(foundIndex)) {
+                                // This write is finished!
+                                completed.remove(foundIndex);
+                                advanced = true;
+                            } else {
+                                dc.rollbackOnClose();
+                                break;
+                            }
+                        } else {
+                            break; // End of queue
+                        }
+                    }
+
+                    if (advanced) {
+                        final long newIndex = tailer.index();
+                        final int cycle = queue.rollCycle().toCycle(newIndex);
+                        final long sequence = queue.rollCycle().toSequenceNumber(newIndex);
+                        Logger.info("Tailer [{}] advanced to cycle={}, seq={}",
+                                primaryTailerName, cycle, sequence);
+                    } else {
+                        break;
+                    }
                 }
             }
         });
@@ -207,11 +254,10 @@ public class ReplicationQueue {
     public boolean isEmpty(final String tailerName) {
         return CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
             try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
-                try (final var tempTailer = queue.createTailer()) {
-                    tempTailer.moveToIndex(tailer.index());
-                    return !tempTailer.readDocument(w -> {
-                    });
-                }
+                final var index = tailer.index();
+                final var queueIndex = queue.lastIndex();
+                Logger.info("Tailer [{}] index={}, queueIndex={}", tailerName, index, queueIndex);
+                return index > queueIndex;
             }
         });
     }
@@ -284,15 +330,10 @@ public class ReplicationQueue {
 
                         if (success.get()) {
                             // Advance the named tailer only on success
-                            final boolean advanced = tailer.readDocument(w -> w.read("data").bytes());
+                            final var advanced = markProcessed(tailerName, tailer);
                             if (advanced) {
                                 processedCount.incrementAndGet();
-                                final long index = tailer.index();
-                                final int cycle = queue.rollCycle().toCycle(index);
-                                final long sequence = queue.rollCycle().toSequenceNumber(index);
-                                Logger.info("Tailer [{}] advanced to cycle={}, seq={}", tailerName, cycle, sequence);
                             } else {
-                                Logger.warn("No message to advance for tailer [{}]", tailerName);
                                 break;
                             }
                         } else {
@@ -347,9 +388,11 @@ public class ReplicationQueue {
     public static void run(final ReplicationQueue queue, final Map<String, Object> params,
             final SafeRunnable action) {
         if (queue != null) {
-            if (queue.append(KryoSerializer.serialize(params))) {
+            final long index = queue.append(KryoSerializer.serialize(params));
+            if (index != -1L) {
                 action.run();
-                queue.markProcessed(primaryTailerName);
+                Logger.info("DB write finished for index={}. Marking primary done.", index);
+                queue.markPrimaryProcessed(index);
             }
         } else {
             action.run();
@@ -370,9 +413,11 @@ public class ReplicationQueue {
     public static <T> T call(final ReplicationQueue queue, final Map<String, Object> params,
             final SafeSupplier<T> action) {
         if (queue != null) {
-            if (queue.append(KryoSerializer.serialize(params))) {
+            final long index = queue.append(KryoSerializer.serialize(params));
+            if (index != -1L) {
                 final T result = action.get();
-                queue.markProcessed(primaryTailerName);
+                Logger.info("DB write finished for index={}. Marking primary done.", index);
+                queue.markPrimaryProcessed(index);
                 return result;
             }
             return action.failureValue();
@@ -397,9 +442,10 @@ public class ReplicationQueue {
             final QueryMode mode, final Object key, final Object value, final SafeSupplier<T> action) {
         if (queue != null) {
             prepareReplicationParams(params, mode, key, value);
-            if (queue.append(KryoSerializer.serialize(params))) {
+            final long index = queue.append(KryoSerializer.serialize(params));
+            if (index != -1L) {
                 final T result = action.get();
-                queue.markProcessed(primaryTailerName);
+                queue.markPrimaryProcessed(index);
                 return result;
             }
             return action.failureValue();
@@ -423,9 +469,10 @@ public class ReplicationQueue {
             final QueryMode mode, final Map<String, Object> objects, final SafeSupplier<T> action) {
         if (queue != null) {
             prepareReplicationParams(params, mode, objects);
-            if (queue.append(KryoSerializer.serialize(params))) {
+            final long index = queue.append(KryoSerializer.serialize(params));
+            if (index != -1L) {
                 final T result = action.get();
-                queue.markProcessed(primaryTailerName);
+                queue.markPrimaryProcessed(index);
                 return result;
             }
             return action.failureValue();
@@ -449,9 +496,10 @@ public class ReplicationQueue {
             final QueryMode mode, final SafeSupplier<T> action) {
         if (queue != null) {
             prepareReplicationParams(params, mode);
-            if (queue.append(KryoSerializer.serialize(params))) {
+            final long index = queue.append(KryoSerializer.serialize(params));
+            if (index != -1L) {
                 final T result = action.get();
-                queue.markProcessed(primaryTailerName);
+                queue.markPrimaryProcessed(index);
                 return result;
             }
             return action.failureValue();
