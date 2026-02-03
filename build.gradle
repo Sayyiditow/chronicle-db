@@ -50,7 +50,6 @@ application {
 group = 'chronicle.db'
 version = '0.0.1-RELEASE'
 description = 'chronicle-db'
-java.sourceCompatibility = JavaVersion.VERSION_21
 
 publishing {
     publications {
@@ -62,6 +61,7 @@ publishing {
 
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
+    options.release = 21
 }
 
 tasks.withType(Javadoc) {
