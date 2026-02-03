@@ -97,7 +97,8 @@ import net.openhft.chronicle.map.ChronicleMap;
 public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
     private static final int processors = Runtime.getRuntime().availableProcessors();
-    private static final ExecutorService SHARED_EXECUTOR = Executors.newFixedThreadPool(Math.min(processors, 32));
+    private static final ExecutorService SHARED_EXECUTOR = Executors.newFixedThreadPool(
+            Integer.getInteger("chronicle.shared.pool.size", Math.min(processors, 32)));
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
     private static final int flushSize = 5_242_880;
