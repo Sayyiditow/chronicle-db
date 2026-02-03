@@ -892,10 +892,10 @@ public class Server {
                             Logger.error("Error handling client from [{}]: {}", addr, e.getMessage());
                             Logger.error(e);
                         } finally {
-                            Logger.info("Client connection is exiting from [{}]. Active connections: [{}]", addr,
-                                    activeThreads.size());
                             activeThreads.remove(Thread.currentThread());
                             closeSocketResources(dataSocket);
+                            Logger.info("Client connection is exiting from [{}]. Active connections: [{}]", addr,
+                                    activeThreads.size());
                         }
                     });
 
