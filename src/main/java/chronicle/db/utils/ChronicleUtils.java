@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableSet;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
@@ -102,6 +103,7 @@ public final class ChronicleUtils {
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
     private static final int flushSize = 5_242_880;
+    private static final int INDEX_CHUNK_SIZE = 10_000;
 
     public static class FieldData {
         final Field field;
@@ -594,6 +596,14 @@ public final class ChronicleUtils {
         return false;
     }
 
+    public Map<String, byte[]> preCalculateKeyBytes(final Collection<String> keys) {
+        if (keys == null || keys.isEmpty())
+            return Collections.emptyMap();
+        final var map = new ConcurrentHashMap<String, byte[]>(keys.size());
+        keys.parallelStream().forEach(key -> map.put(key, MAP_DB.getSanitizedByte(key)));
+        return map;
+    }
+
     /**
      * Index the db so that joins for 1 to many are efficient.
      * 
@@ -606,7 +616,6 @@ public final class ChronicleUtils {
      */
     public <V> void index(final ChronicleMap<String, V> db, final String dbName, final Set<String> fields,
             final String dataPath, final Class<?> valueClass, final Map<String, Set<String>> exclusions) {
-        final int BATCH_SIZE = 100_000;
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
 
         final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -640,13 +649,13 @@ public final class ChronicleUtils {
         }
 
         try {
-            final Map<String, Set<byte[]>> fieldBatches = new ConcurrentHashMap<>();
+            final Map<String, List<byte[]>> fieldBatches = new ConcurrentHashMap<>();
             final AtomicInteger recordCount = new AtomicInteger(0);
 
             for (final String field : indexFieldMap.keySet()) {
                 final String indexPath = indexDirPath + field;
                 if (openIndexes.containsKey(indexPath)) {
-                    fieldBatches.put(field, ConcurrentHashMap.newKeySet(BATCH_SIZE));
+                    fieldBatches.put(field, new ArrayList<>(INDEX_CHUNK_SIZE));
                 }
             }
 
@@ -654,11 +663,12 @@ public final class ChronicleUtils {
             db.forEachEntry(entry -> {
                 final var key = entry.key().get();
                 final V value = entry.value().get();
+                final byte[] keyBytes = MAP_DB.getSanitizedByte(key);
 
                 try {
-                    for (final Map.Entry<String, List<FieldData>> fieldEntry : indexFieldMap.entrySet()) {
+                    for (final var fieldEntry : indexFieldMap.entrySet()) {
                         final String compoundField = fieldEntry.getKey();
-                        final Set<byte[]> batch = fieldBatches.get(compoundField);
+                        final List<byte[]> batch = fieldBatches.get(compoundField);
                         if (batch == null)
                             continue;
 
@@ -682,15 +692,15 @@ public final class ChronicleUtils {
                         }
 
                         if (!shouldSkip) {
-                            final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), key.toString());
+                            final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), keyBytes);
                             batch.add(indexKey);
                         }
                     }
 
-                    if (recordCount.incrementAndGet() % BATCH_SIZE == 0) {
+                    if (recordCount.incrementAndGet() % INDEX_CHUNK_SIZE == 0) {
                         fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
                             final String field = batchEntry.getKey();
-                            final Set<byte[]> batch = batchEntry.getValue();
+                            final List<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
                                 final var indexPath = indexDirPath + field;
                                 final var sharedIndexMap = openIndexes.get(indexPath);
@@ -708,7 +718,7 @@ public final class ChronicleUtils {
             // Flush remaining
             fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
                 final String field = batchEntry.getKey();
-                final Set<byte[]> batch = batchEntry.getValue();
+                final List<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
                     final var indexPath = indexDirPath + field;
                     final var sharedIndexMap = openIndexes.get(indexPath);
@@ -721,6 +731,24 @@ public final class ChronicleUtils {
             openIndexes.forEach((indexPath, sharedIndexMap) -> {
                 sharedIndexMap.close();
             });
+        }
+    }
+
+    private <V> void processRemoveChunk(final List<Map.Entry<String, V>> chunk, final List<FieldData> fieldGetters,
+            final Map<String, byte[]> keyByteMap, final NavigableSet<byte[]> index) {
+        final List<byte[]> batchToRemove = new ArrayList<>(chunk.size());
+        final StringBuilder sb = new StringBuilder();
+        for (final var e : chunk) {
+            final var key = e.getKey();
+            final V value = e.getValue();
+            sb.setLength(0);
+            for (final FieldData fd : fieldGetters) {
+                appendValue(sb, fd.varHandle.get(value));
+            }
+            batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyByteMap.get(key)));
+        }
+        synchronized (index) {
+            index.removeAll(batchToRemove);
         }
     }
 
@@ -761,51 +789,83 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Remove from each index
-            indexFieldMap.entrySet().parallelStream().forEach(entry -> {
-                final String indexName = entry.getKey();
-                final List<FieldData> fieldGetters = entry.getValue();
+            final var keyByteMap = preCalculateKeyBytes(values.keySet());
+            final List<Map.Entry<String, V>> recordList = new ArrayList<>(values.entrySet());
+            final int totalRecords = recordList.size();
+
+            indexFieldMap.forEach((indexName, fieldGetters) -> {
                 final String indexPath = dataPath + ChronicleDao.INDEX_DIR + indexName;
                 final var sharedIndexMap = openIndexes.get(indexPath);
+                if (sharedIndexMap == null)
+                    return;
 
-                final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
-                var recordCount = 0;
-
-                final int BATCH_SIZE = 100_000;
-                final List<byte[]> batchToRemove = new ArrayList<>(Math.min(values.size(), BATCH_SIZE));
-
-                for (final var e : values.entrySet()) {
-                    final var key = e.getKey();
-                    final V value = e.getValue();
-
-                    final var sb = sbThreadLocal.get();
-                    sb.setLength(0);
-                    for (final FieldData fd : fieldGetters) {
-                        final Object objVal = fd.varHandle.get(value);
-                        appendValue(sb, objVal);
+                if (totalRecords <= INDEX_CHUNK_SIZE) {
+                    processRemoveChunk(recordList, fieldGetters, keyByteMap, sharedIndexMap.index);
+                } else {
+                    final var tasks = new ArrayList<Runnable>();
+                    for (int i = 0; i < totalRecords; i += INDEX_CHUNK_SIZE) {
+                        final var chunk = recordList.subList(i, Math.min(i + INDEX_CHUNK_SIZE, totalRecords));
+                        tasks.add(() -> processRemoveChunk(chunk, fieldGetters, keyByteMap, sharedIndexMap.index));
                     }
-
-                    batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), key.toString()));
-
-                    if (batchToRemove.size() >= BATCH_SIZE) {
-                        sharedIndexMap.index.removeAll(batchToRemove);
-                        recordCount += batchToRemove.size();
-                        batchToRemove.clear();
-                    }
+                    processInParallel(tasks);
                 }
-
-                if (!batchToRemove.isEmpty()) {
-                    sharedIndexMap.index.removeAll(batchToRemove);
-                    recordCount += batchToRemove.size();
-                }
-
-                if (recordCount != 0) {
-                    Logger.info("Removed [{}] records from index at [{}]", recordCount, indexPath);
-                }
+                Logger.info("Removed [{}] records from index at [{}]", totalRecords, indexPath);
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
                 sharedIndexMap.close();
             });
+        }
+    }
+
+    private <V> void processUpdateChunk(final List<Map.Entry<String, V>> chunk, final Map<String, V> previousValues,
+            final List<FieldData> fieldGetters, final Set<String> excluded, final Map<String, byte[]> keyByteMap,
+            final NavigableSet<byte[]> index) {
+        final List<byte[]> batchToRemove = new ArrayList<>();
+        final List<byte[]> batchToAdd = new ArrayList<>();
+        final StringBuilder sb = new StringBuilder();
+
+        for (final var valEntry : chunk) {
+            final var key = valEntry.getKey();
+            final V newVal = valEntry.getValue();
+            final V prevVal = previousValues.get(key);
+            final byte[] keyBytes = keyByteMap.get(key);
+
+            sb.setLength(0);
+            boolean skipAdd = false;
+            for (final FieldData fd : fieldGetters) {
+                final Object objVal = fd.varHandle.get(newVal);
+                if (excluded.isEmpty()) {
+                    appendValue(sb, objVal);
+                } else {
+                    final var valStr = toStringOptimized(objVal);
+                    if (excluded.contains(valStr))
+                        skipAdd = true;
+                    sb.append(valStr);
+                }
+            }
+            final String newValStr = sb.toString();
+
+            if (prevVal != null) {
+                sb.setLength(0);
+                for (final FieldData fd : fieldGetters) {
+                    appendValue(sb, fd.varHandle.get(prevVal));
+                }
+                final String oldValStr = sb.toString();
+                if (!Objects.equals(oldValStr, newValStr)) {
+                    batchToRemove.add(MAP_DB.createIndexKey(oldValStr, keyBytes));
+                    if (!skipAdd)
+                        batchToAdd.add(MAP_DB.createIndexKey(newValStr, keyBytes));
+                }
+            } else if (!skipAdd) {
+                batchToAdd.add(MAP_DB.createIndexKey(newValStr, keyBytes));
+            }
+        }
+        synchronized (index) {
+            if (!batchToRemove.isEmpty())
+                index.removeAll(batchToRemove);
+            if (!batchToAdd.isEmpty())
+                index.addAll(batchToAdd);
         }
     }
 
@@ -853,88 +913,34 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Update indexes
-            indexFieldMap.entrySet().parallelStream().forEach(entry -> {
-                final String indexName = entry.getKey();
-                final List<FieldData> fieldGetters = entry.getValue();
+            final var allKeys = new HashSet<String>(values.keySet());
+            allKeys.addAll(previousValues.keySet());
+            final var keyByteMap = preCalculateKeyBytes(allKeys);
+
+            final List<Map.Entry<String, V>> recordList = new ArrayList<>(values.entrySet());
+            final int totalRecords = recordList.size();
+
+            indexFieldMap.forEach((indexName, fieldGetters) -> {
                 final String indexPath = indexDirPath + indexName;
                 final var sharedIndexMap = openIndexes.get(indexPath);
-                var recordCount = 0;
+                if (sharedIndexMap == null)
+                    return;
 
-                final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
-                final ThreadLocal<StringBuilder> sbThreadLocal = ThreadLocal.withInitial(() -> new StringBuilder());
+                final var excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
 
-                final int BATCH_SIZE = 100_000;
-                final List<byte[]> batchToRemove = new ArrayList<>(BATCH_SIZE);
-                final List<byte[]> batchToAdd = new ArrayList<>(BATCH_SIZE);
-
-                for (final var valEntry : values.entrySet()) {
-                    final var key = valEntry.getKey();
-                    final V newVal = valEntry.getValue();
-                    final V prevVal = previousValues.get(key);
-
-                    final var sb = sbThreadLocal.get();
-                    sb.setLength(0);
-                    boolean skipAdd = false;
-
-                    for (final FieldData fd : fieldGetters) {
-                        final Object objVal = fd.varHandle.get(newVal);
-                        if (excluded.isEmpty()) {
-                            appendValue(sb, objVal);
-                        } else {
-                            final var value = toStringOptimized(objVal);
-                            if (excluded.contains(value)) {
-                                skipAdd = true;
-                            }
-                            sb.append(value);
-                        }
+                if (totalRecords <= INDEX_CHUNK_SIZE) {
+                    processUpdateChunk(recordList, previousValues, fieldGetters, excluded, keyByteMap,
+                            sharedIndexMap.index);
+                } else {
+                    final var tasks = new ArrayList<Runnable>();
+                    for (int i = 0; i < totalRecords; i += INDEX_CHUNK_SIZE) {
+                        final var chunk = recordList.subList(i, Math.min(i + INDEX_CHUNK_SIZE, totalRecords));
+                        tasks.add(() -> processUpdateChunk(chunk, previousValues, fieldGetters, excluded, keyByteMap,
+                                sharedIndexMap.index));
                     }
-                    final var newValStr = sb.toString();
-
-                    if (prevVal != null) {
-                        sb.setLength(0);
-                        for (final FieldData fd : fieldGetters) {
-                            final Object objVal = fd.varHandle.get(prevVal);
-                            appendValue(sb, objVal);
-                        }
-                        final var oldValStr = sb.toString();
-
-                        if (!Objects.equals(oldValStr, newValStr)) {
-                            // Always remove if changed (regardless of exclusion)
-                            batchToRemove.add(MAP_DB.createIndexKey(oldValStr, key.toString()));
-                            // Add new value only if not excluded and not empty
-                            if (!skipAdd) {
-                                batchToAdd.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                            }
-                            recordCount++;
-                        }
-                    } else {
-                        // Add new value only if not excluded
-                        if (!skipAdd) {
-                            batchToAdd.add(MAP_DB.createIndexKey(newValStr, key.toString()));
-                            recordCount++;
-                        }
-                    }
-
-                    if (batchToRemove.size() >= BATCH_SIZE) {
-                        sharedIndexMap.index.removeAll(batchToRemove);
-                        batchToRemove.clear();
-                    }
-                    if (batchToAdd.size() >= BATCH_SIZE) {
-                        sharedIndexMap.index.addAll(batchToAdd);
-                        batchToAdd.clear();
-                    }
+                    processInParallel(tasks);
                 }
-
-                if (!batchToRemove.isEmpty()) {
-                    sharedIndexMap.index.removeAll(batchToRemove);
-                }
-                if (!batchToAdd.isEmpty()) {
-                    sharedIndexMap.index.addAll(batchToAdd);
-                }
-
-                if (recordCount != 0) {
-                    Logger.info("Updated [{}] indexes at [{}]", recordCount, indexPath);
-                }
+                Logger.info("Updated index for [{}] records at [{}]", totalRecords, indexPath);
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {

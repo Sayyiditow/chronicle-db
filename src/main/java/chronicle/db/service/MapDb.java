@@ -327,13 +327,16 @@ public final class MapDb {
         return str.indexOf(indexSep) >= 0 ? str.replace((char) indexSep, ' ') : str;
     }
 
+    public byte[] getSanitizedByte(final String value) {
+        return sanitize(value).getBytes(StandardCharsets.UTF_8);
+    }
+
     private byte[] getSanitizedByte(final Object value) {
         return sanitize(value).getBytes(StandardCharsets.UTF_8);
     }
 
-    public byte[] createIndexKey(final Object fieldValue, final String primaryKey) {
+    public byte[] createIndexKey(final Object fieldValue, final byte[] keyBytes) {
         final byte[] fieldBytes = getSanitizedByte(fieldValue);
-        final byte[] keyBytes = getSanitizedByte(primaryKey);
         final byte[] result = new byte[fieldBytes.length + 1 + keyBytes.length];
         System.arraycopy(fieldBytes, 0, result, 0, fieldBytes.length); // Copy 1st part
         result[fieldBytes.length] = indexSep; // Insert separator
