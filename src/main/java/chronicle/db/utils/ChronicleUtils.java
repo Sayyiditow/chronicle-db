@@ -100,6 +100,8 @@ public final class ChronicleUtils {
     private static final int processors = Runtime.getRuntime().availableProcessors();
     private static final ExecutorService SHARED_EXECUTOR = Executors.newFixedThreadPool(
             Integer.getInteger("chronicle.shared.pool.size", Math.min(processors, 32)));
+    private static final ExecutorService ITERABLE_EXECUTOR = Executors.newFixedThreadPool(
+            Integer.getInteger("chronicle.iterable.pool.size", Math.min(processors, 32)));
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
     private static final int flushSize = 5_242_880;
@@ -807,9 +809,9 @@ public final class ChronicleUtils {
                         final var chunk = recordList.subList(i, Math.min(i + INDEX_CHUNK_SIZE, totalRecords));
                         tasks.add(() -> processRemoveChunk(chunk, fieldGetters, keyByteMap, sharedIndexMap.index));
                     }
-                    processInParallel(tasks);
+                    tasks.parallelStream().forEach(task -> task.run());
                 }
-                Logger.info("Removed [{}] records from index at [{}]", totalRecords, indexPath);
+                Logger.info("Deleted [{}] from index at [{}]", totalRecords, indexPath);
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
@@ -938,7 +940,7 @@ public final class ChronicleUtils {
                         tasks.add(() -> processUpdateChunk(chunk, previousValues, fieldGetters, excluded, keyByteMap,
                                 sharedIndexMap.index));
                     }
-                    processInParallel(tasks);
+                    tasks.parallelStream().forEach(task -> task.run());
                 }
                 Logger.info("Updated index for [{}] records at [{}]", totalRecords, indexPath);
             });
@@ -1376,7 +1378,7 @@ public final class ChronicleUtils {
      * @param action   The predicate action to perform on each item.
      * @throws InterruptedException If the thread is interrupted.
      */
-    public void parallelIterable(final Iterable<String> iterable, final int limit, final Predicate<String> action)
+    public <T> void parallelIterable(final Iterable<T> iterable, final int limit, final Predicate<T> action)
             throws InterruptedException {
         final AtomicInteger matchCounter = new AtomicInteger(0);
         parallelIterable(iterable, limit, matchCounter, action);
@@ -1406,7 +1408,7 @@ public final class ChronicleUtils {
         final var futures = new ArrayList<Future<?>>(consumerThreads);
 
         for (int i = 0; i < consumerThreads; i++) {
-            futures.add(SHARED_EXECUTOR.submit(() -> {
+            futures.add(ITERABLE_EXECUTOR.submit(() -> {
                 final var batch = new ArrayList<T>(batchSize);
 
                 while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
