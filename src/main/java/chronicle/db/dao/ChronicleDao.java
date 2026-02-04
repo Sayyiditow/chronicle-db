@@ -215,7 +215,9 @@ public interface ChronicleDao<V> {
      * 
      * @return A sample key (e.g., "user12345")
      */
-    String averageKey();
+    default String averageKey() {
+        return "k".repeat(Integer.getInteger("chronicle." + name() + ".key.size", 36));
+    }
 
     /**
      * Returns a representative average entity instance for sizing calculations.

@@ -1,7 +1,6 @@
 package chronicle.db.service;
 
 import java.util.ArrayList;
-import java.util.UUID;
 
 import com.jsoniter.spi.TypeLiteral;
 
@@ -20,11 +19,6 @@ public class LeadDao implements ChronicleDao<Lead> {
     @Override
     public long entries() {
         return 100;
-    }
-
-    @Override
-    public String averageKey() {
-        return UUID.randomUUID().toString();
     }
 
     @Override
