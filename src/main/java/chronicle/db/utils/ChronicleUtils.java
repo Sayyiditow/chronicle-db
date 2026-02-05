@@ -106,7 +106,11 @@ public final class ChronicleUtils {
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
     private static final int flushSize = 5_242_880;
-    private static final int INDEX_CHUNK_SIZE = 10_000;
+    private static final int indexChunkSize = 10_000;
+    // CRITICAL: Changing these seeds will invalidate all existing KeyMaps and
+    // Indexes! These values must be permanent for the life of the database.
+    private static final long hashSeed1 = 0L;
+    private static final long hashSeed2 = 1L;
 
     public static class FieldData {
         final Field field;
@@ -658,7 +662,7 @@ public final class ChronicleUtils {
             for (final String field : indexFieldMap.keySet()) {
                 final String indexPath = indexDirPath + field;
                 if (openIndexes.containsKey(indexPath)) {
-                    fieldBatches.put(field, new ArrayList<>(INDEX_CHUNK_SIZE));
+                    fieldBatches.put(field, new ArrayList<>(indexChunkSize));
                 }
             }
 
@@ -700,7 +704,7 @@ public final class ChronicleUtils {
                         }
                     }
 
-                    if (recordCount.incrementAndGet() % INDEX_CHUNK_SIZE == 0) {
+                    if (recordCount.incrementAndGet() % indexChunkSize == 0) {
                         fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
                             final String field = batchEntry.getKey();
                             final List<byte[]> batch = batchEntry.getValue();
@@ -802,12 +806,12 @@ public final class ChronicleUtils {
                 if (sharedIndexMap == null)
                     return;
 
-                if (totalRecords <= INDEX_CHUNK_SIZE) {
+                if (totalRecords <= indexChunkSize) {
                     processRemoveChunk(recordList, fieldGetters, keyByteMap, sharedIndexMap.index);
                 } else {
                     final var tasks = new ArrayList<Runnable>();
-                    for (int i = 0; i < totalRecords; i += INDEX_CHUNK_SIZE) {
-                        final var chunk = recordList.subList(i, Math.min(i + INDEX_CHUNK_SIZE, totalRecords));
+                    for (int i = 0; i < totalRecords; i += indexChunkSize) {
+                        final var chunk = recordList.subList(i, Math.min(i + indexChunkSize, totalRecords));
                         tasks.add(() -> processRemoveChunk(chunk, fieldGetters, keyByteMap, sharedIndexMap.index));
                     }
                     tasks.parallelStream().forEach(task -> task.run());
@@ -931,13 +935,13 @@ public final class ChronicleUtils {
 
                 final var excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
 
-                if (totalRecords <= INDEX_CHUNK_SIZE) {
+                if (totalRecords <= indexChunkSize) {
                     processUpdateChunk(recordList, previousValues, fieldGetters, excluded, keyByteMap,
                             sharedIndexMap.index);
                 } else {
                     final var tasks = new ArrayList<Runnable>();
-                    for (int i = 0; i < totalRecords; i += INDEX_CHUNK_SIZE) {
-                        final var chunk = recordList.subList(i, Math.min(i + INDEX_CHUNK_SIZE, totalRecords));
+                    for (int i = 0; i < totalRecords; i += indexChunkSize) {
+                        final var chunk = recordList.subList(i, Math.min(i + indexChunkSize, totalRecords));
                         tasks.add(() -> processUpdateChunk(chunk, previousValues, fieldGetters, excluded, keyByteMap,
                                 sharedIndexMap.index));
                     }
@@ -1644,8 +1648,8 @@ public final class ChronicleUtils {
         if (key == null)
             return new byte[16];
 
-        final long h1 = LongHashFunction.xx_r39(0).hashChars(key);
-        final long h2 = LongHashFunction.xx_r39(1).hashChars(key);
+        final long h1 = LongHashFunction.xx_r39(hashSeed1).hashChars(key);
+        final long h2 = LongHashFunction.xx_r39(hashSeed2).hashChars(key);
 
         final byte[] result = new byte[16];
 

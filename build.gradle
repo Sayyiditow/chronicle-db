@@ -76,5 +76,40 @@ task copyDependencies(type: Copy) {
 build.dependsOn(copyDependencies)
 
 jar {
-    processResources.exclude('*')
+    exclude { it.file.toPath().startsWith("$buildDir/resources/") }
 }
+
+// --- CRITICAL DATA INTEGRITY CHECK ---
+task verifyHashSeeds {
+    description = 'Ensures that the hashing seeds in ChronicleUtils.java have not been modified.'
+    group = 'verification'
+    
+    doLast {
+        def utilsFile = file('src/main/java/chronicle/db/utils/ChronicleUtils.java')
+        if (!utilsFile.exists()) {
+            throw new RuntimeException("Could not find ChronicleUtils.java for integrity check!")
+        }
+        
+        def content = utilsFile.text
+        // We use a literal check to ensure even the 'L' suffix and spacing are preserved as a safeguard
+        boolean seed1Ok = content.contains('private static final long hashSeed1 = 0L;')
+        boolean seed2Ok = content.contains('private static final long hashSeed2 = 1L;')
+        
+        if (!seed1Ok || !seed2Ok) {
+            throw new RuntimeException(
+                "\n" +
+                "********************************************************************************\n" +
+                "CRITICAL ERROR: Hashing seeds in ChronicleUtils.java have been altered!\n" +
+                "Changing these seeds will invalidate all existing KeyMaps and Secondary Indexes,\n" +
+                "effectively corrupting the database routing layer.\n" +
+                "\n" +
+                "Please REVERT hashSeed1 to 0L and hashSeed2 to 1L immediately.\n" +
+                "********************************************************************************"
+            )
+        }
+        println "✅ Hashing seed integrity verified."
+    }
+}
+
+// Hook it into the standard build lifecycle
+compileJava.dependsOn verifyHashSeeds
