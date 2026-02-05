@@ -57,6 +57,7 @@ import chronicle.db.dao.ChronicleDao;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.MapDb.SharedIndexMap;
+import net.openhft.chronicle.algo.hashing.LongHashFunction;
 import net.openhft.chronicle.map.ChronicleMap;
 
 /**
@@ -1637,5 +1638,38 @@ public final class ChronicleUtils {
         final int exp = (int) (Math.log(bytes) / Math.log(1024));
         final String pre = "KMGTPE".charAt(exp - 1) + "";
         return String.format("%.1f%sB", bytes / Math.pow(1024, exp), pre);
+    }
+
+    public byte[] to128BitHash(final String key) {
+        if (key == null)
+            return new byte[16];
+
+        final long h1 = LongHashFunction.xx_r39(0).hashChars(key);
+        final long h2 = LongHashFunction.xx_r39(1).hashChars(key);
+
+        final byte[] result = new byte[16];
+
+        // Unroll the loop manually for maximum speed
+        // High 64 bits (h1)
+        result[0] = (byte) (h1 >>> 56);
+        result[1] = (byte) (h1 >>> 48);
+        result[2] = (byte) (h1 >>> 40);
+        result[3] = (byte) (h1 >>> 32);
+        result[4] = (byte) (h1 >>> 24);
+        result[5] = (byte) (h1 >>> 16);
+        result[6] = (byte) (h1 >>> 8);
+        result[7] = (byte) h1;
+
+        // Low 64 bits (h2)
+        result[8] = (byte) (h2 >>> 56);
+        result[9] = (byte) (h2 >>> 48);
+        result[10] = (byte) (h2 >>> 40);
+        result[11] = (byte) (h2 >>> 32);
+        result[12] = (byte) (h2 >>> 24);
+        result[13] = (byte) (h2 >>> 16);
+        result[14] = (byte) (h2 >>> 8);
+        result[15] = (byte) h2;
+
+        return result;
     }
 }
