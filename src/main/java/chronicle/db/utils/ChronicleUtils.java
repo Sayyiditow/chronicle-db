@@ -947,7 +947,7 @@ public final class ChronicleUtils {
                     }
                     tasks.parallelStream().forEach(task -> task.run());
                 }
-                Logger.info("Updated index for [{}] records at [{}]", totalRecords, indexPath);
+                Logger.info("Updated [{}] indexes at [{}]", totalRecords, indexPath);
             });
         } finally {
             openIndexes.forEach((path, sharedIndexMap) -> {
