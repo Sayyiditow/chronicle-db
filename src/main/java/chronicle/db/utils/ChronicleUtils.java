@@ -755,7 +755,9 @@ public final class ChronicleUtils {
             batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyByteMap.get(key)));
         }
         synchronized (index) {
-            index.removeAll(batchToRemove);
+            for (final byte[] key : batchToRemove) {
+                index.remove(key);
+            }
         }
     }
 
@@ -869,8 +871,11 @@ public final class ChronicleUtils {
             }
         }
         synchronized (index) {
-            if (!batchToRemove.isEmpty())
-                index.removeAll(batchToRemove);
+            if (!batchToRemove.isEmpty()) {
+                for (final byte[] key : batchToRemove) {
+                    index.remove(key);
+                }
+            }
             if (!batchToAdd.isEmpty())
                 index.addAll(batchToAdd);
         }
