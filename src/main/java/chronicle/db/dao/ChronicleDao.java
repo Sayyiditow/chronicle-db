@@ -1166,9 +1166,7 @@ public interface ChronicleDao<V> {
      */
     private void removeAllFromKeyMap(final Map<String, byte[]> keyHashMap) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            for (final var hash : keyHashMap.values()) {
-                sharedKeyMap.map.remove(hash);
-            }
+            keyHashMap.values().parallelStream().forEach(sharedKeyMap.map::remove);
         }
         Logger.debug("Deleted [{}] keys from KeyMap at [{}].", keyHashMap.size(), dataPath());
     }
@@ -3986,7 +3984,8 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.debug("Searching CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(), filters.size());
+        Logger.debug("Searching CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
+                filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> csvHeaders = new AtomicReference<>(null);
