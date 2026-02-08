@@ -253,7 +253,7 @@ public final class MapDb {
     public void closeMap(final String filePath) {
         mapCache.computeIfPresent(filePath, (k, mapEntry) -> {
             mapEntry.map.close();
-            Logger.info("Closed KeyMap at [{}]", filePath);
+            Logger.debug("Closed KeyMap at [{}]", filePath);
             return null;
         });
     }
@@ -266,10 +266,10 @@ public final class MapDb {
             final String filePath = entry.getKey();
             final SharedKeyMap mapEntry = entry.getValue();
             mapEntry.map.close();
-            Logger.info("Closed KeyMap at [{}]", filePath);
+            Logger.debug("Closed KeyMap at [{}]", filePath);
         }
         mapCache.clear(); // Clear all cached entries
-        Logger.info("All KeyMaps have been closed and mapCache cleared.");
+        Logger.debug("All KeyMaps have been closed and mapCache cleared.");
     }
 
     /**
@@ -322,7 +322,7 @@ public final class MapDb {
     public void closeIndex(final String filePath) {
         treeCache.computeIfPresent(filePath, (k, treeEntry) -> {
             treeEntry.db.close();
-            Logger.info("Closed Index at [{}]", filePath);
+            Logger.debug("Closed Index at [{}]", filePath);
             return null;
         });
     }
@@ -335,10 +335,10 @@ public final class MapDb {
             final String filePath = entry.getKey();
             final var treeEntry = entry.getValue();
             treeEntry.db.close();
-            Logger.info("Closed Index at [{}]", filePath);
+            Logger.debug("Closed Index at [{}]", filePath);
         }
         treeCache.clear(); // Clear all cached entries
-        Logger.info("All Indexes have been closed and treeCache cleared.");
+        Logger.debug("All Indexes have been closed and treeCache cleared.");
     }
 
     private String sanitize(final Object input) {

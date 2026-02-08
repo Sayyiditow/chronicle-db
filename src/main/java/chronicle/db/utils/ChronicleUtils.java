@@ -865,7 +865,7 @@ public final class ChronicleUtils {
                         throw new RuntimeException("InterruptedException while proccessing chunk index removal.");
                     }
                 }
-                Logger.info("Deleted [{}] indexes at [{}]", totalRecords, indexPath);
+                Logger.debug("Deleted [{}] indexes at [{}]", totalRecords, indexPath);
             });
         } finally {
             openIndexes.forEach((path, sharedIndexSet) -> {
@@ -974,7 +974,7 @@ public final class ChronicleUtils {
                             synchronized (sharedIndex.index) {
                                 keysToAddMap.values().parallelStream().unordered().forEach(sharedIndex.index::add);
                             }
-                            Logger.info("Inserted [{}] indexes at [{}]", keysToAddMap.size(), indexPath);
+                            Logger.debug("Inserted [{}] indexes at [{}]", keysToAddMap.size(), indexPath);
                         }
                     });
         } catch (final InterruptedException e) {
@@ -1075,11 +1075,11 @@ public final class ChronicleUtils {
                             synchronized (sharedIndex.index) {
                                 if (!toRemove.isEmpty()) {
                                     toRemove.parallelStream().unordered().forEach(sharedIndex.index::remove);
-                                    Logger.info("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
+                                    Logger.debug("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
                                 }
                                 if (!toAdd.isEmpty()) {
                                     toAdd.parallelStream().unordered().forEach(sharedIndex.index::add);
-                                    Logger.info("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
+                                    Logger.debug("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
                                 }
                             }
                         }

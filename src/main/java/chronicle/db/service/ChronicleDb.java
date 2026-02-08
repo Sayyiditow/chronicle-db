@@ -201,7 +201,7 @@ public final class ChronicleDb {
     public void close(final String filePath) {
         mapCache.computeIfPresent(filePath, (k, mapEntry) -> {
             mapEntry.map.close();
-            Logger.info("Closed ChronicleMap at [{}]", filePath);
+            Logger.debug("Closed ChronicleMap at [{}]", filePath);
             return null;
         });
     }
@@ -214,10 +214,10 @@ public final class ChronicleDb {
             final String filePath = entry.getKey();
             final SharedChronicleMap mapEntry = entry.getValue();
             mapEntry.map.close();
-            Logger.info("Closed ChronicleMap at [{}]", filePath);
+            Logger.debug("Closed ChronicleMap at [{}]", filePath);
         }
         mapCache.clear(); // Clear all cached entries
-        Logger.info("All ChronicleMaps have been closed and mapCache cleared.");
+        Logger.debug("All ChronicleMaps have been closed and mapCache cleared.");
     }
 
     /**

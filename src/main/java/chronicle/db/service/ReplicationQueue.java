@@ -108,7 +108,7 @@ public class ReplicationQueue {
                 appender.writeDocument(w -> w.write("data").bytes(data));
                 final long index = appender.lastIndexAppended();
                 appender.sync();
-                Logger.info("Queued replication data, size={}", len);
+                Logger.debug("Queued replication data, size={}", len);
                 return index;
             } catch (final Throwable e) {
                 Logger.error(e, "Failed to append to replication queue.");
@@ -166,7 +166,7 @@ public class ReplicationQueue {
                     Logger.info("Deleting queue file [{}].", fileName);
                     Files.deleteIfExists(file.toPath());
                 } else {
-                    Logger.info("File [{}] left intact, within tailer cycle.", fileName);
+                    Logger.debug("File [{}] left intact, within tailer cycle.", fileName);
                 }
             }
         }, "Queue Cleanup"));
@@ -185,7 +185,7 @@ public class ReplicationQueue {
             final long index = tailer.index();
             final int cycle = queue.rollCycle().toCycle(index);
             final long sequence = queue.rollCycle().toSequenceNumber(index);
-            Logger.info("Tailer [{}] advanced to cycle={}, seq={}", tailerName, cycle, sequence);
+            Logger.debug("Tailer [{}] advanced to cycle={}, seq={}", tailerName, cycle, sequence);
             return true;
         } else {
             return false;
@@ -234,7 +234,7 @@ public class ReplicationQueue {
                         final long newIndex = tailer.index();
                         final int cycle = queue.rollCycle().toCycle(newIndex);
                         final long sequence = queue.rollCycle().toSequenceNumber(newIndex);
-                        Logger.info("Tailer [{}] advanced to cycle={}, seq={}",
+                        Logger.debug("Tailer [{}] advanced to cycle={}, seq={}",
                                 primaryTailerName, cycle, sequence);
                     } else {
                         break;
@@ -256,7 +256,7 @@ public class ReplicationQueue {
             try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
                 final var index = tailer.index();
                 final var queueIndex = queue.lastIndex();
-                Logger.info("Tailer [{}] index={}, queueIndex={}", tailerName, index, queueIndex);
+                Logger.debug("Tailer [{}] index={}, queueIndex={}", tailerName, index, queueIndex);
                 return index > queueIndex;
             }
         });
@@ -391,7 +391,7 @@ public class ReplicationQueue {
             final long index = queue.append(KryoSerializer.serialize(params));
             if (index != -1L) {
                 action.run();
-                Logger.info("DB write finished for index={}. Marking primary done.", index);
+                Logger.debug("DB write finished for index={}. Marking primary done.", index);
                 queue.markPrimaryProcessed(index);
             }
         } else {
@@ -416,7 +416,7 @@ public class ReplicationQueue {
             final long index = queue.append(KryoSerializer.serialize(params));
             if (index != -1L) {
                 final T result = action.get();
-                Logger.info("DB write finished for index={}. Marking primary done.", index);
+                Logger.debug("DB write finished for index={}. Marking primary done.", index);
                 queue.markPrimaryProcessed(index);
                 return result;
             }

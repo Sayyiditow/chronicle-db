@@ -1156,7 +1156,7 @@ public interface ChronicleDao<V> {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.remove(keyHash);
         }
-        Logger.info("Deleted [{}] from KeyMap at [{}].", key, dataPath());
+        Logger.debug("Deleted [{}] from KeyMap at [{}].", key, dataPath());
     }
 
     /**
@@ -1170,7 +1170,7 @@ public interface ChronicleDao<V> {
                 sharedKeyMap.map.remove(hash);
             }
         }
-        Logger.info("Deleted [{}] keys from KeyMap at [{}].", keyHashMap.size(), dataPath());
+        Logger.debug("Deleted [{}] keys from KeyMap at [{}].", keyHashMap.size(), dataPath());
     }
 
     /**
@@ -1184,7 +1184,7 @@ public interface ChronicleDao<V> {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             sharedKeyMap.map.put(keyHash, new KeyMapValue(key, file));
         }
-        Logger.info("Inserted [{}] to KeyMap at [{}].", key, dataPath());
+        Logger.debug("Inserted [{}] to KeyMap at [{}].", key, dataPath());
     }
 
     /**
@@ -1200,7 +1200,7 @@ public interface ChronicleDao<V> {
                     keyHashMap.get(e.getKey()),
                     new KeyMapValue(e.getKey(), e.getValue())));
         }
-        Logger.info("Inserted [{}] keys to KeyMap at [{}].", keyToFile.size(), dataPath());
+        Logger.debug("Inserted [{}] keys to KeyMap at [{}].", keyToFile.size(), dataPath());
     }
 
     /**
@@ -1321,7 +1321,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched [{}] entries at [{}].", result.size(), dataPath());
+        Logger.debug("Fetched [{}] entries at [{}].", result.size(), dataPath());
         return result;
     }
 
@@ -1344,7 +1344,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched [{}] CSV entries at [{}].", rowQueue.size(), dataPath());
+        Logger.debug("Fetched [{}] CSV entries at [{}].", rowQueue.size(), dataPath());
 
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
@@ -1364,7 +1364,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched [{}] entries at [{}].", result.size(), dataPath());
+        Logger.debug("Fetched [{}] entries at [{}].", result.size(), dataPath());
         return result;
     }
 
@@ -1385,7 +1385,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched subset CSV [{}] entries at [{}].", rowQueue.size(), dataPath());
+        Logger.debug("Fetched subset CSV [{}] entries at [{}].", rowQueue.size(), dataPath());
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
@@ -1417,7 +1417,7 @@ public interface ChronicleDao<V> {
                 shared.map.forEachEntry(entry -> result.add(entry.key().get()));
             }
         });
-        Logger.info("Fetched [{}] keys at [{}].", result.size(), dataPath());
+        Logger.debug("Fetched [{}] keys at [{}].", result.size(), dataPath());
         return result;
     }
 
@@ -1428,7 +1428,7 @@ public interface ChronicleDao<V> {
                 shared.map.forEachEntry(entry -> result.add(entry.key().get()));
             }
         });
-        Logger.info("Fetched [{}] keys list at [{}].", result.size(), dataPath());
+        Logger.debug("Fetched [{}] keys list at [{}].", result.size(), dataPath());
         return new ArrayList<>(result);
     }
 
@@ -1443,7 +1443,7 @@ public interface ChronicleDao<V> {
             return null;
         }
 
-        Logger.info("Querying key [{}] at [{}].", key, dataPath());
+        Logger.debug("Querying key [{}] at [{}].", key, dataPath());
         final var file = getDbFile(key);
         if (file == null) {
             return null;
@@ -1772,7 +1772,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying multiple keys at [{}].", dataPath());
+        Logger.debug("Querying multiple keys at [{}].", dataPath());
         final var map = new ConcurrentHashMap<String, V>(10_000);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1790,7 +1790,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying multiple keys for CSV at [{}].", dataPath());
+        Logger.debug("Querying multiple keys for CSV at [{}].", dataPath());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1817,7 +1817,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset multiple keys at [{}].", dataPath());
+        Logger.debug("Querying subset multiple keys at [{}].", dataPath());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -1839,7 +1839,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV multiple keys at [{}].", dataPath());
+        Logger.debug("Querying subset CSV multiple keys at [{}].", dataPath());
         final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1862,7 +1862,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, V>(limit);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1880,7 +1880,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
@@ -1908,7 +1908,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -1930,7 +1930,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying subset CSV multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1959,7 +1959,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying by hashes at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying by hashes at [{}] with limit [{}].", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, V>(limit);
 
         processKeysByFileFromHashes(hashes, limit, (key, value) -> map.put(key, value));
@@ -1977,7 +1977,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset by hashes at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying subset by hashes at [{}] with limit [{}].", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -1995,7 +1995,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying CSV by hashes at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying CSV by hashes at [{}] with limit [{}].", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
@@ -2017,7 +2017,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV by hashes at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying subset CSV by hashes at [{}] with limit [{}].", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -2093,7 +2093,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, V>(limit);
         processKeysByFileFromHashes(hashes, limit, excludedKeys, (key, value) -> map.put(key, value));
         return map;
@@ -2109,7 +2109,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying CSV by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying CSV by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
@@ -2132,7 +2132,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying subset by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         processKeysByFileFromHashes(hashes, limit, excludedKeys,
@@ -2150,7 +2150,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying subset CSV by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -2168,7 +2168,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, V>(limit);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -2187,7 +2187,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
@@ -2215,7 +2215,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -2238,7 +2238,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying subset CSV multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -2289,7 +2289,7 @@ public interface ChronicleDao<V> {
                 CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, deletedValue),
                         averageValue().getClass(), keyHashMap);
 
-                Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
+                Logger.debug("Deleted using key [{}] at [{}].", key, dataPath());
                 return true;
             }
 
@@ -2300,7 +2300,7 @@ public interface ChronicleDao<V> {
     private void removeFromIndex(final Map<String, V> deletedMap, final Map<String, byte[]> keyHashMap) {
         CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap, averageValue().getClass(),
                 keyHashMap);
-        Logger.info("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
+        Logger.debug("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
     }
 
     /**
@@ -2460,11 +2460,11 @@ public interface ChronicleDao<V> {
                 if (prevValue != null) {
                     CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
                             averageValue().getClass(), indexExclusions(), keyHashMap);
-                    Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                    Logger.debug("Updated using key [{}] at [{}].", key, dataPath());
                     return PutStatus.UPDATED;
                 } else {
                     CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
-                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                    Logger.debug("Inserted using key [{}] at [{}].", key, dataPath());
                     return PutStatus.INSERTED;
                 }
             } finally {
@@ -2520,7 +2520,7 @@ public interface ChronicleDao<V> {
             if (prevValue != null) {
                 CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
                         averageValue().getClass(), indexExclusions(), keyHashMap);
-                Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                Logger.debug("Updated using key [{}] at [{}].", key, dataPath());
                 return PutStatus.UPDATED;
             }
             return PutStatus.FAILED;
@@ -2569,7 +2569,7 @@ public interface ChronicleDao<V> {
                     shared.map.put(key, value);
                     addToKeyMap(key, getDataFileState().currentFile(), keyHash);
                     CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
-                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                    Logger.debug("Inserted using key [{}] at [{}].", key, dataPath());
                     return PutStatus.INSERTED;
                 }
                 return PutStatus.FAILED;
@@ -2631,7 +2631,7 @@ public interface ChronicleDao<V> {
 
                 if (!prevValues.isEmpty()) {
                     status = PutStatus.UPDATED;
-                    Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                    Logger.debug("Updated [{}] records at [{}].", prevValues.size(), dataPath());
                     keysToInsert.removeAll(prevValues.keySet());
                 }
 
@@ -2670,7 +2670,7 @@ public interface ChronicleDao<V> {
                                 shared = checkAndRotate(shared, keyMapUpdate, keyHashMap);
                             }
                         }
-                        Logger.info("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
+                        Logger.debug("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
                     } finally {
                         shared.close();
                     }
@@ -2772,7 +2772,7 @@ public interface ChronicleDao<V> {
                 // Only happens if the transaction succeeded.
                 CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex, prevValues,
                         averageValue().getClass(), indexExclusions(), keyHashMap);
-                Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                Logger.debug("Updated [{}] records at [{}].", prevValues.size(), dataPath());
                 return status;
             });
 
@@ -2873,7 +2873,7 @@ public interface ChronicleDao<V> {
             tasks.add(() -> CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex));
 
             CHRONICLE_UTILS.processInParallel(tasks);
-            Logger.info("Inserted [{}] records at [{}].", dataToInsert.size(), dataPath());
+            Logger.debug("Inserted [{}] records at [{}].", dataToInsert.size(), dataPath());
             return PutStatus.INSERTED;
         });
     }
@@ -2884,7 +2884,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, V>(limit);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -2951,7 +2951,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Querying CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3022,7 +3022,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Querying subset filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3090,7 +3090,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(),
+        Logger.debug("Querying subset CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(),
                 filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
@@ -3160,7 +3160,7 @@ public interface ChronicleDao<V> {
             return;
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -3220,7 +3220,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
+        Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
                 filters.size(), excludedKeys.size());
         final var map = new ConcurrentHashMap<String, V>(limit);
         final var averageValueClass = averageValue().getClass();
@@ -3295,7 +3295,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
+        Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
                 filters.size(), excludedKeys.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
@@ -3375,7 +3375,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
+        Logger.debug("Querying subset filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
@@ -3451,7 +3451,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
+        Logger.debug("Querying subset CSV filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
@@ -3528,7 +3528,7 @@ public interface ChronicleDao<V> {
             return 0;
         }
 
-        Logger.info("Counting filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Counting filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var limit = Integer.MAX_VALUE;
 
         // Determine minimum positive limit across all filters
@@ -3602,7 +3602,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Searching by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        Logger.debug("Searching by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, V>(limit);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3652,7 +3652,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Searching subset by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        Logger.debug("Searching subset by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3702,7 +3702,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Searching CSV by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        Logger.debug("Searching CSV by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3754,7 +3754,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Searching subset CSV by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        Logger.debug("Searching subset CSV by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3804,7 +3804,7 @@ public interface ChronicleDao<V> {
             return Collections.emptySet();
         }
 
-        Logger.info("Searching keys by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        Logger.debug("Searching keys by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
         final var result = ConcurrentHashMap.<String>newKeySet();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3848,7 +3848,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyList();
         }
 
-        Logger.info("Searching keys list by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        Logger.debug("Searching keys list by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
         final var result = new ConcurrentLinkedQueue<String>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3892,7 +3892,7 @@ public interface ChronicleDao<V> {
             return 0;
         }
 
-        Logger.info("Counting by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        Logger.debug("Counting by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
         final var count = new LongAdder();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3938,7 +3938,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Searching by hashes at [{}] with [{}] filters and excluded keys.", dataPath(), filters.size());
+        Logger.debug("Searching by hashes at [{}] with [{}] filters and excluded keys.", dataPath(), filters.size());
         final var result = new ConcurrentHashMap<String, V>(limit);
         final var counter = new AtomicInteger();
         final var averageValueClass = averageValue().getClass();
@@ -3986,7 +3986,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Searching CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(), filters.size());
+        Logger.debug("Searching CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(), filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> csvHeaders = new AtomicReference<>(null);
@@ -4038,7 +4038,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Searching subset by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
+        Logger.debug("Searching subset by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
                 filters.size());
         final var result = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -4088,7 +4088,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Searching subset CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
+        Logger.debug("Searching subset CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
                 filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -4134,7 +4134,7 @@ public interface ChronicleDao<V> {
 
     private void search(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final Map<String, V> result, final AtomicInteger counter) {
-        Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -4159,7 +4159,7 @@ public interface ChronicleDao<V> {
     private void searchCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
             final AtomicReference<String[]> headers) {
-        Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
         final var preparedFilters = filters.stream()
@@ -4184,7 +4184,7 @@ public interface ChronicleDao<V> {
     private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final Map<String, Map<String, Object>> result, final AtomicInteger counter,
             final String[] fields) {
-        Logger.info("Subset searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Subset searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -4207,7 +4207,7 @@ public interface ChronicleDao<V> {
 
     private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter, final String[] fields) {
-        Logger.info("Subset CSV searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Subset CSV searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -4231,7 +4231,7 @@ public interface ChronicleDao<V> {
 
     private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
             final Collection<String> results) {
-        Logger.info("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -4253,7 +4253,7 @@ public interface ChronicleDao<V> {
 
     private void search(final ChronicleMap<String, V> db, final List<Search> filters, final Set<String> excludedKeys,
             final int limit, final Map<String, V> result, final AtomicInteger counter) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+        Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -4281,7 +4281,7 @@ public interface ChronicleDao<V> {
     private void searchCsv(final ChronicleMap<String, V> db, final List<Search> filters, final Set<String> excludedKeys,
             final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
             final AtomicReference<String[]> headers) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+        Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
@@ -4311,7 +4311,7 @@ public interface ChronicleDao<V> {
     private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final int limit, final Map<String, Map<String, Object>> result,
             final AtomicInteger counter, final String[] fields) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+        Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
@@ -4340,7 +4340,7 @@ public interface ChronicleDao<V> {
     private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue,
             final AtomicInteger counter, final String[] fields) {
-        Logger.info("Subset CSV searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+        Logger.debug("Subset CSV searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
@@ -4368,7 +4368,7 @@ public interface ChronicleDao<V> {
 
     private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final Collection<String> results) {
-        Logger.info("Searching DB keys at [{}] using [{}] filters and [{}] excluded keys.",
+        Logger.debug("Searching DB keys at [{}] using [{}] filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -4394,7 +4394,7 @@ public interface ChronicleDao<V> {
     }
 
     private int searchCount(final ChronicleMap<String, V> db, final List<Search> filters) {
-        Logger.info("Counting DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Counting DB at [{}] for {} filters.", dataPath(), filters.size());
         final var count = new AtomicInteger();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -4422,7 +4422,7 @@ public interface ChronicleDao<V> {
         }
 
         final var size = db.size();
-        Logger.info("Searching in-memory map of [{}] with [{}] filters.", size, filters.size());
+        Logger.debug("Searching in-memory map of [{}] with [{}] filters.", size, filters.size());
         final Map<String, V> result = new ConcurrentHashMap<>(Math.min(size, 10_000));
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -4462,7 +4462,7 @@ public interface ChronicleDao<V> {
      * @param index
      */
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index) {
-        Logger.info("Index searching at [{}] for {}.", dataPath(), search.field());
+        Logger.debug("Index searching at [{}] for {}.", dataPath(), search.field());
         if (index == null || index.isEmpty()) {
             return new SearchResult(Collections.emptyList());
         }
@@ -4500,7 +4500,7 @@ public interface ChronicleDao<V> {
 
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index,
             final Set<byte[]> excludedHashes) {
-        Logger.info("Index searching at [{}] with [{}] excluded keys for {}.", dataPath(), excludedHashes.size(),
+        Logger.debug("Index searching at [{}] with [{}] excluded keys for {}.", dataPath(), excludedHashes.size(),
                 search.field());
         if (index == null || index.isEmpty()) {
             return new SearchResult(Collections.emptyList());
@@ -5543,7 +5543,7 @@ public interface ChronicleDao<V> {
      * @return int size
      */
     default int size() {
-        Logger.info("Getting DB size at [{}].", dataPath());
+        Logger.debug("Getting DB size at [{}].", dataPath());
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             return sharedKeyMap.map.size();
         }
@@ -5565,7 +5565,7 @@ public interface ChronicleDao<V> {
      * @return true if the key exists, false otherwise
      */
     default boolean exists(final String key) {
-        Logger.info("Checking [{}] existence at [{}].", key, dataPath());
+        Logger.debug("Checking [{}] existence at [{}].", key, dataPath());
         return existsFromHash(CHRONICLE_UTILS.to128BitHash(key));
     }
 
@@ -5589,7 +5589,7 @@ public interface ChronicleDao<V> {
      * @return map of key to existence boolean
      */
     default Map<String, Boolean> exists(final Collection<String> keys) {
-        Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
+        Logger.debug("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
         return existsFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
     }
 
@@ -5617,7 +5617,7 @@ public interface ChronicleDao<V> {
      * @return list of keys that exist
      */
     default List<String> existsList(final Collection<String> keys) {
-        Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
+        Logger.debug("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
         return existsListFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
     }
 
@@ -5644,7 +5644,7 @@ public interface ChronicleDao<V> {
      * @return set of keys that do not exist
      */
     default Set<String> notExists(final Collection<String> keys) {
-        Logger.info("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
+        Logger.debug("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
         return notExistsFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
     }
 
@@ -5671,7 +5671,7 @@ public interface ChronicleDao<V> {
      * @return list of keys that do not exist
      */
     default List<String> notExistsList(final Collection<String> keys) {
-        Logger.info("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
+        Logger.debug("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
         return notExistsListFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
     }
 
