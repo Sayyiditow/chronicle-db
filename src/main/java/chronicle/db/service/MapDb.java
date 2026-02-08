@@ -2,6 +2,7 @@ package chronicle.db.service;
 
 import static chronicle.db.utils.ChronicleUtils.CHRONICLE_UTILS;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -18,6 +19,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.mapdb.DB;
 import org.mapdb.DBException;
 import org.mapdb.DBMaker;
+import org.mapdb.DataInput2;
+import org.mapdb.DataOutput2;
 import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
 import org.tinylog.Logger;
@@ -45,7 +48,7 @@ import org.tinylog.Logger;
  * counting to safely
  * share MapDB instances across multiple callers. Always call {@code close()} on
  * returned
- * SharedKeyMap and SharedIndexMap instances.
+ * SharedKeyMap and SharedIndexSet instances.
  * </p>
  * <p>
  * <b>Search Operations:</b> Provides indexed search methods for various
@@ -57,7 +60,7 @@ import org.tinylog.Logger;
  * 
  * <pre>{@code
  * // Open an index
- * SharedIndexMap idx = MAP_DB.openIndex("/path/to/index.db");
+ * SharedIndexSet idx = MAP_DB.openIndex("/path/to/index.db");
  * try {
  *     // Add an entry: field value "active" for key "user123"
  *     byte[] compositeKey = MAP_DB.createIndexKey("active", "user123");
@@ -72,11 +75,30 @@ import org.tinylog.Logger;
 public final class MapDb {
     public static final MapDb MAP_DB = new MapDb();
     private static final ConcurrentMap<String, SharedKeyMap> mapCache = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, SharedIndexMap> treeCache = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, SharedIndexSet> treeCache = new ConcurrentHashMap<>();
     private static final byte indexSep = 0x1F;
     private static final byte upperByte = (byte) 0xFF;
 
     private MapDb() {
+    }
+
+    public static record KeyMapValue(String primaryKey, String fileName) {
+        // 1. Define the instance here (this is the "variable" MapDB is looking for)
+        public static final Serializer<KeyMapValue> KEY_MAP_VALUE_SERIALIZER = new SerializerImpl();
+
+        // 2. Keep the class as the implementation logic
+        private static class SerializerImpl implements Serializer<KeyMapValue> {
+            @Override
+            public void serialize(final DataOutput2 out, final KeyMapValue value) throws IOException {
+                out.writeUTF(value.primaryKey());
+                out.writeUTF(value.fileName());
+            }
+
+            @Override
+            public KeyMapValue deserialize(final DataInput2 in, final int available) throws IOException {
+                return new KeyMapValue(in.readUTF(), in.readUTF());
+            }
+        }
     }
 
     /**
@@ -88,12 +110,12 @@ public final class MapDb {
      */
     public static class SharedKeyMap implements AutoCloseable {
         /** The underlying MapDB HTreeMap */
-        public final HTreeMap<String, String> map;
+        public final HTreeMap<byte[], KeyMapValue> map;
 
         private final AtomicInteger refCount;
         private final String filePath; // Track file path for cleanup
 
-        SharedKeyMap(final HTreeMap<String, String> map, final String filePath) {
+        SharedKeyMap(final HTreeMap<byte[], KeyMapValue> map, final String filePath) {
             this.map = map;
             this.filePath = filePath;
             this.refCount = new AtomicInteger(1);
@@ -137,7 +159,7 @@ public final class MapDb {
      * changes.
      * </p>
      */
-    public static class SharedIndexMap implements AutoCloseable {
+    public static class SharedIndexSet implements AutoCloseable {
         /** The underlying MapDB NavigableSet (sorted index) */
         public final NavigableSet<byte[]> index;
 
@@ -145,7 +167,7 @@ public final class MapDb {
         private final AtomicInteger refCount;
         private final String filePath; // Track file path for cleanup
 
-        SharedIndexMap(final DB db, final NavigableSet<byte[]> index, final String filePath) {
+        SharedIndexSet(final DB db, final NavigableSet<byte[]> index, final String filePath) {
             this.db = db;
             this.index = index;
             this.filePath = filePath;
@@ -155,9 +177,9 @@ public final class MapDb {
         /**
          * Increments the reference count when sharing this index.
          * 
-         * @return This SharedIndexMap instance for chaining
+         * @return This SharedIndexSet instance for chaining
          */
-        SharedIndexMap retain() {
+        SharedIndexSet retain() {
             refCount.incrementAndGet();
             return this;
         }
@@ -197,9 +219,9 @@ public final class MapDb {
 
             // Create a new entry
             try {
-                final HTreeMap<String, String> map = DBMaker.fileDB(filePath)
-                        .allocateStartSize(512 * 1024 * 1024) // initial size
-                        .allocateIncrement(128 * 1024 * 1024) // Grow by 48 MB
+                final HTreeMap<byte[], KeyMapValue> map = DBMaker.fileDB(filePath)
+                        .allocateStartSize(512 * 1024 * 1024)
+                        .allocateIncrement(256 * 1024 * 1024)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -207,8 +229,8 @@ public final class MapDb {
                         .cleanerHackEnable()
                         .make()
                         .hashMap("map")
-                        .keySerializer(Serializer.STRING)
-                        .valueSerializer(Serializer.STRING)
+                        .keySerializer(Serializer.BYTE_ARRAY)
+                        .valueSerializer(KeyMapValue.KEY_MAP_VALUE_SERIALIZER)
                         .createOrOpen();
 
                 return new SharedKeyMap(map, filePath);
@@ -259,7 +281,7 @@ public final class MapDb {
      * @param filePath filepath to create
      * @return NavigableSet or null, if null do not run close()
      */
-    public SharedIndexMap openIndex(final String filePath) {
+    public SharedIndexSet openIndex(final String filePath) {
         final var entry = treeCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 return existingEntry.retain();
@@ -269,7 +291,7 @@ public final class MapDb {
             try {
                 final var db = DBMaker.fileDB(filePath)
                         .allocateStartSize(512 * 1024 * 1024)
-                        .allocateIncrement(128 * 1024 * 1024)
+                        .allocateIncrement(256 * 1024 * 1024)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -277,10 +299,10 @@ public final class MapDb {
                         .cleanerHackEnable()
                         .make();
                 final var tree = db.treeSet("index")
-                        .serializer(Serializer.BYTE_ARRAY)
+                        .serializer(Serializer.BYTE_ARRAY_DELTA)
                         .createOrOpen();
 
-                return new SharedIndexMap(db, tree, filePath);
+                return new SharedIndexSet(db, tree, filePath);
             } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
                     | DBException.WrongFormat e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex

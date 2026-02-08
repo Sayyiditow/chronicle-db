@@ -14,6 +14,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -56,7 +57,7 @@ import com.jsoniter.spi.TypeLiteral;
 import chronicle.db.dao.ChronicleDao;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
-import chronicle.db.service.MapDb.SharedIndexMap;
+import chronicle.db.service.MapDb.SharedIndexSet;
 import net.openhft.chronicle.algo.hashing.LongHashFunction;
 import net.openhft.chronicle.map.ChronicleMap;
 
@@ -607,7 +608,7 @@ public final class ChronicleUtils {
         if (keys == null || keys.isEmpty())
             return Collections.emptyMap();
         final var map = new ConcurrentHashMap<String, byte[]>(keys.size());
-        keys.parallelStream().forEach(key -> map.put(key, MAP_DB.getSanitizedByte(key)));
+        keys.parallelStream().unordered().forEach(key -> map.put(key, MAP_DB.getSanitizedByte(key)));
         return map;
     }
 
@@ -637,7 +638,7 @@ public final class ChronicleUtils {
             }
         }
 
-        final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
+        final Map<String, SharedIndexSet> openIndexes = new ConcurrentHashMap<>();
         for (final String field : indexFieldMap.keySet()) {
             final String indexPath = indexDirPath + field;
             try {
@@ -649,8 +650,8 @@ public final class ChronicleUtils {
 
         if (db.isEmpty()) {
             Logger.info("DB is empty. Index files created at [{}].", indexDirPath);
-            openIndexes.forEach((indexPath, sharedIndexMap) -> {
-                sharedIndexMap.close();
+            openIndexes.forEach((indexPath, sharedIndexSet) -> {
+                sharedIndexSet.close();
             });
             return;
         }
@@ -710,8 +711,8 @@ public final class ChronicleUtils {
                             final List<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
                                 final var indexPath = indexDirPath + field;
-                                final var sharedIndexMap = openIndexes.get(indexPath);
-                                sharedIndexMap.index.addAll(batch);
+                                final var sharedIndexSet = openIndexes.get(indexPath);
+                                batch.parallelStream().unordered().forEach(sharedIndexSet.index::add);
                                 batch.clear();
                             }
                         });
@@ -728,15 +729,15 @@ public final class ChronicleUtils {
                 final List<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
                     final var indexPath = indexDirPath + field;
-                    final var sharedIndexMap = openIndexes.get(indexPath);
-                    sharedIndexMap.index.addAll(batch);
+                    final var sharedIndexSet = openIndexes.get(indexPath);
+                    batch.parallelStream().unordered().forEach(sharedIndexSet.index::add);
                 }
             });
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
                     dataPath);
         } finally {
-            openIndexes.forEach((indexPath, sharedIndexMap) -> {
-                sharedIndexMap.close();
+            openIndexes.forEach((indexPath, sharedIndexSet) -> {
+                sharedIndexSet.close();
             });
         }
     }
@@ -755,7 +756,7 @@ public final class ChronicleUtils {
             batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyByteMap.get(key)));
         }
         synchronized (index) {
-            index.removeAll(batchToRemove);
+            batchToRemove.forEach(index::remove);
         }
     }
 
@@ -775,7 +776,7 @@ public final class ChronicleUtils {
             return;
         }
 
-        final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
+        final Map<String, SharedIndexSet> openIndexes = new ConcurrentHashMap<>();
         try {
             // Step 1: Parse all field getters (supporting compound fields)
             final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -802,158 +803,231 @@ public final class ChronicleUtils {
 
             indexFieldMap.forEach((indexName, fieldGetters) -> {
                 final String indexPath = dataPath + ChronicleDao.INDEX_DIR + indexName;
-                final var sharedIndexMap = openIndexes.get(indexPath);
-                if (sharedIndexMap == null)
+                final var sharedIndexSet = openIndexes.get(indexPath);
+                if (sharedIndexSet == null)
                     return;
 
                 if (totalRecords <= indexChunkSize) {
-                    processRemoveChunk(recordList, fieldGetters, keyByteMap, sharedIndexMap.index);
+                    processRemoveChunk(recordList, fieldGetters, keyByteMap, sharedIndexSet.index);
                 } else {
                     final var tasks = new ArrayList<Runnable>();
                     for (int i = 0; i < totalRecords; i += indexChunkSize) {
                         final var chunk = recordList.subList(i, Math.min(i + indexChunkSize, totalRecords));
-                        tasks.add(() -> processRemoveChunk(chunk, fieldGetters, keyByteMap, sharedIndexMap.index));
+                        tasks.add(() -> processRemoveChunk(chunk, fieldGetters, keyByteMap, sharedIndexSet.index));
                     }
                     tasks.parallelStream().forEach(task -> task.run());
                 }
-                Logger.info("Deleted [{}] from index at [{}]", totalRecords, indexPath);
+                Logger.info("Deleted [{}] indexes at [{}]", totalRecords, indexPath);
             });
         } finally {
-            openIndexes.forEach((path, sharedIndexMap) -> {
-                sharedIndexMap.close();
+            openIndexes.forEach((path, sharedIndexSet) -> {
+                sharedIndexSet.close();
             });
-        }
-    }
-
-    private <V> void processUpdateChunk(final List<Map.Entry<String, V>> chunk, final Map<String, V> previousValues,
-            final List<FieldData> fieldGetters, final Set<String> excluded, final Map<String, byte[]> keyByteMap,
-            final NavigableSet<byte[]> index) {
-        final List<byte[]> batchToRemove = new ArrayList<>();
-        final List<byte[]> batchToAdd = new ArrayList<>();
-        final StringBuilder sb = new StringBuilder();
-
-        for (final var valEntry : chunk) {
-            final var key = valEntry.getKey();
-            final V newVal = valEntry.getValue();
-            final V prevVal = previousValues.get(key);
-            final byte[] keyBytes = keyByteMap.get(key);
-
-            sb.setLength(0);
-            boolean skipAdd = false;
-            for (final FieldData fd : fieldGetters) {
-                final Object objVal = fd.varHandle.get(newVal);
-                if (excluded.isEmpty()) {
-                    appendValue(sb, objVal);
-                } else {
-                    final var valStr = toStringOptimized(objVal);
-                    if (excluded.contains(valStr))
-                        skipAdd = true;
-                    sb.append(valStr);
-                }
-            }
-            final String newValStr = sb.toString();
-
-            if (prevVal != null) {
-                sb.setLength(0);
-                for (final FieldData fd : fieldGetters) {
-                    appendValue(sb, fd.varHandle.get(prevVal));
-                }
-                final String oldValStr = sb.toString();
-                if (!Objects.equals(oldValStr, newValStr)) {
-                    batchToRemove.add(MAP_DB.createIndexKey(oldValStr, keyBytes));
-                    if (!skipAdd)
-                        batchToAdd.add(MAP_DB.createIndexKey(newValStr, keyBytes));
-                }
-            } else if (!skipAdd) {
-                batchToAdd.add(MAP_DB.createIndexKey(newValStr, keyBytes));
-            }
-        }
-        synchronized (index) {
-            if (!batchToRemove.isEmpty())
-                index.removeAll(batchToRemove);
-            if (!batchToAdd.isEmpty())
-                index.addAll(batchToAdd);
         }
     }
 
     /**
-     * Updates secondary indexes when records are modified.
-     * Handles removing old index entries and adding new ones.
-     *
-     * @param <V>            The type of the value object.
-     * @param dbName         The name of the database.
-     * @param dataPath       The path to the data directory.
-     * @param indexFileNames The set of index file names to update.
-     * @param values         The map of new key-value pairs.
-     * @param previousValues The map of previous key-value pairs (for comparison).
-     * @param valueClass     The class of the value object.
+     * Prepares the index keys to be added. Run this OUTSIDE the lock.
+     * 
+     * @param indexFileNames The index file names.
+     * @param values         The map of values to add (inserted or updated).
+     * @param valueClass     The value class.
      * @param exclusions     A map of values to exclude from indexing for specific
      *                       fields.
+     * @return A map of IndexFileName -> Map of (RecordKey -> IndexKeyBytes) to add.
      */
-    public <V> void updateIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<String, V> values, final Map<String, V> previousValues, final Class<?> valueClass,
-            final Map<String, Set<String>> exclusions) {
+    public <V> Map<String, Map<String, byte[]>> prepareIndexAdditions(final Set<String> indexFileNames,
+            final Map<String, V> values, final Class<?> valueClass, final Map<String, Set<String>> exclusions) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        final var indexAdditions = new ConcurrentHashMap<String, Map<String, byte[]>>();
+        final var keyByteMap = preCalculateKeyBytes(values.keySet());
+        final var recordList = new ArrayList<>(values.entrySet());
+        final int size = recordList.size();
+
+        // Parse fields once
+        final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
+        for (final String indexName : indexFileNames) {
+            final String[] parts = indexName.split("\\+");
+            final List<FieldData> getters = new ArrayList<>();
+            for (final String part : parts) {
+                getters.add(getFieldData(valueClass, part));
+            }
+            indexFieldMap.put(indexName, getters);
+        }
+
+        // Parallel Calculation
+        processInParallel(indexFieldMap.entrySet(), entry -> {
+            final String indexName = entry.getKey();
+            final List<FieldData> fieldGetters = entry.getValue();
+            final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
+            final Map<String, byte[]> additions = new ConcurrentHashMap<>(values.size());
+
+            // Process chunks manually
+            for (int i = 0; i < size; i += indexChunkSize) {
+                final var chunk = recordList.subList(i, Math.min(i + indexChunkSize, size));
+                final StringBuilder sb = new StringBuilder();
+                for (final var e : chunk) {
+                    sb.setLength(0);
+                    boolean skipAdd = false;
+                    try {
+                        for (final FieldData fd : fieldGetters) {
+                            final Object objVal = fd.varHandle.get(e.getValue());
+                            if (excluded.isEmpty()) {
+                                appendValue(sb, objVal);
+                            } else {
+                                final var valStr = toStringOptimized(objVal);
+                                if (excluded.contains(valStr))
+                                    skipAdd = true;
+                                sb.append(valStr);
+                            }
+                        }
+                        if (!skipAdd) {
+                            additions.put(e.getKey(), MAP_DB.createIndexKey(sb.toString(), keyByteMap.get(e.getKey())));
+                        }
+                    } catch (final Throwable t) {
+                        Logger.error(t);
+                    }
+                }
+            }
+            indexAdditions.put(indexName, additions);
+        });
+
+        return indexAdditions;
+    }
+
+    /**
+     * Applies the index additions to MapDB. Run this INSIDE the lock.
+     * 
+     * @param dataPath       The data path.
+     * @param indexAdditions The pre-calculated additions map (IndexName ->
+     *                       RecordKey -> IndexBytes).
+     */
+    public void applyIndexAdditions(final String dataPath, final Map<String, Map<String, byte[]>> indexAdditions) {
+        if (indexAdditions.isEmpty())
+            return;
+
+        final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
+        indexAdditions.entrySet().parallelStream().forEach(entry -> {
+            final String indexName = entry.getKey();
+            final Map<String, byte[]> keysToAddMap = entry.getValue();
+            final String indexPath = indexDirPath + indexName;
+
+            if (keysToAddMap.isEmpty())
+                return;
+
+            try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
+                synchronized (sharedIndex.index) {
+                    keysToAddMap.values().parallelStream().unordered().forEach(sharedIndex.index::add);
+                }
+                Logger.info("Inserted [{}] indexes at [{}]", keysToAddMap.size(), indexPath);
+            }
+        });
+    }
+
+    /**
+     * Applies the index updates to MapDB using pre-calculated additions.
+     * Run this INSIDE the lock.
+     * 
+     * @param dataPath       The data path.
+     * @param indexFileNames The set of index file names to update.
+     * @param preparedAdds   The pre-calculated new index keys (from
+     *                       prepareIndexAdditions).
+     * @param previousValues The map of previous values (before the update).
+     * @param valueClass     The value class.
+     * @param exclusions     A map of values to exclude from indexing.
+     */
+    public <V> void applyIndexUpdates(final String dataPath, final Set<String> indexFileNames,
+            final Map<String, Map<String, byte[]>> preparedAdds, final Map<String, V> previousValues,
+            final Class<?> valueClass, final Map<String, Set<String>> exclusions) {
+        if (previousValues.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
 
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
-        final Map<String, SharedIndexMap> openIndexes = new ConcurrentHashMap<>();
+        final var keyByteMap = preCalculateKeyBytes(previousValues.keySet());
+        final var prevEntries = new ArrayList<>(previousValues.entrySet());
+        final int size = prevEntries.size();
 
-        try {
-            // Step 1: Parse field getters
-            final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
-            for (final String indexName : indexFileNames) {
-                final String[] parts = indexName.split("\\+");
-                final List<FieldData> getters = new ArrayList<>();
+        // Process each index in parallel
+        processInParallel(indexFileNames, indexName -> {
+            final String indexPath = indexDirPath + indexName;
+            final Map<String, byte[]> newKeysMap = preparedAdds.getOrDefault(indexName, Collections.emptyMap());
+            final List<FieldData> fieldGetters = new ArrayList<>();
+            for (final String part : indexName.split("\\+")) {
+                fieldGetters.add(getFieldData(valueClass, part));
+            }
+            final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
 
-                for (final String part : parts) {
-                    getters.add(getFieldData(valueClass, part));
-                }
-                indexFieldMap.put(indexName, getters);
-                final String indexPath = indexDirPath + indexName;
-                try {
-                    openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
-                } catch (final RuntimeException e) {
-                    Logger.warn("Skipping index update for [{}]: {}", indexPath, e.getMessage());
+            try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
+                final List<byte[]> toRemove = new ArrayList<>();
+                final List<byte[]> toAdd = new ArrayList<>();
+                final StringBuilder sb = new StringBuilder();
+
+                // Process in chunks to avoid huge lists
+                for (int i = 0; i < size; i += indexChunkSize) {
+                    final var chunk = prevEntries.subList(i, Math.min(i + indexChunkSize, size));
+                    toRemove.clear();
+                    toAdd.clear();
+
+                    for (final var entry : chunk) {
+                        final String key = entry.getKey();
+                        final V prevVal = entry.getValue();
+                        final byte[] keyBytes = keyByteMap.get(key);
+
+                        // New Key (Fast Lookup)
+                        final byte[] newIndexKey = newKeysMap.get(key);
+
+                        // Old Key (Must Calculate)
+                        byte[] oldIndexKey = null;
+                        sb.setLength(0);
+                        boolean skipOld = false;
+                        try {
+                            for (final FieldData fd : fieldGetters) {
+                                final Object objVal = fd.varHandle.get(prevVal);
+                                if (excluded.isEmpty()) {
+                                    appendValue(sb, objVal);
+                                } else {
+                                    final var valStr = toStringOptimized(objVal);
+                                    if (excluded.contains(valStr))
+                                        skipOld = true;
+                                    sb.append(valStr);
+                                }
+                            }
+                            if (!skipOld) {
+                                oldIndexKey = MAP_DB.createIndexKey(sb.toString(), keyBytes);
+                            }
+                        } catch (final Throwable t) {
+                            Logger.error(t);
+                        }
+
+                        // Compare and Update
+                        if (!Arrays.equals(oldIndexKey, newIndexKey)) {
+                            if (oldIndexKey != null)
+                                toRemove.add(oldIndexKey);
+                            if (newIndexKey != null)
+                                toAdd.add(newIndexKey);
+                        }
+                    }
+
+                    // Flush Chunk
+                    if (!toRemove.isEmpty() || !toAdd.isEmpty()) {
+                        synchronized (sharedIndex.index) {
+                            if (!toRemove.isEmpty()) {
+                                toRemove.parallelStream().unordered().forEach(sharedIndex.index::remove);
+                                Logger.info("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
+                            }
+                            if (!toAdd.isEmpty()) {
+                                toAdd.parallelStream().unordered().forEach(sharedIndex.index::add);
+                                Logger.info("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
+                            }
+                        }
+                    }
                 }
             }
-
-            // Step 2: Update indexes
-            final var allKeys = new HashSet<String>(values.keySet());
-            allKeys.addAll(previousValues.keySet());
-            final var keyByteMap = preCalculateKeyBytes(allKeys);
-
-            final List<Map.Entry<String, V>> recordList = new ArrayList<>(values.entrySet());
-            final int totalRecords = recordList.size();
-
-            indexFieldMap.forEach((indexName, fieldGetters) -> {
-                final String indexPath = indexDirPath + indexName;
-                final var sharedIndexMap = openIndexes.get(indexPath);
-                if (sharedIndexMap == null)
-                    return;
-
-                final var excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
-
-                if (totalRecords <= indexChunkSize) {
-                    processUpdateChunk(recordList, previousValues, fieldGetters, excluded, keyByteMap,
-                            sharedIndexMap.index);
-                } else {
-                    final var tasks = new ArrayList<Runnable>();
-                    for (int i = 0; i < totalRecords; i += indexChunkSize) {
-                        final var chunk = recordList.subList(i, Math.min(i + indexChunkSize, totalRecords));
-                        tasks.add(() -> processUpdateChunk(chunk, previousValues, fieldGetters, excluded, keyByteMap,
-                                sharedIndexMap.index));
-                    }
-                    tasks.parallelStream().forEach(task -> task.run());
-                }
-                Logger.info("Updated [{}] indexes at [{}]", totalRecords, indexPath);
-            });
-        } finally {
-            openIndexes.forEach((path, sharedIndexMap) -> {
-                sharedIndexMap.close();
-            });
-        }
+        });
     }
 
     /**
@@ -1648,8 +1722,13 @@ public final class ChronicleUtils {
         if (key == null)
             return new byte[16];
 
-        final long h1 = LongHashFunction.xx_r39(hashSeed1).hashChars(key);
-        final long h2 = LongHashFunction.xx_r39(hashSeed2).hashChars(key);
+        // 1. Force conversion to a stable byte array (UTF-8)
+        // This bypasses Java's internal String memory optimization (Compact Strings)
+        final byte[] bytes = key.getBytes(StandardCharsets.UTF_8);
+
+        // 2. Hash the BYTES, not the CHARS
+        final long h1 = LongHashFunction.xx_r39(hashSeed1).hashBytes(bytes);
+        final long h2 = LongHashFunction.xx_r39(hashSeed2).hashBytes(bytes);
 
         final byte[] result = new byte[16];
 
