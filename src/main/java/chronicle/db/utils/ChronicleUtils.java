@@ -100,9 +100,9 @@ import net.openhft.chronicle.map.ChronicleMap;
 public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
     private static final int processors = Runtime.getRuntime().availableProcessors();
-    private static final ExecutorService SHARED_EXECUTOR = Executors.newFixedThreadPool(
+    private static final ExecutorService sharedExecutor = Executors.newFixedThreadPool(
             Integer.getInteger("chronicle.shared.pool.size", Math.min(processors, 32)));
-    private static final ExecutorService ITERABLE_EXECUTOR = Executors.newFixedThreadPool(
+    private static final ExecutorService iterableExecutor = Executors.newFixedThreadPool(
             Integer.getInteger("chronicle.iterable.pool.size", Math.min(processors, 32)));
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
@@ -604,11 +604,52 @@ public final class ChronicleUtils {
         return false;
     }
 
-    public Map<String, byte[]> preCalculateKeyBytes(final Collection<String> keys) {
-        if (keys == null || keys.isEmpty())
+    /**
+     * Pre-calculates 128-bit hashes for a collection of keys.
+     * This should be called BEFORE acquiring locks to reduce lock hold time.
+     *
+     * @param keys The collection of primary keys to hash
+     * @return Map of primary key -> 16-byte hash
+     */
+    public Map<String, byte[]> preCalculateKeyHashes(final Iterable<String> keys) {
+        if (keys == null || !keys.iterator().hasNext())
             return Collections.emptyMap();
-        final var map = new ConcurrentHashMap<String, byte[]>(keys.size());
-        keys.parallelStream().unordered().forEach(key -> map.put(key, MAP_DB.getSanitizedByte(key)));
+        final var map = new ConcurrentHashMap<String, byte[]>(1000);
+        try {
+            parallelIterable(keys, Integer.MAX_VALUE, key -> {
+                map.put(key, to128BitHash(key));
+            });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("InterruptedException while calculating key hashes.");
+        }
+        return map;
+    }
+
+    /**
+     * Pre-calculates 128-bit hashes for keys, excluding specified keys.
+     * Filters and hashes in one pass for efficiency.
+     *
+     * @param keys         The collection of primary keys to hash
+     * @param excludedKeys Keys to skip (not hashed)
+     * @return Map of primary key -> 16-byte hash (excluding excluded keys)
+     */
+    public Map<String, byte[]> preCalculateKeyHashes(final Iterable<String> keys, final Set<String> excludedKeys) {
+        if (keys == null || !keys.iterator().hasNext())
+            return Collections.emptyMap();
+        if (excludedKeys == null || excludedKeys.isEmpty())
+            return preCalculateKeyHashes(keys);
+        final var map = new ConcurrentHashMap<String, byte[]>(1000);
+        try {
+            parallelIterable(keys, Integer.MAX_VALUE, key -> {
+                if (!excludedKeys.contains(key)) {
+                    map.put(key, to128BitHash(key));
+                }
+            });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("InterruptedException while calculating key hashes.");
+        }
         return map;
     }
 
@@ -671,7 +712,7 @@ public final class ChronicleUtils {
             db.forEachEntry(entry -> {
                 final var key = entry.key().get();
                 final V value = entry.value().get();
-                final byte[] keyBytes = MAP_DB.getSanitizedByte(key);
+                final byte[] keyHash = to128BitHash(key);
 
                 try {
                     for (final var fieldEntry : indexFieldMap.entrySet()) {
@@ -700,13 +741,13 @@ public final class ChronicleUtils {
                         }
 
                         if (!shouldSkip) {
-                            final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), keyBytes);
+                            final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), keyHash);
                             batch.add(indexKey);
                         }
                     }
 
                     if (recordCount.incrementAndGet() % indexChunkSize == 0) {
-                        fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
+                        processInParallel(fieldBatches.entrySet(), batchEntry -> {
                             final String field = batchEntry.getKey();
                             final List<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
@@ -724,7 +765,7 @@ public final class ChronicleUtils {
             });
 
             // Flush remaining
-            fieldBatches.entrySet().parallelStream().forEach(batchEntry -> {
+            processInParallel(fieldBatches.entrySet(), batchEntry -> {
                 final String field = batchEntry.getKey();
                 final List<byte[]> batch = batchEntry.getValue();
                 if (!batch.isEmpty()) {
@@ -743,7 +784,7 @@ public final class ChronicleUtils {
     }
 
     private <V> void processRemoveChunk(final List<Map.Entry<String, V>> chunk, final List<FieldData> fieldGetters,
-            final Map<String, byte[]> keyByteMap, final NavigableSet<byte[]> index) {
+            final Map<String, byte[]> keyHashMap, final NavigableSet<byte[]> index) {
         final List<byte[]> batchToRemove = new ArrayList<>(chunk.size());
         final StringBuilder sb = new StringBuilder();
         for (final var e : chunk) {
@@ -753,10 +794,10 @@ public final class ChronicleUtils {
             for (final FieldData fd : fieldGetters) {
                 appendValue(sb, fd.varHandle.get(value));
             }
-            batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyByteMap.get(key)));
+            batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyHashMap.get(key)));
         }
         synchronized (index) {
-            batchToRemove.forEach(index::remove);
+            batchToRemove.parallelStream().unordered().forEach(index::remove);
         }
     }
 
@@ -769,9 +810,11 @@ public final class ChronicleUtils {
      * @param indexFileNames The set of index file names to update.
      * @param values         The map of key-value pairs to remove from the index.
      * @param valueClass     The class of the value object.
+     * @param keyHashMap     Pre-calculated map of primary key -> 16-byte hash
+     *                       (passed from caller)
      */
     public <V> void removeFromIndex(final String dbName, final String dataPath, final Set<String> indexFileNames,
-            final Map<String, V> values, final Class<?> valueClass) {
+            final Map<String, V> values, final Class<?> valueClass, final Map<String, byte[]> keyHashMap) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
@@ -797,7 +840,6 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Remove from each index
-            final var keyByteMap = preCalculateKeyBytes(values.keySet());
             final List<Map.Entry<String, V>> recordList = new ArrayList<>(values.entrySet());
             final int totalRecords = recordList.size();
 
@@ -808,14 +850,20 @@ public final class ChronicleUtils {
                     return;
 
                 if (totalRecords <= indexChunkSize) {
-                    processRemoveChunk(recordList, fieldGetters, keyByteMap, sharedIndexSet.index);
+                    processRemoveChunk(recordList, fieldGetters, keyHashMap, sharedIndexSet.index);
                 } else {
-                    final var tasks = new ArrayList<Runnable>();
+                    final var chunks = new ArrayList<List<Map.Entry<String, V>>>();
                     for (int i = 0; i < totalRecords; i += indexChunkSize) {
-                        final var chunk = recordList.subList(i, Math.min(i + indexChunkSize, totalRecords));
-                        tasks.add(() -> processRemoveChunk(chunk, fieldGetters, keyByteMap, sharedIndexSet.index));
+                        chunks.add(recordList.subList(i, Math.min(i + indexChunkSize, totalRecords)));
                     }
-                    tasks.parallelStream().forEach(task -> task.run());
+                    try {
+                        parallelIterable(chunks, Integer.MAX_VALUE, chunk -> {
+                            processRemoveChunk(chunk, fieldGetters, keyHashMap, sharedIndexSet.index);
+                        });
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("InterruptedException while proccessing chunk index removal.");
+                    }
                 }
                 Logger.info("Deleted [{}] indexes at [{}]", totalRecords, indexPath);
             });
@@ -828,22 +876,24 @@ public final class ChronicleUtils {
 
     /**
      * Prepares the index keys to be added. Run this OUTSIDE the lock.
-     * 
+     *
      * @param indexFileNames The index file names.
      * @param values         The map of values to add (inserted or updated).
      * @param valueClass     The value class.
      * @param exclusions     A map of values to exclude from indexing for specific
      *                       fields.
+     * @param keyHashMap     Pre-calculated map of primary key -> 16-byte hash
+     *                       (passed from caller)
      * @return A map of IndexFileName -> Map of (RecordKey -> IndexKeyBytes) to add.
      */
     public <V> Map<String, Map<String, byte[]>> prepareIndexAdditions(final Set<String> indexFileNames,
-            final Map<String, V> values, final Class<?> valueClass, final Map<String, Set<String>> exclusions) {
+            final Map<String, V> values, final Class<?> valueClass, final Map<String, Set<String>> exclusions,
+            final Map<String, byte[]> keyHashMap) {
         if (values.isEmpty() || indexFileNames.isEmpty()) {
             return Collections.emptyMap();
         }
 
         final var indexAdditions = new ConcurrentHashMap<String, Map<String, byte[]>>();
-        final var keyByteMap = preCalculateKeyBytes(values.keySet());
         final var recordList = new ArrayList<>(values.entrySet());
         final int size = recordList.size();
 
@@ -885,7 +935,7 @@ public final class ChronicleUtils {
                             }
                         }
                         if (!skipAdd) {
-                            additions.put(e.getKey(), MAP_DB.createIndexKey(sb.toString(), keyByteMap.get(e.getKey())));
+                            additions.put(e.getKey(), MAP_DB.createIndexKey(sb.toString(), keyHashMap.get(e.getKey())));
                         }
                     } catch (final Throwable t) {
                         Logger.error(t);
@@ -910,27 +960,32 @@ public final class ChronicleUtils {
             return;
 
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
-        indexAdditions.entrySet().parallelStream().forEach(entry -> {
-            final String indexName = entry.getKey();
-            final Map<String, byte[]> keysToAddMap = entry.getValue();
-            final String indexPath = indexDirPath + indexName;
+        try {
+            parallelIterable(indexAdditions.entrySet(), Integer.MAX_VALUE,
+                    (Consumer<Map.Entry<String, Map<String, byte[]>>>) entry -> {
+                        final String indexName = entry.getKey();
+                        final Map<String, byte[]> keysToAddMap = entry.getValue();
+                        final String indexPath = indexDirPath + indexName;
 
-            if (keysToAddMap.isEmpty())
-                return;
+                        if (keysToAddMap.isEmpty())
+                            return;
 
-            try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
-                synchronized (sharedIndex.index) {
-                    keysToAddMap.values().parallelStream().unordered().forEach(sharedIndex.index::add);
-                }
-                Logger.info("Inserted [{}] indexes at [{}]", keysToAddMap.size(), indexPath);
-            }
-        });
+                        try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
+                            synchronized (sharedIndex.index) {
+                                keysToAddMap.values().parallelStream().unordered().forEach(sharedIndex.index::add);
+                            }
+                            Logger.info("Inserted [{}] indexes at [{}]", keysToAddMap.size(), indexPath);
+                        }
+                    });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**
      * Applies the index updates to MapDB using pre-calculated additions.
      * Run this INSIDE the lock.
-     * 
+     *
      * @param dataPath       The data path.
      * @param indexFileNames The set of index file names to update.
      * @param preparedAdds   The pre-calculated new index keys (from
@@ -938,96 +993,102 @@ public final class ChronicleUtils {
      * @param previousValues The map of previous values (before the update).
      * @param valueClass     The value class.
      * @param exclusions     A map of values to exclude from indexing.
+     * @param keyHashMap     Pre-calculated map of primary key -> 16-byte hash
+     *                       (passed from caller)
      */
     public <V> void applyIndexUpdates(final String dataPath, final Set<String> indexFileNames,
             final Map<String, Map<String, byte[]>> preparedAdds, final Map<String, V> previousValues,
-            final Class<?> valueClass, final Map<String, Set<String>> exclusions) {
+            final Class<?> valueClass, final Map<String, Set<String>> exclusions,
+            final Map<String, byte[]> keyHashMap) {
         if (previousValues.isEmpty() || indexFileNames.isEmpty()) {
             return;
         }
 
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
-        final var keyByteMap = preCalculateKeyBytes(previousValues.keySet());
         final var prevEntries = new ArrayList<>(previousValues.entrySet());
         final int size = prevEntries.size();
 
-        // Process each index in parallel
-        processInParallel(indexFileNames, indexName -> {
-            final String indexPath = indexDirPath + indexName;
-            final Map<String, byte[]> newKeysMap = preparedAdds.getOrDefault(indexName, Collections.emptyMap());
-            final List<FieldData> fieldGetters = new ArrayList<>();
-            for (final String part : indexName.split("\\+")) {
-                fieldGetters.add(getFieldData(valueClass, part));
-            }
-            final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
+        // Process each index in parallel using ITERABLE_EXECUTOR
+        try {
+            parallelIterable(indexFileNames, Integer.MAX_VALUE, (Consumer<String>) indexName -> {
+                final String indexPath = indexDirPath + indexName;
+                final Map<String, byte[]> newKeysMap = preparedAdds.getOrDefault(indexName, Collections.emptyMap());
+                final List<FieldData> fieldGetters = new ArrayList<>();
+                for (final String part : indexName.split("\\+")) {
+                    fieldGetters.add(getFieldData(valueClass, part));
+                }
+                final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
 
-            try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
-                final List<byte[]> toRemove = new ArrayList<>();
-                final List<byte[]> toAdd = new ArrayList<>();
-                final StringBuilder sb = new StringBuilder();
+                try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
+                    final List<byte[]> toRemove = new ArrayList<>();
+                    final List<byte[]> toAdd = new ArrayList<>();
+                    final StringBuilder sb = new StringBuilder();
 
-                // Process in chunks to avoid huge lists
-                for (int i = 0; i < size; i += indexChunkSize) {
-                    final var chunk = prevEntries.subList(i, Math.min(i + indexChunkSize, size));
-                    toRemove.clear();
-                    toAdd.clear();
+                    // Process in chunks to avoid huge lists
+                    for (int i = 0; i < size; i += indexChunkSize) {
+                        final var chunk = prevEntries.subList(i, Math.min(i + indexChunkSize, size));
+                        toRemove.clear();
+                        toAdd.clear();
 
-                    for (final var entry : chunk) {
-                        final String key = entry.getKey();
-                        final V prevVal = entry.getValue();
-                        final byte[] keyBytes = keyByteMap.get(key);
+                        for (final var entry : chunk) {
+                            final String key = entry.getKey();
+                            final V prevVal = entry.getValue();
+                            final byte[] keyHash = keyHashMap.get(key);
 
-                        // New Key (Fast Lookup)
-                        final byte[] newIndexKey = newKeysMap.get(key);
+                            // New Key (Fast Lookup)
+                            final byte[] newIndexKey = newKeysMap.get(key);
 
-                        // Old Key (Must Calculate)
-                        byte[] oldIndexKey = null;
-                        sb.setLength(0);
-                        boolean skipOld = false;
-                        try {
-                            for (final FieldData fd : fieldGetters) {
-                                final Object objVal = fd.varHandle.get(prevVal);
-                                if (excluded.isEmpty()) {
-                                    appendValue(sb, objVal);
-                                } else {
-                                    final var valStr = toStringOptimized(objVal);
-                                    if (excluded.contains(valStr))
-                                        skipOld = true;
-                                    sb.append(valStr);
+                            // Old Key (Must Calculate)
+                            byte[] oldIndexKey = null;
+                            sb.setLength(0);
+                            boolean skipOld = false;
+                            try {
+                                for (final FieldData fd : fieldGetters) {
+                                    final Object objVal = fd.varHandle.get(prevVal);
+                                    if (excluded.isEmpty()) {
+                                        appendValue(sb, objVal);
+                                    } else {
+                                        final var valStr = toStringOptimized(objVal);
+                                        if (excluded.contains(valStr))
+                                            skipOld = true;
+                                        sb.append(valStr);
+                                    }
                                 }
+                                if (!skipOld) {
+                                    oldIndexKey = MAP_DB.createIndexKey(sb.toString(), keyHash);
+                                }
+                            } catch (final Throwable t) {
+                                Logger.error(t);
                             }
-                            if (!skipOld) {
-                                oldIndexKey = MAP_DB.createIndexKey(sb.toString(), keyBytes);
+
+                            // Compare and Update
+                            if (!Arrays.equals(oldIndexKey, newIndexKey)) {
+                                if (oldIndexKey != null)
+                                    toRemove.add(oldIndexKey);
+                                if (newIndexKey != null)
+                                    toAdd.add(newIndexKey);
                             }
-                        } catch (final Throwable t) {
-                            Logger.error(t);
                         }
 
-                        // Compare and Update
-                        if (!Arrays.equals(oldIndexKey, newIndexKey)) {
-                            if (oldIndexKey != null)
-                                toRemove.add(oldIndexKey);
-                            if (newIndexKey != null)
-                                toAdd.add(newIndexKey);
-                        }
-                    }
-
-                    // Flush Chunk
-                    if (!toRemove.isEmpty() || !toAdd.isEmpty()) {
-                        synchronized (sharedIndex.index) {
-                            if (!toRemove.isEmpty()) {
-                                toRemove.parallelStream().unordered().forEach(sharedIndex.index::remove);
-                                Logger.info("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
-                            }
-                            if (!toAdd.isEmpty()) {
-                                toAdd.parallelStream().unordered().forEach(sharedIndex.index::add);
-                                Logger.info("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
+                        // Flush Chunk
+                        if (!toRemove.isEmpty() || !toAdd.isEmpty()) {
+                            synchronized (sharedIndex.index) {
+                                if (!toRemove.isEmpty()) {
+                                    toRemove.parallelStream().unordered().forEach(sharedIndex.index::remove);
+                                    Logger.info("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
+                                }
+                                if (!toAdd.isEmpty()) {
+                                    toAdd.parallelStream().unordered().forEach(sharedIndex.index::add);
+                                    Logger.info("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
+                                }
                             }
                         }
                     }
                 }
-            }
-        });
+            });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**
@@ -1452,20 +1513,6 @@ public final class ChronicleUtils {
     /**
      * Processes an Iterable in parallel using a shared executor service.
      *
-     * @param iterable The iterable to process.
-     * @param limit    The maximum number of items to process.
-     * @param action   The predicate action to perform on each item.
-     * @throws InterruptedException If the thread is interrupted.
-     */
-    public <T> void parallelIterable(final Iterable<T> iterable, final int limit, final Predicate<T> action)
-            throws InterruptedException {
-        final AtomicInteger matchCounter = new AtomicInteger(0);
-        parallelIterable(iterable, limit, matchCounter, action);
-    }
-
-    /**
-     * Processes an Iterable in parallel using a shared executor service.
-     *
      * @param <T>          The type of elements.
      * @param iterable     The iterable to process.
      * @param limit        The maximum number of items to process.
@@ -1487,7 +1534,7 @@ public final class ChronicleUtils {
         final var futures = new ArrayList<Future<?>>(consumerThreads);
 
         for (int i = 0; i < consumerThreads; i++) {
-            futures.add(ITERABLE_EXECUTOR.submit(() -> {
+            futures.add(iterableExecutor.submit(() -> {
                 final var batch = new ArrayList<T>(batchSize);
 
                 while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
@@ -1537,6 +1584,104 @@ public final class ChronicleUtils {
     }
 
     /**
+     * Processes an Iterable in parallel using a shared executor service.
+     *
+     * @param iterable The iterable to process.
+     * @param limit    The maximum number of items to process.
+     * @param action   The predicate action to perform on each item.
+     * @throws InterruptedException If the thread is interrupted.
+     */
+    public <T> void parallelIterable(final Iterable<T> iterable, final int limit, final Predicate<T> action)
+            throws InterruptedException {
+        final AtomicInteger matchCounter = new AtomicInteger(0);
+        parallelIterable(iterable, limit, matchCounter, action);
+    }
+
+    /**
+     * Processes an Iterable in parallel using a shared executor service.
+     *
+     * @param <T>          The type of elements.
+     * @param iterable     The iterable to process.
+     * @param limit        The maximum number of items to process.
+     * @param matchCounter An atomic counter to track processed items.
+     * @param action       The consumer action to perform on each item.
+     * @throws InterruptedException If the thread is interrupted.
+     */
+    public <T> void parallelIterable(final Iterable<T> iterable, final int limit, final AtomicInteger matchCounter,
+            final Consumer<T> action)
+            throws InterruptedException {
+        if (limit <= 0 || iterable == null) {
+            return;
+        }
+
+        final var iterator = iterable.iterator();
+        final var iteratorLock = new ReentrantLock();
+        final var batchSize = 100;
+        // Use shared executor instead of creating new one
+        final int consumerThreads = processors;
+        final var futures = new ArrayList<Future<?>>(consumerThreads);
+
+        for (int i = 0; i < consumerThreads; i++) {
+            futures.add(iterableExecutor.submit(() -> {
+                final var batch = new ArrayList<T>(batchSize);
+                while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
+
+                    // 1. Fetch Batch (Inside Lock)
+                    batch.clear();
+                    iteratorLock.lock();
+                    try {
+                        if (!iterator.hasNext())
+                            return;
+                        for (int j = 0; j < batchSize && iterator.hasNext(); j++) {
+                            batch.add(iterator.next());
+                        }
+                    } finally {
+                        iteratorLock.unlock();
+                    }
+
+                    // 2. Process Batch (Outside Lock)
+                    for (final T item : batch) {
+                        if (matchCounter.get() >= limit)
+                            return;
+
+                        try {
+                            action.accept(item); // The "Runnable-style" call
+                            matchCounter.incrementAndGet();
+                        } catch (final Exception e) {
+                            Logger.error("Error processing item", e);
+                        }
+                    }
+                }
+            }));
+        }
+
+        // Wait for all tasks to complete
+        for (final Future<?> future : futures) {
+            try {
+                future.get();
+            } catch (final ExecutionException e) {
+                Logger.error("[Parallel Iterable] - Consumer thread failed", e.getCause());
+            } catch (final CancellationException e) {
+                // Expected if cancelled
+            }
+        }
+    }
+
+    /**
+     * Processes an Iterable in parallel using a shared executor service.
+     *
+     * @param iterable The iterable to process.
+     * @param limit    The maximum number of items to process.
+     * @param action   The predicate action to perform on each item.
+     * @throws InterruptedException If the thread is interrupted.
+     */
+    public <T> void parallelIterable(final Iterable<T> iterable, final int limit, final Consumer<T> action)
+            throws InterruptedException {
+        final AtomicInteger matchCounter = new AtomicInteger(0);
+        parallelIterable(iterable, limit, matchCounter, action);
+    }
+
+    /**
      * Concatenates two Iterables into a single Iterable, limited by a maximum
      * count.
      *
@@ -1579,7 +1724,7 @@ public final class ChronicleUtils {
         final List<Future<?>> futures = new ArrayList<>(tasks.size());
         for (final Runnable task : tasks) {
             if (task != null) {
-                futures.add(SHARED_EXECUTOR.submit(task));
+                futures.add(sharedExecutor.submit(task));
             }
         }
         for (final Future<?> future : futures) {
@@ -1596,7 +1741,7 @@ public final class ChronicleUtils {
             return;
         final List<Future<?>> futures = new ArrayList<>(items.size());
         for (final T item : items) {
-            futures.add(SHARED_EXECUTOR.submit(() -> action.accept(item)));
+            futures.add(sharedExecutor.submit(() -> action.accept(item)));
         }
         for (final Future<?> future : futures) {
             try {
