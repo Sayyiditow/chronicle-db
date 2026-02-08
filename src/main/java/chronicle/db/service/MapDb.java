@@ -86,16 +86,28 @@ public final class MapDb {
         public static final Serializer<KeyMapValue> KEY_MAP_VALUE_SERIALIZER = new SerializerImpl();
 
         // 2. Keep the class as the implementation logic
+        // Optimized serialization: fileName "data" → 0, "data-N" → N (single byte)
         private static class SerializerImpl implements Serializer<KeyMapValue> {
             @Override
             public void serialize(final DataOutput2 out, final KeyMapValue value) throws IOException {
                 out.writeUTF(value.primaryKey());
-                out.writeUTF(value.fileName());
+                // Compact encoding: "data" → 0, "data-2" → 2, "data-3" → 3, etc.
+                final String fn = value.fileName();
+                if (fn.equals("data")) {
+                    out.writeByte(0);
+                } else {
+                    // "data-N" → extract N
+                    out.writeByte(Integer.parseInt(fn.substring(5)));
+                }
             }
 
             @Override
             public KeyMapValue deserialize(final DataInput2 in, final int available) throws IOException {
-                return new KeyMapValue(in.readUTF(), in.readUTF());
+                final String primaryKey = in.readUTF();
+                final int fileIndex = in.readUnsignedByte();
+                // Reconstruct: 0 → "data", N → "data-N"
+                final String fileName = fileIndex == 0 ? "data" : "data-" + fileIndex;
+                return new KeyMapValue(primaryKey, fileName);
             }
         }
     }
