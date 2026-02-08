@@ -619,10 +619,12 @@ public interface ChronicleDao<V> {
 
     /**
      * Result of grouping keys by their database file location.
-     * Contains a map of file names to iterables of primary keys, plus an AutoCloseable
+     * Contains a map of file names to iterables of primary keys, plus an
+     * AutoCloseable
      * for the underlying KeyMap resource. Callers must use try-with-resources.
      *
-     * @param fileGroups map of database file name to iterable of primary keys in that file
+     * @param fileGroups map of database file name to iterable of primary keys in
+     *                   that file
      * @param closer     the AutoCloseable to release the KeyMap resource
      */
     public record GroupedKeys(Map<String, Iterable<String>> fileGroups, AutoCloseable closer) implements AutoCloseable {
@@ -637,7 +639,8 @@ public interface ChronicleDao<V> {
 
     /**
      * Groups keys by their database file using lazy, batched lookups.
-     * Calculates key hashes internally. Thread-safe with demand-driven batch processing.
+     * Calculates key hashes internally. Thread-safe with demand-driven batch
+     * processing.
      *
      * @param keys the primary keys to group
      * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
@@ -873,7 +876,8 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Groups pre-calculated hashes by their file location using direct KeyMap lookup.
+     * Groups pre-calculated hashes by their file location using direct KeyMap
+     * lookup.
      * No re-hashing required. Returns primary keys grouped by file.
      *
      * @param hashes the 16-byte hashes to look up
@@ -1047,8 +1051,10 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Groups pre-calculated hashes by their file location with a limit, excluding specified keys.
-     * Exclusion is applied after resolving hash to primary key. No re-hashing required.
+     * Groups pre-calculated hashes by their file location with a limit, excluding
+     * specified keys.
+     * Exclusion is applied after resolving hash to primary key. No re-hashing
+     * required.
      *
      * @param hashes       the 16-byte hashes to look up
      * @param limit        maximum number of keys to process
