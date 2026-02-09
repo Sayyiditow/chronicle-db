@@ -3634,7 +3634,7 @@ public interface ChronicleDao<V> {
                 .toList();
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFilesFromHashes(hashes, limit)) {
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3685,7 +3685,7 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFilesFromHashes(hashes, limit)) {
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3736,7 +3736,7 @@ public interface ChronicleDao<V> {
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFilesFromHashes(hashes, limit)) {
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3788,7 +3788,7 @@ public interface ChronicleDao<V> {
         final var csvHeaders = CHRONICLE_UTILS.getCsvHeaders(fields);
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFilesFromHashes(hashes, limit)) {
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
