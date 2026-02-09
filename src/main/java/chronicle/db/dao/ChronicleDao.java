@@ -511,6 +511,7 @@ public interface ChronicleDao<V> {
      * 
      */
     private void initIndex(final Set<String> fields) {
+        Logger.info("Indexing {} at [{}].", fields, dataPath());
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
                 initIndex(shared.map, fields);
