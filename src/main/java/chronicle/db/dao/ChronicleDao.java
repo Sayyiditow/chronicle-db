@@ -384,6 +384,7 @@ public interface ChronicleDao<V> {
                     CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
                     throw e;
                 }
+                Logger.info("Initializing KeyMap at [{}] complete.", dataPath());
             }
         });
     }
@@ -561,6 +562,7 @@ public interface ChronicleDao<V> {
                 CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
                 throw e;
             }
+            Logger.info("Refreshing KeyMap at [{}] complete.", dataPath());
         });
     }
 
