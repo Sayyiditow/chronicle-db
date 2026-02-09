@@ -224,7 +224,7 @@ public final class MapDb {
         // ~340 bytes per entry (16 byte key + ~150 char string + 1 byte + MapDB overhead)
         // Minimum 16MB, maximum 1GB
         final long bytesPerEntry = 340;
-        final long minSize = 16L * 1024 * 1024;
+        final long minSize = 8L * 1024 * 1024;
         final long maxSize = 1024L * 1024 * 1024;
         final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : 512L * 1024 * 1024;
         final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));

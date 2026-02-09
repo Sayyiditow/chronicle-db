@@ -167,28 +167,17 @@ public final class ChronicleDb {
                 // check for locks early
                 map.size();
                 return new SharedChronicleMap(map, filePath);
-            } catch (final InterProcessDeadLockException deadlockEx) {
-                Logger.warn("Deadlock detected when opening ChronicleMap [{}], attempting recovery.", filePath);
-                // Backup the ChronicleMap file
-                final var filePathPath = Path.of(filePath);
-                final var backupFolder = filePathPath.getParent().resolveSibling("backup");
-                final var backupFile = backupFolder.resolve(filePathPath.getFileName());
-
-                try {
-                    Files.createDirectories(backupFolder); // ensure backup folder exists
-                    Files.copy(filePathPath, backupFile, StandardCopyOption.REPLACE_EXISTING,
-                            StandardCopyOption.COPY_ATTRIBUTES);
-                    Logger.warn("Backed up ChronicleMap file to [{}] before recovery.", backupFile);
-                    final ChronicleMap<K, V> recovered = recoverDb(name, entries, averageKey, averageValue, filePath,
-                            maxBloatFactor);
-                    return new SharedChronicleMap(recovered, filePath);
-                } catch (final IOException recoveryEx) {
-                    Logger.error("Failed to recover ChronicleMap at [{}]", filePath);
-                    throw new UncheckedIOException(recoveryEx);
-                }
+            } catch (final InterProcessDeadLockException e) {
+                return recoverFromDeadlock(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
             } catch (final IOException e) {
                 Logger.error("Failed to open ChronicleMap at [{}]", filePath);
                 throw new UncheckedIOException(e);
+            } catch (final RuntimeException e) {
+                // Check if wrapped exception is InterProcessDeadLockException
+                if (hasDeadlockCause(e)) {
+                    return recoverFromDeadlock(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
+                }
+                throw e;
             }
         });
 
@@ -218,6 +207,41 @@ public final class ChronicleDb {
         }
         mapCache.clear(); // Clear all cached entries
         Logger.debug("All ChronicleMaps have been closed and mapCache cleared.");
+    }
+
+    /**
+     * Checks if the exception cause chain contains an InterProcessDeadLockException.
+     */
+    private boolean hasDeadlockCause(final Throwable e) {
+        Throwable cause = e;
+        while (cause != null) {
+            if (cause instanceof InterProcessDeadLockException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * Recovers from a deadlock by backing up and restoring the ChronicleMap file.
+     */
+    private <K, V> SharedChronicleMap<K, V> recoverFromDeadlock(final String name, final long entries,
+            final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor) {
+        Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
+        try {
+            final Path path = Path.of(filePath);
+            final Path backupPath = Path.of(filePath + ".bak");
+            Files.copy(path, backupPath, StandardCopyOption.REPLACE_EXISTING);
+            Logger.info("Created backup at [{}]", backupPath);
+
+            final ChronicleMap<K, V> map = recoverDb(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
+            Logger.info("Successfully recovered ChronicleMap at [{}]", filePath);
+            return new SharedChronicleMap<>(map, filePath);
+        } catch (final IOException ex) {
+            Logger.error("Failed to recover ChronicleMap at [{}]", filePath);
+            throw new UncheckedIOException(ex);
+        }
     }
 
     /**
