@@ -3970,7 +3970,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes, limit, excludedKeys)) {
+        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (counter.get() >= limit)
                     break;
@@ -4021,7 +4021,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes, limit, excludedKeys)) {
+        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -4073,7 +4073,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes, limit, excludedKeys)) {
+        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -4124,7 +4124,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes, limit, excludedKeys)) {
+        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
