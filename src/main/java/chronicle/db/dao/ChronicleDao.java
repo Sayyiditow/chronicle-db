@@ -708,13 +708,13 @@ public interface ChronicleDao<V> {
                 }
 
                 // --- PHASE 2: KEY MAPPING ---
-                for (final var key : keyBatch) {
+                keyBatch.parallelStream().forEach(key -> {
                     final var keyMapValue = sharedKeyMap.map.get(keyHashMap.get(key));
                     if (keyMapValue != null) {
                         fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
                                 .add(key);
                     }
-                }
+                });
             } finally {
                 refillLock.unlock();
             }
@@ -818,14 +818,14 @@ public interface ChronicleDao<V> {
                 }
 
                 // --- PHASE 2: KEY MAPPING ---
-                for (final var key : keyBatch) {
+                keyBatch.parallelStream().forEach(key -> {
                     final var keyMapValue = sharedKeyMap.map.get(keyHashMap.get(key));
                     if (keyMapValue != null) {
                         totalFilled.incrementAndGet();
                         fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
                                 .add(key);
                     }
-                }
+                });
 
                 final int remainingToFetch = limit - totalFilled.get();
                 if (remainingToFetch > 0) {
