@@ -185,7 +185,7 @@ public class ReplicationQueue {
             final long index = tailer.index();
             final int cycle = queue.rollCycle().toCycle(index);
             final long sequence = queue.rollCycle().toSequenceNumber(index);
-            Logger.debug("Tailer [{}] advanced to cycle={}, seq={}", tailerName, cycle, sequence);
+            Logger.info("Tailer [{}] advanced to cycle={}, seq={}", tailerName, cycle, sequence);
             return true;
         } else {
             return false;
@@ -234,7 +234,7 @@ public class ReplicationQueue {
                         final long newIndex = tailer.index();
                         final int cycle = queue.rollCycle().toCycle(newIndex);
                         final long sequence = queue.rollCycle().toSequenceNumber(newIndex);
-                        Logger.debug("Tailer [{}] advanced to cycle={}, seq={}",
+                        Logger.info("Tailer [{}] advanced to cycle={}, seq={}",
                                 primaryTailerName, cycle, sequence);
                     } else {
                         break;
@@ -256,7 +256,7 @@ public class ReplicationQueue {
             try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
                 final var index = tailer.index();
                 final var queueIndex = queue.lastIndex();
-                Logger.debug("Tailer [{}] index={}, queueIndex={}", tailerName, index, queueIndex);
+                Logger.info("Tailer [{}] index={}, queueIndex={}", tailerName, index, queueIndex);
                 return index > queueIndex;
             }
         });
