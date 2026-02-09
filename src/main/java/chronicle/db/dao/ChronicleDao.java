@@ -589,9 +589,9 @@ public interface ChronicleDao<V> {
                     if (!missingIndexes.isEmpty()) {
                         initIndex(missingIndexes);
                     }
+                    Logger.info("Initialized {} indexes at [{}]", missingIndexes, dataPath());
                 }
             }, "Init Indexes - " + dataPath()));
-            Logger.info("Initialized indexes at [{}]", dataPath());
         }
     }
 
