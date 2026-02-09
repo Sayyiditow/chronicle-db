@@ -334,10 +334,13 @@ public interface ChronicleDao<V> {
     private void populateKeyMap(final Set<String> dataFiles, final HTreeMap<byte[], KeyMapValue> keyMap) {
         CHRONICLE_UTILS.processInParallel(dataFiles, file -> {
             try (final var shared = openDb(file)) {
-                shared.map.forEachEntry(entry -> {
-                    final var primaryKey = entry.key().get();
-                    keyMap.put(CHRONICLE_UTILS.to128BitHash(primaryKey), new KeyMapValue(primaryKey, file));
-                });
+                // Collect keys first (forEachEntry doesn't support parallel)
+                final var keys = new ArrayList<String>((int) shared.map.size());
+                shared.map.forEachEntry(entry -> keys.add(entry.key().get()));
+
+                // Parallel: compute hash + insert (HTreeMap is thread-safe)
+                keys.parallelStream().forEach(primaryKey -> keyMap.put(CHRONICLE_UTILS.to128BitHash(primaryKey),
+                        new KeyMapValue(primaryKey, file)));
             }
         });
     }
@@ -364,7 +367,7 @@ public interface ChronicleDao<V> {
             final var dataFileState = getDataFileState();
             if (!Files.exists(Path.of(getKeyMapPath()))) {
                 Logger.info("Initializing KeyMap at [{}]", dataPath());
-                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath(), entries())) {
                     if (sharedKeyMap.map.isEmpty()) {
                         populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
                     }
@@ -493,7 +496,7 @@ public interface ChronicleDao<V> {
      * 
      */
     private void initIndex(final ChronicleMap<String, V> db, final Set<String> fields) {
-        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), averageValue().getClass(), indexExclusions());
+        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), averageValue().getClass(), indexExclusions(), entries());
     }
 
     /**
@@ -536,7 +539,7 @@ public interface ChronicleDao<V> {
             final var keyMapPath = getKeyMapPath();
             MAP_DB.closeMap(keyMapPath);
             CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
-            try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath)) {
+            try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
                 populateKeyMap(getDataFileState().fileNames(), sharedKeyMap.map);
             }
         });

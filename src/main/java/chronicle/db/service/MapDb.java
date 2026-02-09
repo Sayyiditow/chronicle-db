@@ -214,15 +214,21 @@ public final class MapDb {
     }
 
     /**
-     * Opens a shared MapDB instance. Call close(filePath) to release it.
-     * Do not use try-with-resources as it will prematurely close the shared
-     * instance.
-     * 
-     * @param filePath filepath to create
-     * 
+     * Opens a shared MapDB instance with dynamic allocation based on expected entries.
+     *
+     * @param filePath        filepath to create
+     * @param expectedEntries expected number of entries (0 for default 512MB)
      * @return HTreeMap or null, if null do not run close()
      */
-    public SharedKeyMap openMap(final String filePath) {
+    public SharedKeyMap openMap(final String filePath, final long expectedEntries) {
+        // ~340 bytes per entry (16 byte key + ~150 char string + 1 byte + MapDB overhead)
+        // Minimum 16MB, maximum 1GB
+        final long bytesPerEntry = 340;
+        final long minSize = 16L * 1024 * 1024;
+        final long maxSize = 1024L * 1024 * 1024;
+        final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : 512L * 1024 * 1024;
+        final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
+
         final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 return existingEntry.retain();
@@ -231,8 +237,8 @@ public final class MapDb {
             // Create a new entry
             try {
                 final HTreeMap<byte[], KeyMapValue> map = DBMaker.fileDB(filePath)
-                        .allocateStartSize(512 * 1024 * 1024)
-                        .allocateIncrement(256 * 1024 * 1024)
+                        .allocateStartSize(allocSize)
+                        .allocateIncrement(allocSize)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -257,6 +263,13 @@ public final class MapDb {
         });
 
         return entry;
+    }
+
+    /**
+     * Opens a shared MapDB instance with default 512MB allocation.
+     */
+    public SharedKeyMap openMap(final String filePath) {
+        return openMap(filePath, 0);
     }
 
     /**
@@ -285,14 +298,21 @@ public final class MapDb {
     }
 
     /**
-     * Opens a shared MapDB TreeSet instance. Call close(filePath) to release it.
-     * Do not use try-with-resources as it will prematurely close the shared
-     * instance.
+     * Opens a shared MapDB TreeSet instance with dynamic allocation.
      *
-     * @param filePath filepath to create
+     * @param filePath        filepath to create
+     * @param expectedEntries expected number of entries (0 for default 512MB)
      * @return NavigableSet or null, if null do not run close()
      */
-    public SharedIndexSet openIndex(final String filePath) {
+    public SharedIndexSet openIndex(final String filePath, final long expectedEntries) {
+        // ~100 bytes per index entry (field value ~30 bytes + separator + 16 byte hash + MapDB overhead)
+        // Minimum 16MB, maximum 1GB
+        final long bytesPerEntry = 100;
+        final long minSize = 16L * 1024 * 1024;
+        final long maxSize = 1024L * 1024 * 1024;
+        final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : 512L * 1024 * 1024;
+        final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
+
         final var entry = treeCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 return existingEntry.retain();
@@ -301,8 +321,8 @@ public final class MapDb {
             // Create a new entry
             try {
                 final var db = DBMaker.fileDB(filePath)
-                        .allocateStartSize(512 * 1024 * 1024)
-                        .allocateIncrement(256 * 1024 * 1024)
+                        .allocateStartSize(allocSize)
+                        .allocateIncrement(allocSize)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -326,6 +346,13 @@ public final class MapDb {
         });
 
         return entry;
+    }
+
+    /**
+     * Opens a shared MapDB TreeSet instance with default 512MB allocation.
+     */
+    public SharedIndexSet openIndex(final String filePath) {
+        return openIndex(filePath, 0);
     }
 
     /**

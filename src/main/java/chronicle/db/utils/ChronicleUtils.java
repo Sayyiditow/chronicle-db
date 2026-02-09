@@ -655,16 +655,19 @@ public final class ChronicleUtils {
 
     /**
      * Index the db so that joins for 1 to many are efficient.
-     * 
-     * @param db     the db object being indexed
-     * @param dbName the db name
-     * @param field  the field enum from the value object
-     * @return boolean true/false if indexed
-     * @throws IOException
-     * 
+     *
+     * @param db              the db object being indexed
+     * @param dbName          the db name
+     * @param fields          the fields to index
+     * @param dataPath        the data path
+     * @param valueClass      the value class
+     * @param exclusions      field exclusions
+     * @param expectedEntries expected number of entries for allocation
+     *
      */
     public <V> void index(final ChronicleMap<String, V> db, final String dbName, final Set<String> fields,
-            final String dataPath, final Class<?> valueClass, final Map<String, Set<String>> exclusions) {
+            final String dataPath, final Class<?> valueClass, final Map<String, Set<String>> exclusions,
+            final long expectedEntries) {
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
 
         final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -683,7 +686,7 @@ public final class ChronicleUtils {
         for (final String field : indexFieldMap.keySet()) {
             final String indexPath = indexDirPath + field;
             try {
-                openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
+                openIndexes.put(indexPath, MAP_DB.openIndex(indexPath, expectedEntries));
             } catch (final RuntimeException e) {
                 Logger.warn("Skipping indexing for [{}]: {}", indexPath, e.getMessage());
             }
