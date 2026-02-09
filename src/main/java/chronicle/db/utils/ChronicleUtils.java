@@ -750,7 +750,7 @@ public final class ChronicleUtils {
                     }
 
                     if (recordCount.incrementAndGet() % indexChunkSize == 0) {
-                        processInParallel(fieldBatches.entrySet(), batchEntry -> {
+                        parallelIterable(fieldBatches.entrySet(), Integer.MAX_VALUE, batchEntry -> {
                             final String field = batchEntry.getKey();
                             final List<byte[]> batch = batchEntry.getValue();
                             if (!batch.isEmpty()) {
@@ -768,15 +768,20 @@ public final class ChronicleUtils {
             });
 
             // Flush remaining
-            processInParallel(fieldBatches.entrySet(), batchEntry -> {
-                final String field = batchEntry.getKey();
-                final List<byte[]> batch = batchEntry.getValue();
-                if (!batch.isEmpty()) {
-                    final var indexPath = indexDirPath + field;
-                    final var sharedIndexSet = openIndexes.get(indexPath);
-                    batch.parallelStream().unordered().forEach(sharedIndexSet.index::add);
-                }
-            });
+            try {
+                parallelIterable(fieldBatches.entrySet(), Integer.MAX_VALUE, batchEntry -> {
+                    final String field = batchEntry.getKey();
+                    final List<byte[]> batch = batchEntry.getValue();
+                    if (!batch.isEmpty()) {
+                        final var indexPath = indexDirPath + field;
+                        final var sharedIndexSet = openIndexes.get(indexPath);
+                        batch.parallelStream().unordered().forEach(sharedIndexSet.index::add);
+                    }
+                });
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Logger.error("InterruptedException while indexing [{}]", dataPath);
+            }
             Logger.info("Indexed [{}] records for fields: {} at [{}]", recordCount.get(), indexFieldMap.keySet(),
                     dataPath);
         } finally {
