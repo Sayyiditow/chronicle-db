@@ -383,7 +383,7 @@ public interface ChronicleDao<V> {
                     CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
                     throw e;
                 }
-                Logger.info("Initialed KeyMap at [{}]", dataPath());
+                Logger.info("Initialized KeyMap at [{}]", dataPath());
             }
         });
     }
