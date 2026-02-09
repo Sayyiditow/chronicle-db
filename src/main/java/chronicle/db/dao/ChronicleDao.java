@@ -527,8 +527,8 @@ public interface ChronicleDao<V> {
     default void refreshIndexes() {
         final var indexFiles = indexFileNames();
         if (!indexFiles.isEmpty()) {
+            Logger.info("Re-initializing indexes at [{}].", dataPath());
             CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                Logger.info("Re-initializing indexes at [{}].", dataPath());
                 for (final String field : indexFiles) {
                     final var indexPath = getIndexPath(field);
                     MAP_DB.closeIndex(indexPath);
