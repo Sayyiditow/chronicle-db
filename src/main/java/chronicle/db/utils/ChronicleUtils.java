@@ -41,6 +41,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -57,9 +58,12 @@ import com.jsoniter.spi.TypeLiteral;
 import chronicle.db.dao.ChronicleDao;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
+import chronicle.db.service.ChronicleDb.SharedChronicleMap;
 import chronicle.db.service.MapDb.SharedIndexSet;
 import net.openhft.chronicle.algo.hashing.LongHashFunction;
+import net.openhft.chronicle.hash.locks.InterProcessDeadLockException;
 import net.openhft.chronicle.map.ChronicleMap;
+import net.openhft.chronicle.map.MapEntry;
 
 /**
  * Utility class providing core functionality for ChronicleDao operations.
@@ -665,7 +669,7 @@ public final class ChronicleUtils {
      * @param expectedEntries expected number of entries for allocation
      *
      */
-    public <V> void index(final ChronicleMap<String, V> db, final String dbName, final Set<String> fields,
+    public <V> void index(final SharedChronicleMap<String, V> db, final String dbName, final Set<String> fields,
             final String dataPath, final Class<?> valueClass, final Map<String, Set<String>> exclusions,
             final long expectedEntries) {
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
@@ -692,7 +696,7 @@ public final class ChronicleUtils {
             }
         }
 
-        if (db.isEmpty()) {
+        if (db.map.isEmpty()) {
             Logger.info("DB is empty. Index files created at [{}].", indexDirPath);
             openIndexes.forEach((indexPath, sharedIndexSet) -> {
                 sharedIndexSet.close();
@@ -700,6 +704,7 @@ public final class ChronicleUtils {
             return;
         }
 
+        final var failed = new AtomicBoolean(false);
         try {
             final Map<String, List<byte[]>> fieldBatches = new ConcurrentHashMap<>();
             final AtomicInteger recordCount = new AtomicInteger(0);
@@ -712,60 +717,67 @@ public final class ChronicleUtils {
             }
 
             final StringBuilder sb = new StringBuilder();
-            db.forEachEntry(entry -> {
-                final var key = entry.key().get();
-                final V value = entry.value().get();
-                final byte[] keyHash = to128BitHash(key);
+            try {
+                safeForEachEntry(db, entry -> {
+                    final var key = entry.key().get();
+                    final V value = entry.value().get();
+                    final byte[] keyHash = to128BitHash(key);
 
-                try {
-                    for (final var fieldEntry : indexFieldMap.entrySet()) {
-                        final String compoundField = fieldEntry.getKey();
-                        final List<byte[]> batch = fieldBatches.get(compoundField);
-                        if (batch == null)
-                            continue;
+                    try {
+                        for (final var fieldEntry : indexFieldMap.entrySet()) {
+                            final String compoundField = fieldEntry.getKey();
+                            final List<byte[]> batch = fieldBatches.get(compoundField);
+                            if (batch == null)
+                                continue;
 
-                        final Set<String> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
-                        final List<FieldData> fieldDataList = fieldEntry.getValue();
-                        sb.setLength(0);
-                        boolean shouldSkip = false;
+                            final Set<String> excluded = exclusions.getOrDefault(compoundField, Collections.emptySet());
+                            final List<FieldData> fieldDataList = fieldEntry.getValue();
+                            sb.setLength(0);
+                            boolean shouldSkip = false;
 
-                        for (final FieldData fd : fieldDataList) {
-                            final Object objVal = fd.varHandle.get(value);
-                            if (excluded.isEmpty()) {
-                                appendValue(sb, objVal);
-                            } else {
-                                final var val = toStringOptimized(objVal);
-                                if (excluded.contains(val)) {
-                                    shouldSkip = true;
-                                    break;
+                            for (final FieldData fd : fieldDataList) {
+                                final Object objVal = fd.varHandle.get(value);
+                                if (excluded.isEmpty()) {
+                                    appendValue(sb, objVal);
+                                } else {
+                                    final var val = toStringOptimized(objVal);
+                                    if (excluded.contains(val)) {
+                                        shouldSkip = true;
+                                        break;
+                                    }
+                                    sb.append(val);
                                 }
-                                sb.append(val);
+                            }
+
+                            if (!shouldSkip) {
+                                final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), keyHash);
+                                batch.add(indexKey);
                             }
                         }
 
-                        if (!shouldSkip) {
-                            final byte[] indexKey = MAP_DB.createIndexKey(sb.toString(), keyHash);
-                            batch.add(indexKey);
+                        if (recordCount.incrementAndGet() % indexChunkSize == 0) {
+                            parallelIterable(fieldBatches.entrySet(), Integer.MAX_VALUE, batchEntry -> {
+                                final String field = batchEntry.getKey();
+                                final List<byte[]> batch = batchEntry.getValue();
+                                if (!batch.isEmpty()) {
+                                    final var indexPath = indexDirPath + field;
+                                    final var sharedIndexSet = openIndexes.get(indexPath);
+                                    batch.parallelStream().unordered().forEach(sharedIndexSet.index::add);
+                                    batch.clear();
+                                }
+                            });
                         }
+                    } catch (final Throwable e) {
+                        Logger.error("Error processing key [{}] for fields {}", key, fields);
+                        Logger.error(e);
                     }
-
-                    if (recordCount.incrementAndGet() % indexChunkSize == 0) {
-                        parallelIterable(fieldBatches.entrySet(), Integer.MAX_VALUE, batchEntry -> {
-                            final String field = batchEntry.getKey();
-                            final List<byte[]> batch = batchEntry.getValue();
-                            if (!batch.isEmpty()) {
-                                final var indexPath = indexDirPath + field;
-                                final var sharedIndexSet = openIndexes.get(indexPath);
-                                batch.parallelStream().unordered().forEach(sharedIndexSet.index::add);
-                                batch.clear();
-                            }
-                        });
-                    }
-                } catch (final Throwable e) {
-                    Logger.error("Error processing key [{}] for fields {}", key, fields);
-                    Logger.error(e);
-                }
-            });
+                });
+            } catch (final Exception e) {
+                // Close first to release file handles, then delete for rebuild
+                Logger.error("Failed to index [{}]. Deleting indexes for rebuild.", dataPath);
+                failed.set(true);
+                throw e;
+            }
 
             // Flush remaining
             try {
@@ -787,6 +799,9 @@ public final class ChronicleUtils {
         } finally {
             openIndexes.forEach((indexPath, sharedIndexSet) -> {
                 sharedIndexSet.close();
+                if (failed.get()) {
+                    deleteFileIfExists(indexPath);
+                }
             });
         }
     }
@@ -1907,5 +1922,21 @@ public final class ChronicleUtils {
         result[15] = (byte) h2;
 
         return result;
+    }
+
+    /**
+     * Safely iterates over map entries, marking for recovery if deadlock is
+     * detected.
+     * Recovery happens automatically when all references are closed.
+     */
+    public <V> void safeForEachEntry(final SharedChronicleMap<String, V> sharedChronicleMap,
+            final Consumer<MapEntry<String, V>> action) {
+        try {
+            sharedChronicleMap.map.forEachEntry(action);
+        } catch (final InterProcessDeadLockException e) {
+            Logger.error("Deadlock detected on [{}]. Marked for recovery on close.", sharedChronicleMap.getFilePath());
+            sharedChronicleMap.markForRecovery();
+            throw e; // Let caller know operation failed
+        }
     }
 }

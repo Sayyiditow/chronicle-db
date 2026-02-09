@@ -338,7 +338,7 @@ public interface ChronicleDao<V> {
             try (final var shared = openDb(file)) {
                 // Collect keys first (forEachEntry doesn't support parallel)
                 final var keys = new ArrayList<String>((int) shared.map.size());
-                shared.map.forEachEntry(entry -> keys.add(entry.key().get()));
+                CHRONICLE_UTILS.safeForEachEntry(shared, entry -> keys.add(entry.key().get()));
 
                 // Parallel: compute hash + insert (HTreeMap is thread-safe)
                 keys.parallelStream().forEach(primaryKey -> keyMap.put(CHRONICLE_UTILS.to128BitHash(primaryKey),
@@ -372,10 +372,17 @@ public interface ChronicleDao<V> {
 
         CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             final var dataFileState = getDataFileState();
-            if (!Files.exists(Path.of(getKeyMapPath()))) {
+            final var keyMapPath = getKeyMapPath();
+            if (!Files.exists(Path.of(keyMapPath))) {
                 Logger.info("Initializing KeyMap at [{}]", dataPath());
-                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath(), entries())) {
+                try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
                     populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
+                } catch (final Exception e) {
+                    // Delete corrupt keyMap so it rebuilds on next startup
+                    // (try-with-resources already closed the map)
+                    Logger.error("Failed to populate KeyMap at [{}]. Deleting for rebuild.", keyMapPath);
+                    CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
+                    throw e;
                 }
             }
         });
@@ -500,7 +507,7 @@ public interface ChronicleDao<V> {
      * @param field the field of the V value object
      * 
      */
-    private void initIndex(final ChronicleMap<String, V> db, final Set<String> fields) {
+    private void initIndex(final SharedChronicleMap<String, V> db, final Set<String> fields) {
         CHRONICLE_UTILS.index(db, name(), fields, dataPath(), averageValue().getClass(), indexExclusions(), entries());
     }
 
@@ -514,7 +521,7 @@ public interface ChronicleDao<V> {
         Logger.info("Indexing {} at [{}].", fields, dataPath());
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
-                initIndex(shared.map, fields);
+                initIndex(shared, fields);
             }
         });
         Logger.info("Indexing {} at [{}] complete.", fields, dataPath());
@@ -547,6 +554,12 @@ public interface ChronicleDao<V> {
             CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
             try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
                 populateKeyMap(getDataFileState().fileNames(), sharedKeyMap.map);
+            } catch (final Exception e) {
+                // Delete corrupt keyMap so it rebuilds on next startup
+                // (try-with-resources already closed the map)
+                Logger.error("Failed to refresh KeyMap at [{}]. Deleting for rebuild.", keyMapPath);
+                CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
+                throw e;
             }
         });
     }
@@ -594,7 +607,7 @@ public interface ChronicleDao<V> {
         final var dataFilePath = Path.of(dataFileStr);
 
         // 1. Make a backup before recovery
-        final var backupPath = Path.of(dataPath() + BACKUP_DIR + CORRUPTED_FILE);
+        final var backupPath = Path.of(dataPath() + BACKUP_DIR + CORRUPTED_FILE + dataFileName);
         Files.copy(dataFilePath, backupPath, StandardCopyOption.REPLACE_EXISTING);
         Logger.info("Backed up file to {}", backupPath);
         try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),

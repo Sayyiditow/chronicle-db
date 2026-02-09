@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -67,6 +68,7 @@ public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
     private static final ConcurrentMap<String, SharedChronicleMap> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, CompletableFuture<Void>> recovering = new ConcurrentHashMap<>();
 
     private ChronicleDb() {
     }
@@ -89,15 +91,46 @@ public final class ChronicleDb {
      */
     public static class SharedChronicleMap<K, V> implements AutoCloseable {
         /** The underlying ChronicleMap instance */
-        public final ChronicleMap<K, V> map;
+        public ChronicleMap<K, V> map;
 
         private final AtomicInteger refCount;
-        private final String filePath; // Track file path for cleanup
+        private final String filePath;
+        private volatile boolean needsRecovery;
 
-        SharedChronicleMap(final ChronicleMap<K, V> map, final String filePath) {
+        // Builder params for recovery
+        private final String name;
+        private final long entries;
+        private final K averageKey;
+        private final V averageValue;
+        private final double maxBloatFactor;
+
+        SharedChronicleMap(final ChronicleMap<K, V> map, final String filePath,
+                final String name, final long entries, final K averageKey,
+                final V averageValue, final double maxBloatFactor) {
             this.map = map;
             this.filePath = filePath;
             this.refCount = new AtomicInteger(1);
+            this.needsRecovery = false;
+            this.name = name;
+            this.entries = entries;
+            this.averageKey = averageKey;
+            this.averageValue = averageValue;
+            this.maxBloatFactor = maxBloatFactor;
+        }
+
+        public String getFilePath() {
+            return filePath;
+        }
+
+        /**
+         * Marks this map for recovery. Actual recovery happens on close() when refCount reaches 0.
+         */
+        public void markForRecovery() {
+            if (!needsRecovery) {
+                needsRecovery = true;
+                recovering.put(filePath, new CompletableFuture<>());
+                Logger.warn("Map [{}] marked for recovery. Will recover on close.", filePath);
+            }
         }
 
         /**
@@ -116,6 +149,7 @@ public final class ChronicleDb {
 
         /**
          * Decrements the reference count and closes the map if no references remain.
+         * If recovery was requested, performs backup and recovery before closing.
          * <p>
          * This method is thread-safe and ensures the underlying ChronicleMap is
          * only closed when the last reference is released.
@@ -125,7 +159,25 @@ public final class ChronicleDb {
         public void close() {
             mapCache.computeIfPresent(filePath, (k, entry) -> {
                 if (entry.refCount.decrementAndGet() == 0) {
-                    entry.map.close();
+                    if (entry.needsRecovery) {
+                        // Perform recovery
+                        try {
+                            Logger.info("Recovering map [{}] on close...", filePath);
+                            entry.map.close();
+                            CHRONICLE_DB.backupCorruptedFile(filePath);
+                            CHRONICLE_DB.recoverDb(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
+                            Logger.info("Successfully recovered map [{}]", filePath);
+                        } catch (final IOException e) {
+                            Logger.error("Failed to recover map [{}]", filePath);
+                        } finally {
+                            final var future = recovering.remove(filePath);
+                            if (future != null) {
+                                future.complete(null);
+                            }
+                        }
+                    } else {
+                        entry.map.close();
+                    }
                     return null;
                 }
                 return entry; // Keep the entry
@@ -148,6 +200,12 @@ public final class ChronicleDb {
      */
     public <K, V> SharedChronicleMap open(final String name, final long entries,
             final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor) {
+        // Wait for any ongoing recovery
+        final var recoveryFuture = recovering.get(filePath);
+        if (recoveryFuture != null) {
+            recoveryFuture.join();
+        }
+
         final SharedChronicleMap entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 return existingEntry.retain();
@@ -164,10 +222,9 @@ public final class ChronicleDb {
                     builder.name(name).entries(entries).averageKey(averageKey).averageValue(averageValue);
                 }
                 final ChronicleMap<K, V> map = builder.createPersistedTo(file);
-                // check for locks early
-                map.size();
-                return new SharedChronicleMap(map, filePath);
+                return new SharedChronicleMap(map, filePath, name, entries, averageKey, averageValue, maxBloatFactor);
             } catch (final InterProcessDeadLockException e) {
+                Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
                 return recoverFromDeadlock(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
             } catch (final IOException e) {
                 Logger.error("Failed to open ChronicleMap at [{}]", filePath);
@@ -175,6 +232,7 @@ public final class ChronicleDb {
             } catch (final RuntimeException e) {
                 // Check if wrapped exception is InterProcessDeadLockException
                 if (hasDeadlockCause(e)) {
+                    Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
                     return recoverFromDeadlock(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
                 }
                 throw e;
@@ -210,7 +268,8 @@ public final class ChronicleDb {
     }
 
     /**
-     * Checks if the exception cause chain contains an InterProcessDeadLockException.
+     * Checks if the exception cause chain contains an
+     * InterProcessDeadLockException.
      */
     private boolean hasDeadlockCause(final Throwable e) {
         Throwable cause = e;
@@ -224,20 +283,27 @@ public final class ChronicleDb {
     }
 
     /**
+     * Backs up a corrupted ChronicleMap file before recovery.
+     */
+    private void backupCorruptedFile(final String filePath) throws IOException {
+        final Path path = Path.of(filePath);
+        final Path backupDir = path.getParent().getParent().resolve("backup");
+        Files.createDirectories(backupDir);
+        final Path backupPath = backupDir.resolve("corrupted-" + path.getFileName());
+        Files.copy(path, backupPath, StandardCopyOption.REPLACE_EXISTING);
+        Logger.info("Created backup at [{}]", backupPath);
+    }
+
+    /**
      * Recovers from a deadlock by backing up and restoring the ChronicleMap file.
      */
     private <K, V> SharedChronicleMap<K, V> recoverFromDeadlock(final String name, final long entries,
             final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor) {
-        Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
         try {
-            final Path path = Path.of(filePath);
-            final Path backupPath = Path.of(filePath + ".bak");
-            Files.copy(path, backupPath, StandardCopyOption.REPLACE_EXISTING);
-            Logger.info("Created backup at [{}]", backupPath);
-
+            backupCorruptedFile(filePath);
             final ChronicleMap<K, V> map = recoverDb(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
             Logger.info("Successfully recovered ChronicleMap at [{}]", filePath);
-            return new SharedChronicleMap<>(map, filePath);
+            return new SharedChronicleMap<>(map, filePath, name, entries, averageKey, averageValue, maxBloatFactor);
         } catch (final IOException ex) {
             Logger.error("Failed to recover ChronicleMap at [{}]", filePath);
             throw new UncheckedIOException(ex);

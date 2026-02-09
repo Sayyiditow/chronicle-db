@@ -132,6 +132,10 @@ public final class MapDb {
             this.refCount = new AtomicInteger(1);
         }
 
+        public String getFilePath() {
+            return filePath;
+        }
+
         /**
          * Increments the reference count when sharing this map.
          * 
@@ -185,6 +189,10 @@ public final class MapDb {
             this.refCount = new AtomicInteger(1); // Start with a reference count of 1
         }
 
+        public String getFilePath() {
+            return filePath;
+        }
+
         /**
          * Increments the reference count when sharing this index.
          * 
@@ -214,19 +222,20 @@ public final class MapDb {
     }
 
     /**
-     * Opens a shared MapDB instance with dynamic allocation based on expected entries.
+     * Opens a shared MapDB instance with dynamic allocation based on expected
+     * entries.
      *
      * @param filePath        filepath to create
      * @param expectedEntries expected number of entries (0 for default 512MB)
      * @return HTreeMap or null, if null do not run close()
      */
     public SharedKeyMap openMap(final String filePath, final long expectedEntries) {
-        // ~340 bytes per entry (16 byte key + ~100 char string + 1 byte + MapDB overhead)
-        // Minimum 16MB, maximum 1GB
+        // ~200 bytes per entry (16 byte key + ~100 char string + 1 byte + MapDB
+        // overhead) Minimum 4MB, maximum 512MB
         final long bytesPerEntry = 200;
-        final long minSize = 8L * 1024 * 1024;
-        final long maxSize = 1024L * 1024 * 1024;
-        final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : 512L * 1024 * 1024;
+        final long minSize = 4L * 1024 * 1024;
+        final long maxSize = 512L * 1024 * 1024;
+        final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : minSize;
         final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
 
         final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
@@ -305,7 +314,8 @@ public final class MapDb {
      * @return NavigableSet or null, if null do not run close()
      */
     public SharedIndexSet openIndex(final String filePath, final long expectedEntries) {
-        // ~100 bytes per index entry (field value ~30 bytes + separator + 16 byte hash + MapDB overhead)
+        // ~100 bytes per index entry (field value ~30 bytes + separator + 16 byte hash
+        // + MapDB overhead)
         // Minimum 16MB, maximum 1GB
         final long bytesPerEntry = 100;
         final long minSize = 16L * 1024 * 1024;
@@ -428,10 +438,12 @@ public final class MapDb {
     }
 
     /**
-     * Extracts both the field value and primary key hash from a composite index key.
+     * Extracts both the field value and primary key hash from a composite index
+     * key.
      *
      * @param compositeKey The composite index key [fieldValue][0x1F][16-byte hash]
-     * @return Object array where [0] is the field value (String) and [1] is the 16-byte hash (byte[])
+     * @return Object array where [0] is the field value (String) and [1] is the
+     *         16-byte hash (byte[])
      */
     public Object[] extractIndexValueAndKey(final byte[] compositeKey) {
         final var result = new Object[2];
