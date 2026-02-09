@@ -223,7 +223,7 @@ public final class MapDb {
     public SharedKeyMap openMap(final String filePath, final long expectedEntries) {
         // ~340 bytes per entry (16 byte key + ~100 char string + 1 byte + MapDB overhead)
         // Minimum 16MB, maximum 1GB
-        final long bytesPerEntry = 300;
+        final long bytesPerEntry = 200;
         final long minSize = 8L * 1024 * 1024;
         final long maxSize = 1024L * 1024 * 1024;
         final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : 512L * 1024 * 1024;
