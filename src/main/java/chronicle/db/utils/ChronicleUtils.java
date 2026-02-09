@@ -1734,7 +1734,7 @@ public final class ChronicleUtils {
             try {
                 future.get();
             } catch (final Exception e) {
-                Logger.error("Parallel task failed", e);
+                Logger.error(e);
             }
         }
     }
@@ -1750,7 +1750,7 @@ public final class ChronicleUtils {
             try {
                 future.get();
             } catch (final Exception e) {
-                Logger.error("Parallel task failed", e);
+                Logger.error(e);
             }
         }
     }
