@@ -2301,7 +2301,7 @@ public interface ChronicleDao<V> {
                 CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, deletedValue),
                         averageValue().getClass(), keyHashMap);
 
-                Logger.debug("Deleted using key [{}] at [{}].", key, dataPath());
+                Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
                 return true;
             }
 
@@ -2312,7 +2312,7 @@ public interface ChronicleDao<V> {
     private void removeFromIndex(final Map<String, V> deletedMap, final Map<String, byte[]> keyHashMap) {
         CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap, averageValue().getClass(),
                 keyHashMap);
-        Logger.debug("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
+        Logger.info("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
     }
 
     /**
@@ -2472,11 +2472,11 @@ public interface ChronicleDao<V> {
                 if (prevValue != null) {
                     CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
                             averageValue().getClass(), indexExclusions(), keyHashMap);
-                    Logger.debug("Updated using key [{}] at [{}].", key, dataPath());
+                    Logger.info("Updated using key [{}] at [{}].", key, dataPath());
                     return PutStatus.UPDATED;
                 } else {
                     CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
-                    Logger.debug("Inserted using key [{}] at [{}].", key, dataPath());
+                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
                     return PutStatus.INSERTED;
                 }
             } finally {
@@ -2532,7 +2532,7 @@ public interface ChronicleDao<V> {
             if (prevValue != null) {
                 CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
                         averageValue().getClass(), indexExclusions(), keyHashMap);
-                Logger.debug("Updated using key [{}] at [{}].", key, dataPath());
+                Logger.info("Updated using key [{}] at [{}].", key, dataPath());
                 return PutStatus.UPDATED;
             }
             return PutStatus.FAILED;
@@ -2581,7 +2581,7 @@ public interface ChronicleDao<V> {
                     shared.map.put(key, value);
                     addToKeyMap(key, getDataFileState().currentFile(), keyHash);
                     CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
-                    Logger.debug("Inserted using key [{}] at [{}].", key, dataPath());
+                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
                     return PutStatus.INSERTED;
                 }
                 return PutStatus.FAILED;
@@ -2643,7 +2643,7 @@ public interface ChronicleDao<V> {
 
                 if (!prevValues.isEmpty()) {
                     status = PutStatus.UPDATED;
-                    Logger.debug("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                    Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
                     keysToInsert.removeAll(prevValues.keySet());
                 }
 
@@ -2682,7 +2682,7 @@ public interface ChronicleDao<V> {
                                 shared = checkAndRotate(shared, keyMapUpdate, keyHashMap);
                             }
                         }
-                        Logger.debug("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
+                        Logger.info("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
                     } finally {
                         shared.close();
                     }
@@ -2784,7 +2784,7 @@ public interface ChronicleDao<V> {
                 // Only happens if the transaction succeeded.
                 CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex, prevValues,
                         averageValue().getClass(), indexExclusions(), keyHashMap);
-                Logger.debug("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
                 return status;
             });
 
@@ -2885,7 +2885,7 @@ public interface ChronicleDao<V> {
             tasks.add(() -> CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex));
 
             CHRONICLE_UTILS.processInParallel(tasks);
-            Logger.debug("Inserted [{}] records at [{}].", dataToInsert.size(), dataPath());
+            Logger.info("Inserted [{}] records at [{}].", dataToInsert.size(), dataPath());
             return PutStatus.INSERTED;
         });
     }
