@@ -180,6 +180,8 @@ public interface ChronicleDao<V> {
             KEY_FILE = "keys";
     String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
     int HARD_LIMIT = 100_000;
+    String RECOVERY_MODE_PROPERTY = "chronicle.recovery.mode";
+    boolean IN_RECOVERY = Boolean.getBoolean(RECOVERY_MODE_PROPERTY);
 
     /**
      * Returns the name of this DAO for logging and identification purposes.
@@ -363,14 +365,17 @@ public interface ChronicleDao<V> {
             }
         }
 
+        // Skip keymap initialization in recovery mode to avoid deadlocks
+        if (IN_RECOVERY) {
+            return;
+        }
+
         CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             final var dataFileState = getDataFileState();
             if (!Files.exists(Path.of(getKeyMapPath()))) {
                 Logger.info("Initializing KeyMap at [{}]", dataPath());
                 try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath(), entries())) {
-                    if (sharedKeyMap.map.isEmpty()) {
-                        populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
-                    }
+                    populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
                 }
             }
         });
@@ -555,6 +560,11 @@ public interface ChronicleDao<V> {
      * @param fields
      */
     default void initDefaultIndexes() {
+        // Skip index initialization in recovery mode to avoid deadlocks
+        if (IN_RECOVERY) {
+            return;
+        }
+
         if (!getDataFileState().fileNames().isEmpty()) {
             CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
                 final var availableIndexes = availableIndexes();
