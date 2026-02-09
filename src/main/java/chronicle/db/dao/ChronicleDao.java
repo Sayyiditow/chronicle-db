@@ -374,7 +374,6 @@ public interface ChronicleDao<V> {
             final var dataFileState = getDataFileState();
             final var keyMapPath = getKeyMapPath();
             if (!Files.exists(Path.of(keyMapPath))) {
-                Logger.info("Initializing KeyMap at [{}]", dataPath());
                 try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
                     populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
                 } catch (final Exception e) {
@@ -384,7 +383,7 @@ public interface ChronicleDao<V> {
                     CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
                     throw e;
                 }
-                Logger.info("Initializing KeyMap at [{}] complete.", dataPath());
+                Logger.info("Initialed KeyMap at [{}]", dataPath());
             }
         });
     }
@@ -519,13 +518,11 @@ public interface ChronicleDao<V> {
      * 
      */
     private void initIndex(final Set<String> fields) {
-        Logger.info("Indexing {} at [{}].", fields, dataPath());
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
                 initIndex(shared, fields);
             }
         });
-        Logger.info("Indexing {} at [{}] complete.", fields, dataPath());
     }
 
     /**
@@ -535,7 +532,6 @@ public interface ChronicleDao<V> {
     default void refreshIndexes() {
         final var indexFiles = indexFileNames();
         if (!indexFiles.isEmpty()) {
-            Logger.info("Re-initializing indexes at [{}].", dataPath());
             CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
                 for (final String field : indexFiles) {
                     final var indexPath = getIndexPath(field);
@@ -544,12 +540,12 @@ public interface ChronicleDao<V> {
                 }
                 initIndex(indexFiles);
             });
+            Logger.info("Refreshed indexes at [{}].", dataPath());
         }
     }
 
     default void refreshKeyMap() {
         CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            Logger.info("Refreshing KeyMap at [{}]", dataPath());
             final var keyMapPath = getKeyMapPath();
             MAP_DB.closeMap(keyMapPath);
             CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
@@ -562,7 +558,7 @@ public interface ChronicleDao<V> {
                 CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
                 throw e;
             }
-            Logger.info("Refreshing KeyMap at [{}] complete.", dataPath());
+            Logger.info("Refreshed KeyMap at [{}]", dataPath());
         });
     }
 
@@ -595,6 +591,7 @@ public interface ChronicleDao<V> {
                     }
                 }
             }, "Init Indexes - " + dataPath()));
+            Logger.info("Initialized indexes at [{}]", dataPath());
         }
     }
 
