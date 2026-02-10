@@ -327,7 +327,8 @@ public class ClientSocketService {
     }
 
     public static void addIsArchived(final Map<String, Object> queryMap, final String archivePeriod) {
-        if (archivePeriod != null && !archivePeriod.isBlank() && !archivePeriod.equals("null")) {
+        if (archivePeriod != null && !archivePeriod.isBlank()
+                && !archivePeriod.equals("null") && !archivePeriod.contains("missing")) {
             queryMap.put("isArchived", true);
             queryMap.put("archivePeriod", archivePeriod);
         }
