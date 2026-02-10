@@ -2,7 +2,7 @@ package chronicle.db.service;
 
 import static chronicle.db.utils.ChronicleUtils.CHRONICLE_UTILS;
 
-import java.nio.ByteBuffer;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collection;
@@ -18,6 +18,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.mapdb.DB;
 import org.mapdb.DBException;
 import org.mapdb.DBMaker;
+import org.mapdb.DataInput2;
+import org.mapdb.DataOutput2;
 import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
 import org.tinylog.Logger;
@@ -45,7 +47,7 @@ import org.tinylog.Logger;
  * counting to safely
  * share MapDB instances across multiple callers. Always call {@code close()} on
  * returned
- * SharedKeyMap and SharedIndexMap instances.
+ * SharedKeyMap and SharedIndexSet instances.
  * </p>
  * <p>
  * <b>Search Operations:</b> Provides indexed search methods for various
@@ -57,7 +59,7 @@ import org.tinylog.Logger;
  * 
  * <pre>{@code
  * // Open an index
- * SharedIndexMap idx = MAP_DB.openIndex("/path/to/index.db");
+ * SharedIndexSet idx = MAP_DB.openIndex("/path/to/index.db");
  * try {
  *     // Add an entry: field value "active" for key "user123"
  *     byte[] compositeKey = MAP_DB.createIndexKey("active", "user123");
@@ -72,11 +74,42 @@ import org.tinylog.Logger;
 public final class MapDb {
     public static final MapDb MAP_DB = new MapDb();
     private static final ConcurrentMap<String, SharedKeyMap> mapCache = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, SharedIndexMap> treeCache = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, SharedIndexSet> treeCache = new ConcurrentHashMap<>();
     private static final byte indexSep = 0x1F;
     private static final byte upperByte = (byte) 0xFF;
 
     private MapDb() {
+    }
+
+    public static record KeyMapValue(String primaryKey, String fileName) {
+        // 1. Define the instance here (this is the "variable" MapDB is looking for)
+        public static final Serializer<KeyMapValue> KEY_MAP_VALUE_SERIALIZER = new SerializerImpl();
+
+        // 2. Keep the class as the implementation logic
+        // Optimized serialization: fileName "data" → 0, "data-N" → N (single byte)
+        private static class SerializerImpl implements Serializer<KeyMapValue> {
+            @Override
+            public void serialize(final DataOutput2 out, final KeyMapValue value) throws IOException {
+                out.writeUTF(value.primaryKey());
+                // Compact encoding: "data" → 0, "data-2" → 2, "data-3" → 3, etc.
+                final String fn = value.fileName();
+                if (fn.equals("data")) {
+                    out.writeByte(0);
+                } else {
+                    // "data-N" → extract N
+                    out.writeByte(Integer.parseInt(fn.substring(5)));
+                }
+            }
+
+            @Override
+            public KeyMapValue deserialize(final DataInput2 in, final int available) throws IOException {
+                final String primaryKey = in.readUTF();
+                final int fileIndex = in.readUnsignedByte();
+                // Reconstruct: 0 → "data", N → "data-N"
+                final String fileName = fileIndex == 0 ? "data" : "data-" + fileIndex;
+                return new KeyMapValue(primaryKey, fileName);
+            }
+        }
     }
 
     /**
@@ -88,15 +121,19 @@ public final class MapDb {
      */
     public static class SharedKeyMap implements AutoCloseable {
         /** The underlying MapDB HTreeMap */
-        public final HTreeMap<String, String> map;
+        public final HTreeMap<byte[], KeyMapValue> map;
 
         private final AtomicInteger refCount;
         private final String filePath; // Track file path for cleanup
 
-        SharedKeyMap(final HTreeMap<String, String> map, final String filePath) {
+        SharedKeyMap(final HTreeMap<byte[], KeyMapValue> map, final String filePath) {
             this.map = map;
             this.filePath = filePath;
             this.refCount = new AtomicInteger(1);
+        }
+
+        public String getFilePath() {
+            return filePath;
         }
 
         /**
@@ -137,7 +174,7 @@ public final class MapDb {
      * changes.
      * </p>
      */
-    public static class SharedIndexMap implements AutoCloseable {
+    public static class SharedIndexSet implements AutoCloseable {
         /** The underlying MapDB NavigableSet (sorted index) */
         public final NavigableSet<byte[]> index;
 
@@ -145,19 +182,23 @@ public final class MapDb {
         private final AtomicInteger refCount;
         private final String filePath; // Track file path for cleanup
 
-        SharedIndexMap(final DB db, final NavigableSet<byte[]> index, final String filePath) {
+        SharedIndexSet(final DB db, final NavigableSet<byte[]> index, final String filePath) {
             this.db = db;
             this.index = index;
             this.filePath = filePath;
             this.refCount = new AtomicInteger(1); // Start with a reference count of 1
         }
 
+        public String getFilePath() {
+            return filePath;
+        }
+
         /**
          * Increments the reference count when sharing this index.
          * 
-         * @return This SharedIndexMap instance for chaining
+         * @return This SharedIndexSet instance for chaining
          */
-        SharedIndexMap retain() {
+        SharedIndexSet retain() {
             refCount.incrementAndGet();
             return this;
         }
@@ -181,15 +222,22 @@ public final class MapDb {
     }
 
     /**
-     * Opens a shared MapDB instance. Call close(filePath) to release it.
-     * Do not use try-with-resources as it will prematurely close the shared
-     * instance.
-     * 
-     * @param filePath filepath to create
-     * 
+     * Opens a shared MapDB instance with dynamic allocation based on expected
+     * entries.
+     *
+     * @param filePath        filepath to create
+     * @param expectedEntries expected number of entries (0 for default 512MB)
      * @return HTreeMap or null, if null do not run close()
      */
-    public SharedKeyMap openMap(final String filePath) {
+    public SharedKeyMap openMap(final String filePath, final long expectedEntries) {
+        // ~200 bytes per entry (16 byte key + ~100 char string + 1 byte + MapDB
+        // overhead) Minimum 4MB, maximum 512MB
+        final long bytesPerEntry = 200;
+        final long minSize = 4L * 1024 * 1024;
+        final long maxSize = 512L * 1024 * 1024;
+        final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : minSize;
+        final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
+
         final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 return existingEntry.retain();
@@ -197,9 +245,9 @@ public final class MapDb {
 
             // Create a new entry
             try {
-                final HTreeMap<String, String> map = DBMaker.fileDB(filePath)
-                        .allocateStartSize(512 * 1024 * 1024) // initial size
-                        .allocateIncrement(128 * 1024 * 1024) // Grow by 48 MB
+                final HTreeMap<byte[], KeyMapValue> map = DBMaker.fileDB(filePath)
+                        .allocateStartSize(allocSize)
+                        .allocateIncrement(allocSize)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -207,8 +255,8 @@ public final class MapDb {
                         .cleanerHackEnable()
                         .make()
                         .hashMap("map")
-                        .keySerializer(Serializer.STRING)
-                        .valueSerializer(Serializer.STRING)
+                        .keySerializer(Serializer.BYTE_ARRAY)
+                        .valueSerializer(KeyMapValue.KEY_MAP_VALUE_SERIALIZER)
                         .createOrOpen();
 
                 return new SharedKeyMap(map, filePath);
@@ -227,12 +275,19 @@ public final class MapDb {
     }
 
     /**
+     * Opens a shared MapDB instance with default 512MB allocation.
+     */
+    public SharedKeyMap openMap(final String filePath) {
+        return openMap(filePath, 0);
+    }
+
+    /**
      * Use this only when jvm hangs on shutdown
      */
     public void closeMap(final String filePath) {
         mapCache.computeIfPresent(filePath, (k, mapEntry) -> {
             mapEntry.map.close();
-            Logger.info("Closed KeyMap at [{}]", filePath);
+            Logger.debug("Closed KeyMap at [{}]", filePath);
             return null;
         });
     }
@@ -245,21 +300,29 @@ public final class MapDb {
             final String filePath = entry.getKey();
             final SharedKeyMap mapEntry = entry.getValue();
             mapEntry.map.close();
-            Logger.info("Closed KeyMap at [{}]", filePath);
+            Logger.debug("Closed KeyMap at [{}]", filePath);
         }
         mapCache.clear(); // Clear all cached entries
-        Logger.info("All KeyMaps have been closed and mapCache cleared.");
+        Logger.debug("All KeyMaps have been closed and mapCache cleared.");
     }
 
     /**
-     * Opens a shared MapDB TreeSet instance. Call close(filePath) to release it.
-     * Do not use try-with-resources as it will prematurely close the shared
-     * instance.
+     * Opens a shared MapDB TreeSet instance with dynamic allocation.
      *
-     * @param filePath filepath to create
+     * @param filePath        filepath to create
+     * @param expectedEntries expected number of entries (0 for default 512MB)
      * @return NavigableSet or null, if null do not run close()
      */
-    public SharedIndexMap openIndex(final String filePath) {
+    public SharedIndexSet openIndex(final String filePath, final long expectedEntries) {
+        // ~100 bytes per index entry (field value ~30 bytes + separator + 16 byte hash
+        // + MapDB overhead)
+        // Minimum 16MB, maximum 1GB
+        final long bytesPerEntry = 100;
+        final long minSize = 16L * 1024 * 1024;
+        final long maxSize = 1024L * 1024 * 1024;
+        final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : 512L * 1024 * 1024;
+        final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
+
         final var entry = treeCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 return existingEntry.retain();
@@ -268,8 +331,8 @@ public final class MapDb {
             // Create a new entry
             try {
                 final var db = DBMaker.fileDB(filePath)
-                        .allocateStartSize(512 * 1024 * 1024)
-                        .allocateIncrement(128 * 1024 * 1024)
+                        .allocateStartSize(allocSize)
+                        .allocateIncrement(allocSize)
                         .closeOnJvmShutdown()
                         .fileLockDisable()
                         .fileMmapEnableIfSupported()
@@ -277,10 +340,10 @@ public final class MapDb {
                         .cleanerHackEnable()
                         .make();
                 final var tree = db.treeSet("index")
-                        .serializer(Serializer.BYTE_ARRAY)
+                        .serializer(Serializer.BYTE_ARRAY_DELTA)
                         .createOrOpen();
 
-                return new SharedIndexMap(db, tree, filePath);
+                return new SharedIndexSet(db, tree, filePath);
             } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
                     | DBException.WrongFormat e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
@@ -296,12 +359,19 @@ public final class MapDb {
     }
 
     /**
+     * Opens a shared MapDB TreeSet instance with default 512MB allocation.
+     */
+    public SharedIndexSet openIndex(final String filePath) {
+        return openIndex(filePath, 0);
+    }
+
+    /**
      * Use this only when jvm hangs on shutdown
      */
     public void closeIndex(final String filePath) {
         treeCache.computeIfPresent(filePath, (k, treeEntry) -> {
             treeEntry.db.close();
-            Logger.info("Closed Index at [{}]", filePath);
+            Logger.debug("Closed Index at [{}]", filePath);
             return null;
         });
     }
@@ -314,10 +384,10 @@ public final class MapDb {
             final String filePath = entry.getKey();
             final var treeEntry = entry.getValue();
             treeEntry.db.close();
-            Logger.info("Closed Index at [{}]", filePath);
+            Logger.debug("Closed Index at [{}]", filePath);
         }
         treeCache.clear(); // Clear all cached entries
-        Logger.info("All Indexes have been closed and treeCache cleared.");
+        Logger.debug("All Indexes have been closed and treeCache cleared.");
     }
 
     private String sanitize(final Object input) {
@@ -344,13 +414,18 @@ public final class MapDb {
         return result;
     }
 
-    public String extractIndexKey(final byte[] compositeKey) {
-        for (int i = 0; i < compositeKey.length; i++) {
-            if (compositeKey[i] == indexSep) {
-                return new String(Arrays.copyOfRange(compositeKey, i + 1, compositeKey.length), StandardCharsets.UTF_8);
-            }
-        }
-        return new String(compositeKey, StandardCharsets.UTF_8); // fallback: no separator found
+    /**
+     * Extracts the primary key hash from a composite index key.
+     * The hash is always the last 16 bytes of the composite key.
+     *
+     * @param compositeKey The composite index key [fieldValue][0x1F][16-byte hash]
+     * @return The 16-byte hash of the primary key
+     */
+    public byte[] extractIndexKey(final byte[] compositeKey) {
+        // O(1) extraction - always last 16 bytes
+        final byte[] hash = new byte[16];
+        System.arraycopy(compositeKey, compositeKey.length - 16, hash, 0, 16);
+        return hash;
     }
 
     public String extractIndexValue(final byte[] compositeKey) {
@@ -362,20 +437,29 @@ public final class MapDb {
         return new String(compositeKey, StandardCharsets.UTF_8); // fallback: no separator found
     }
 
-    public String[] extractIndexValueAndKey(final byte[] compositeKey) {
-        final var keyAndValue = new String[2];
-        for (int i = 0; i < compositeKey.length; i++) {
-            if (compositeKey[i] == indexSep) {
-                keyAndValue[0] = new String(compositeKey, 0, i, StandardCharsets.UTF_8);
-                keyAndValue[1] = new String(Arrays.copyOfRange(compositeKey, i + 1, compositeKey.length),
-                        StandardCharsets.UTF_8);
-                return keyAndValue;
-            }
-        }
-        return keyAndValue;
+    /**
+     * Extracts both the field value and primary key hash from a composite index
+     * key.
+     *
+     * @param compositeKey The composite index key [fieldValue][0x1F][16-byte hash]
+     * @return Object array where [0] is the field value (String) and [1] is the
+     *         16-byte hash (byte[])
+     */
+    public Object[] extractIndexValueAndKey(final byte[] compositeKey) {
+        final var result = new Object[2];
+        // Value is everything before last 17 bytes (separator + 16-byte hash)
+        final int valueEnd = compositeKey.length - 17;
+        result[0] = valueEnd > 0
+                ? new String(compositeKey, 0, valueEnd, StandardCharsets.UTF_8)
+                : "";
+        // Key hash is last 16 bytes
+        final byte[] hash = new byte[16];
+        System.arraycopy(compositeKey, compositeKey.length - 16, hash, 0, 16);
+        result[1] = hash;
+        return result;
     }
 
-    public int fastCount(final Iterable<String> result) {
+    public int fastCount(final Iterable<byte[]> result) {
         if (result instanceof final Collection<?> collection) {
             return collection.size();
         }
@@ -420,11 +504,15 @@ public final class MapDb {
         return count;
     }
 
-    public record SearchResult(Iterable<String> results) {
+    /**
+     * Result of an index search containing primary key hashes.
+     * Use KeyMap to resolve hashes back to original String keys.
+     */
+    public record SearchResult(Iterable<byte[]> results) {
     }
 
     private SearchResult getSearchResult(final NavigableSet<byte[]> result, final int limit) {
-        final Iterable<String> iterable = () -> new Iterator<>() {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = result.iterator();
             private int remaining = limit == -1 ? Integer.MAX_VALUE : limit;
 
@@ -434,7 +522,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
                 remaining--;
@@ -446,31 +534,44 @@ public final class MapDb {
     }
 
     private SearchResult getSearchResult(final NavigableSet<byte[]> result, final int limit,
-            final Set<String> excludedKeys) {
-        final Iterable<String> iterable = () -> new Iterator<>() {
+            final Set<byte[]> excludedKeyHashes) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = result.iterator();
             private int remaining = limit == -1 ? Integer.MAX_VALUE : limit;
+            private byte[] nextHash = null;
 
             @Override
             public boolean hasNext() {
-                return remaining > 0 && it.hasNext();
+                while (nextHash == null && remaining > 0 && it.hasNext()) {
+                    final var hash = extractIndexKey(it.next());
+                    if (!containsHash(excludedKeyHashes, hash)) {
+                        nextHash = hash;
+                    }
+                }
+                return nextHash != null;
             }
 
             @Override
-            public String next() {
-                while (hasNext()) {
-                    final var key = extractIndexKey(it.next());
-                    if (!excludedKeys.contains(key)) {
-                        remaining--;
-                        return key;
-                    }
-                }
-                throw new NoSuchElementException();
+            public byte[] next() {
+                if (!hasNext())
+                    throw new NoSuchElementException();
+                remaining--;
+                final var result = nextHash;
+                nextHash = null;
+                return result;
             }
-
         };
 
         return new SearchResult(iterable);
+    }
+
+    private boolean containsHash(final Set<byte[]> set, final byte[] hash) {
+        for (final byte[] h : set) {
+            if (Arrays.equals(h, hash)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private byte[] createLowerBoundKey(final byte[] fieldBytes) {
@@ -499,8 +600,8 @@ public final class MapDb {
     }
 
     public SearchResult getEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
-        return getSearchResult(getEqualIndexSubset(index, searchTerm), limit, excludedKeys);
+            final int limit, final Set<byte[]> excludedKeyHashes) {
+        return getSearchResult(getEqualIndexSubset(index, searchTerm), limit, excludedKeyHashes);
     }
 
     public SearchResult getBeforeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
@@ -511,10 +612,10 @@ public final class MapDb {
     }
 
     public SearchResult getBeforeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
         final byte[] upperKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         final byte[] lowerKey = new byte[] { 0 }; // Minimal key
-        return getSearchResult(index.subSet(lowerKey, true, upperKey, false), limit, excludedKeys);
+        return getSearchResult(index.subSet(lowerKey, true, upperKey, false), limit, excludedKeyHashes);
     }
 
     public SearchResult getAfterIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
@@ -525,10 +626,10 @@ public final class MapDb {
     }
 
     public SearchResult getAfterIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
         final byte[] upperKey = createUpperBoundKey(getSanitizedByte(searchTerm));
         final byte[] lowerKey = new byte[] { upperByte, upperByte };
-        return getSearchResult(index.subSet(lowerKey, false, upperKey, false), limit, excludedKeys);
+        return getSearchResult(index.subSet(lowerKey, false, upperKey, false), limit, excludedKeyHashes);
     }
 
     public SearchResult getLessThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
@@ -538,9 +639,9 @@ public final class MapDb {
     }
 
     public SearchResult getLessThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
         final byte[] upperKey = createLowerBoundKey(createLowerBoundKey(getSanitizedByte(searchTerm)));
-        return getSearchResult(index.headSet(upperKey, false), limit, excludedKeys);
+        return getSearchResult(index.headSet(upperKey, false), limit, excludedKeyHashes);
     }
 
     public SearchResult getLessThanOrEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
@@ -550,9 +651,9 @@ public final class MapDb {
     }
 
     public SearchResult getLessThanOrEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
         final byte[] upperKey = createUpperBoundKey(getSanitizedByte(searchTerm));
-        return getSearchResult(index.headSet(upperKey, true), limit, excludedKeys);
+        return getSearchResult(index.headSet(upperKey, true), limit, excludedKeyHashes);
     }
 
     public SearchResult getGreaterThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
@@ -562,9 +663,9 @@ public final class MapDb {
     }
 
     public SearchResult getGreaterThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
         final byte[] lowerKey = createUpperBoundKey(getSanitizedByte(searchTerm));
-        return getSearchResult(index.tailSet(lowerKey, false), limit, excludedKeys);
+        return getSearchResult(index.tailSet(lowerKey, false), limit, excludedKeyHashes);
     }
 
     public SearchResult getGreaterThanOrEqualIndexSearch(final NavigableSet<byte[]> index,
@@ -574,9 +675,9 @@ public final class MapDb {
     }
 
     public SearchResult getGreaterThanOrEqualIndexSearch(final NavigableSet<byte[]> index,
-            final String searchTerm, final int limit, final Set<String> excludedKeys) {
+            final String searchTerm, final int limit, final Set<byte[]> excludedKeyHashes) {
         final byte[] lowerKey = createLowerBoundKey(createLowerBoundKey(getSanitizedByte(searchTerm)));
-        return getSearchResult(index.tailSet(lowerKey, true), limit, excludedKeys);
+        return getSearchResult(index.tailSet(lowerKey, true), limit, excludedKeyHashes);
     }
 
     public SearchResult getStartsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
@@ -588,11 +689,11 @@ public final class MapDb {
     }
 
     public SearchResult getStartsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
         final byte[] termBytes = getSanitizedByte(searchTerm);
         final byte[] upperKey = Arrays.copyOf(termBytes, termBytes.length + 1);
         upperKey[termBytes.length] = upperByte;
-        return getSearchResult(index.subSet(termBytes, true, upperKey, false), limit, excludedKeys);
+        return getSearchResult(index.subSet(termBytes, true, upperKey, false), limit, excludedKeyHashes);
     }
 
     public SearchResult getBetweenIndexSearch(final NavigableSet<byte[]> index, final String lowerBound,
@@ -603,17 +704,17 @@ public final class MapDb {
     }
 
     public SearchResult getBetweenIndexSearch(final NavigableSet<byte[]> index, final String lowerBound,
-            final String upperBound, final int limit, final Set<String> excludedKeys) {
+            final String upperBound, final int limit, final Set<byte[]> excludedKeyHashes) {
         final byte[] lowerKey = createLowerBoundKey(getSanitizedByte(lowerBound));
         final byte[] upperKey = createUpperBoundKey(getSanitizedByte(upperBound));
-        return getSearchResult(index.subSet(lowerKey, true, upperKey, true), limit, excludedKeys);
+        return getSearchResult(index.subSet(lowerKey, true, upperKey, true), limit, excludedKeyHashes);
     }
 
     public SearchResult getLikeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final Iterable<String> iterable = () -> new Iterator<>() {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
-            private String nextMatch = null;
+            private byte[] nextMatch = null;
             private int returned = 0;
 
             @Override
@@ -629,7 +730,7 @@ public final class MapDb {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
 
                     if (CHRONICLE_UTILS.containsIgnoreCase(indexValueAndKey[0], searchTerm)) {
-                        nextMatch = indexValueAndKey[1];
+                        nextMatch = (byte[]) indexValueAndKey[1];
                         return true;
                     }
                 }
@@ -638,7 +739,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (nextMatch == null && !hasNext())
                     throw new NoSuchElementException();
                 returned++;
@@ -652,10 +753,10 @@ public final class MapDb {
     }
 
     public SearchResult getLikeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
-        final Iterable<String> iterable = () -> new Iterator<>() {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
-            private String nextMatch = null;
+            private byte[] nextMatch = null;
             private int returned = 0;
 
             @Override
@@ -669,12 +770,13 @@ public final class MapDb {
 
                 while (it.hasNext()) {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
+                    final byte[] keyHash = (byte[]) indexValueAndKey[1];
 
-                    if (excludedKeys.contains(indexValueAndKey[1]))
+                    if (containsHash(excludedKeyHashes, keyHash))
                         continue;
 
                     if (CHRONICLE_UTILS.containsIgnoreCase(indexValueAndKey[0], searchTerm)) {
-                        nextMatch = indexValueAndKey[1];
+                        nextMatch = keyHash;
                         return true;
                     }
                 }
@@ -683,7 +785,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (nextMatch == null && !hasNext())
                     throw new NoSuchElementException();
                 returned++;
@@ -698,9 +800,9 @@ public final class MapDb {
 
     public SearchResult getNotLikeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final Iterable<String> iterable = () -> new Iterator<>() {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
-            private String nextMatch = null;
+            private byte[] nextMatch = null;
             private int returned = 0;
 
             @Override
@@ -716,7 +818,7 @@ public final class MapDb {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
 
                     if (!CHRONICLE_UTILS.containsIgnoreCase(indexValueAndKey[0], searchTerm)) {
-                        nextMatch = indexValueAndKey[0];
+                        nextMatch = (byte[]) indexValueAndKey[1];
                         return true;
                     }
                 }
@@ -725,7 +827,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (nextMatch == null && !hasNext())
                     throw new NoSuchElementException();
                 returned++;
@@ -739,10 +841,10 @@ public final class MapDb {
     }
 
     public SearchResult getNotLikeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
-        final Iterable<String> iterable = () -> new Iterator<>() {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
-            private String nextMatch = null;
+            private byte[] nextMatch = null;
             private int returned = 0;
 
             @Override
@@ -756,12 +858,13 @@ public final class MapDb {
 
                 while (it.hasNext()) {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
+                    final byte[] keyHash = (byte[]) indexValueAndKey[1];
 
-                    if (excludedKeys.contains(indexValueAndKey[1]))
+                    if (containsHash(excludedKeyHashes, keyHash))
                         continue;
 
                     if (!CHRONICLE_UTILS.containsIgnoreCase(indexValueAndKey[0], searchTerm)) {
-                        nextMatch = indexValueAndKey[1];
+                        nextMatch = keyHash;
                         return true;
                     }
                 }
@@ -770,7 +873,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (nextMatch == null && !hasNext())
                     throw new NoSuchElementException();
                 returned++;
@@ -785,9 +888,9 @@ public final class MapDb {
 
     public SearchResult getInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
-        final Iterable<String> lazyResults = () -> new Iterator<>() {
+        final Iterable<byte[]> lazyResults = () -> new Iterator<>() {
             private final Iterator<String> termIterator = searchTerms.iterator();
-            private Iterator<String> currentTermResults = Collections.emptyIterator();
+            private Iterator<byte[]> currentTermResults = Collections.emptyIterator();
             private int returned = 0;
 
             @Override
@@ -807,7 +910,7 @@ public final class MapDb {
                         }
 
                         @Override
-                        public String next() {
+                        public byte[] next() {
                             return extractIndexKey(it.next());
                         }
                     };
@@ -817,7 +920,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
                 returned++;
@@ -829,10 +932,10 @@ public final class MapDb {
     }
 
     public SearchResult getInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
-            final int limit, final Set<String> excludedKeys) {
-        final Iterable<String> lazyResults = () -> new Iterator<>() {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
+        final Iterable<byte[]> lazyResults = () -> new Iterator<>() {
             private final Iterator<String> termIterator = searchTerms.iterator();
-            private Iterator<String> currentTermResults = Collections.emptyIterator();
+            private Iterator<byte[]> currentTermResults = Collections.emptyIterator();
             private int returned = 0;
 
             @Override
@@ -845,21 +948,26 @@ public final class MapDb {
                     final NavigableSet<byte[]> matches = getEqualIndexSubset(index, term);
                     currentTermResults = new Iterator<>() {
                         final Iterator<byte[]> it = matches.iterator();
+                        byte[] nextHash = null;
 
                         @Override
                         public boolean hasNext() {
-                            return it.hasNext();
+                            while (nextHash == null && it.hasNext()) {
+                                final var hash = extractIndexKey(it.next());
+                                if (!containsHash(excludedKeyHashes, hash)) {
+                                    nextHash = hash;
+                                }
+                            }
+                            return nextHash != null;
                         }
 
                         @Override
-                        public String next() {
-                            while (it.hasNext()) {
-                                final var key = extractIndexKey(it.next());
-                                if (!excludedKeys.contains(key)) {
-                                    return key;
-                                }
-                            }
-                            throw new NoSuchElementException();
+                        public byte[] next() {
+                            if (!hasNext())
+                                throw new NoSuchElementException();
+                            final var result = nextHash;
+                            nextHash = null;
+                            return result;
                         }
                     };
                 }
@@ -868,7 +976,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
                 returned++;
@@ -881,9 +989,9 @@ public final class MapDb {
 
     public SearchResult getNotInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
-        final Iterable<String> iterable = () -> new Iterator<>() {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             final Iterator<byte[]> it = index.iterator();
-            String nextValid = null;
+            byte[] nextValid = null;
             int returned = 0;
 
             @Override
@@ -897,7 +1005,7 @@ public final class MapDb {
                 while (it.hasNext()) {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
                     if (!searchTerms.contains(indexValueAndKey[0])) {
-                        nextValid = indexValueAndKey[1];
+                        nextValid = (byte[]) indexValueAndKey[1];
                         return true;
                     }
                 }
@@ -906,7 +1014,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
                 returned++;
@@ -920,10 +1028,10 @@ public final class MapDb {
     }
 
     public SearchResult getNotInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
-            final int limit, final Set<String> excludedKeys) {
-        final Iterable<String> iterable = () -> new Iterator<>() {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             final Iterator<byte[]> it = index.iterator();
-            String nextValid = null;
+            byte[] nextValid = null;
             int returned = 0;
 
             @Override
@@ -936,12 +1044,13 @@ public final class MapDb {
 
                 while (it.hasNext()) {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
+                    final byte[] keyHash = (byte[]) indexValueAndKey[1];
 
-                    if (excludedKeys.contains(indexValueAndKey[1]))
+                    if (containsHash(excludedKeyHashes, keyHash))
                         continue;
 
                     if (!searchTerms.contains(indexValueAndKey[0])) {
-                        nextValid = indexValueAndKey[1];
+                        nextValid = keyHash;
                         return true;
                     }
                 }
@@ -950,7 +1059,7 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (!hasNext())
                     throw new NoSuchElementException();
                 returned++;
@@ -965,14 +1074,9 @@ public final class MapDb {
 
     public SearchResult getEndsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] suffix = getSanitizedByte(searchTerm);
-        final byte[] suffixWithSep = ByteBuffer.allocate(suffix.length + 1)
-                .put(suffix).put(indexSep).array();
-        final String suffixWithSepStr = new String(suffixWithSep, StandardCharsets.UTF_8);
-
-        final Iterable<String> iterable = () -> new Iterator<>() {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
-            private String nextItem = null;
+            private byte[] nextItem = null;
             private boolean hasNextComputed = false;
             private int returned = 0;
 
@@ -990,19 +1094,11 @@ public final class MapDb {
                     }
 
                     final byte[] key = it.next();
-                    final String keyStr = new String(key, StandardCharsets.UTF_8);
-                    final int sepIndex = keyStr.indexOf((char) indexSep);
+                    final var indexValueAndKey = extractIndexValueAndKey(key);
+                    final String fieldValue = (String) indexValueAndKey[0];
 
-                    if (sepIndex == -1) {
-                        continue; // Malformed entry
-                    }
-
-                    final int suffixStart = keyStr.length() - suffixWithSepStr.length()
-                            - (keyStr.length() - sepIndex - 1);
-
-                    if (suffixStart >= 0 &&
-                            keyStr.regionMatches(suffixStart, suffixWithSepStr, 0, suffixWithSepStr.length())) {
-                        nextItem = extractIndexKey(key); // Extract as String
+                    if (CHRONICLE_UTILS.endsWithIgnoreCase(fieldValue, searchTerm)) {
+                        nextItem = (byte[]) indexValueAndKey[1];
                         hasNextComputed = true;
                         return true;
                     }
@@ -1014,13 +1110,13 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (!hasNext()) {
                     throw new NoSuchElementException();
                 }
                 returned++;
                 hasNextComputed = false;
-                final String result = nextItem;
+                final byte[] result = nextItem;
                 nextItem = null;
                 return result;
             }
@@ -1030,15 +1126,10 @@ public final class MapDb {
     }
 
     public SearchResult getEndsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<String> excludedKeys) {
-        final byte[] suffix = getSanitizedByte(searchTerm);
-        final byte[] suffixWithSep = ByteBuffer.allocate(suffix.length + 1)
-                .put(suffix).put(indexSep).array();
-        final String suffixWithSepStr = new String(suffixWithSep, StandardCharsets.UTF_8);
-
-        final Iterable<String> iterable = () -> new Iterator<>() {
+            final int limit, final Set<byte[]> excludedKeyHashes) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
-            private String nextItem = null;
+            private byte[] nextItem = null;
             private boolean hasNextComputed = false;
             private int returned = 0;
 
@@ -1056,23 +1147,18 @@ public final class MapDb {
                     }
 
                     final byte[] key = it.next();
-                    final String keyStr = new String(key, StandardCharsets.UTF_8);
-                    final int sepIndex = keyStr.indexOf((char) indexSep);
-                    if (sepIndex == -1) {
+                    final var indexValueAndKey = extractIndexValueAndKey(key);
+                    final String fieldValue = (String) indexValueAndKey[0];
+                    final byte[] keyHash = (byte[]) indexValueAndKey[1];
+
+                    if (containsHash(excludedKeyHashes, keyHash)) {
                         continue;
                     }
 
-                    final int suffixStart = keyStr.length() - suffixWithSepStr.length()
-                            - (keyStr.length() - sepIndex - 1);
-
-                    if (suffixStart >= 0 &&
-                            keyStr.regionMatches(suffixStart, suffixWithSepStr, 0, suffixWithSepStr.length())) {
-                        final String primary = keyStr.substring(sepIndex + 1);
-                        if (!excludedKeys.contains(primary)) {
-                            nextItem = primary;
-                            hasNextComputed = true;
-                            return true;
-                        }
+                    if (CHRONICLE_UTILS.endsWithIgnoreCase(fieldValue, searchTerm)) {
+                        nextItem = keyHash;
+                        hasNextComputed = true;
+                        return true;
                     }
                 }
 
@@ -1082,13 +1168,13 @@ public final class MapDb {
             }
 
             @Override
-            public String next() {
+            public byte[] next() {
                 if (!hasNext()) {
                     throw new NoSuchElementException();
                 }
                 returned++;
                 hasNextComputed = false;
-                final String result = nextItem;
+                final byte[] result = nextItem;
                 nextItem = null;
                 return result;
             }

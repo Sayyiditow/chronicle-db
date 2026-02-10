@@ -108,7 +108,7 @@ public class ReplicationQueue {
                 appender.writeDocument(w -> w.write("data").bytes(data));
                 final long index = appender.lastIndexAppended();
                 appender.sync();
-                Logger.info("Queued replication data, size={}", len);
+                Logger.debug("Queued replication data, size={}", len);
                 return index;
             } catch (final Throwable e) {
                 Logger.error(e, "Failed to append to replication queue.");
@@ -166,7 +166,7 @@ public class ReplicationQueue {
                     Logger.info("Deleting queue file [{}].", fileName);
                     Files.deleteIfExists(file.toPath());
                 } else {
-                    Logger.info("File [{}] left intact, within tailer cycle.", fileName);
+                    Logger.debug("File [{}] left intact, within tailer cycle.", fileName);
                 }
             }
         }, "Queue Cleanup"));
@@ -391,7 +391,7 @@ public class ReplicationQueue {
             final long index = queue.append(KryoSerializer.serialize(params));
             if (index != -1L) {
                 action.run();
-                Logger.info("DB write finished for index={}. Marking primary done.", index);
+                Logger.debug("DB write finished for index={}. Marking primary done.", index);
                 queue.markPrimaryProcessed(index);
             }
         } else {
@@ -416,7 +416,7 @@ public class ReplicationQueue {
             final long index = queue.append(KryoSerializer.serialize(params));
             if (index != -1L) {
                 final T result = action.get();
-                Logger.info("DB write finished for index={}. Marking primary done.", index);
+                Logger.debug("DB write finished for index={}. Marking primary done.", index);
                 queue.markPrimaryProcessed(index);
                 return result;
             }

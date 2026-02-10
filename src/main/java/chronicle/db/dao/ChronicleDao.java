@@ -31,7 +31,6 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 import org.mapdb.HTreeMap;
 import org.tinylog.Logger;
@@ -43,8 +42,9 @@ import chronicle.db.entity.PutStatus;
 import chronicle.db.entity.Search;
 import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.ChronicleDb.SharedChronicleMap;
+import chronicle.db.service.MapDb.KeyMapValue;
 import chronicle.db.service.MapDb.SearchResult;
-import chronicle.db.service.MapDb.SharedIndexMap;
+import chronicle.db.service.MapDb.SharedIndexSet;
 import chronicle.db.utils.SafeRunnable;
 import net.openhft.chronicle.map.ChronicleMap;
 
@@ -180,6 +180,8 @@ public interface ChronicleDao<V> {
             KEY_FILE = "keys";
     String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
     int HARD_LIMIT = 100_000;
+    String RECOVERY_MODE_PROPERTY = "chronicle.recovery.mode";
+    boolean IN_RECOVERY = Boolean.getBoolean(RECOVERY_MODE_PROPERTY);
 
     /**
      * Returns the name of this DAO for logging and identification purposes.
@@ -331,22 +333,16 @@ public interface ChronicleDao<V> {
         return KEY_MAP_PATH_CACHE.computeIfAbsent(dataPath(), k -> k + DATA_DIR + KEY_FILE);
     }
 
-    private void populateKeyMap(final Set<String> dataFiles, final HTreeMap<String, String> keyMap) {
+    private void populateKeyMap(final Set<String> dataFiles, final HTreeMap<byte[], KeyMapValue> keyMap) {
         CHRONICLE_UTILS.processInParallel(dataFiles, file -> {
             try (final var shared = openDb(file)) {
-                shared.map.forEachEntry(entry -> keyMap.put(entry.key().get(), file));
-            }
-        });
-    }
+                // Collect keys first (forEachEntry doesn't support parallel)
+                final var keys = new ArrayList<String>((int) shared.map.size());
+                CHRONICLE_UTILS.safeForEachEntry(shared, entry -> keys.add(entry.key().get()));
 
-    default void rebuildKeyMap() {
-        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
-            final var dataFileState = getDataFileState();
-            if (dataFileState.fileNames().size() > 1) {
-                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-                    populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
-                }
+                // Parallel: compute hash + insert (HTreeMap is thread-safe)
+                keys.parallelStream().forEach(primaryKey -> keyMap.put(CHRONICLE_UTILS.to128BitHash(primaryKey),
+                        new KeyMapValue(primaryKey, file)));
             }
         });
     }
@@ -369,15 +365,25 @@ public interface ChronicleDao<V> {
             }
         }
 
+        // Skip keymap initialization in recovery mode to avoid deadlocks
+        if (IN_RECOVERY) {
+            return;
+        }
+
         CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             final var dataFileState = getDataFileState();
-            if (dataFileState.fileNames().size() > 1 && !Files.exists(Path.of(getKeyMapPath()))) {
-                Logger.info("Populating KeyMap at [{}]", dataPath());
-                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-                    if (sharedKeyMap.map.isEmpty()) {
-                        populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
-                    }
+            final var keyMapPath = getKeyMapPath();
+            if (!Files.exists(Path.of(keyMapPath))) {
+                try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
+                    populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
+                } catch (final Exception e) {
+                    // Delete corrupt keyMap so it rebuilds on next startup
+                    // (try-with-resources already closed the map)
+                    Logger.error("Failed to populate KeyMap at [{}]. Deleting for rebuild.", keyMapPath);
+                    CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
+                    throw e;
                 }
+                Logger.info("Initialized KeyMap at [{}]", dataPath());
             }
         });
     }
@@ -501,8 +507,8 @@ public interface ChronicleDao<V> {
      * @param field the field of the V value object
      * 
      */
-    private void initIndex(final ChronicleMap<String, V> db, final Set<String> fields) {
-        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), averageValue().getClass(), indexExclusions());
+    private void initIndex(final SharedChronicleMap<String, V> db, final Set<String> fields) {
+        CHRONICLE_UTILS.index(db, name(), fields, dataPath(), averageValue().getClass(), indexExclusions(), entries());
     }
 
     /**
@@ -514,10 +520,9 @@ public interface ChronicleDao<V> {
     private void initIndex(final Set<String> fields) {
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
-                initIndex(shared.map, fields);
+                initIndex(shared, fields);
             }
         });
-        Logger.info("Indexing {} at [{}] complete.", fields, dataPath());
     }
 
     /**
@@ -528,7 +533,6 @@ public interface ChronicleDao<V> {
         final var indexFiles = indexFileNames();
         if (!indexFiles.isEmpty()) {
             CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                Logger.info("Re-initializing indexes at [{}].", dataPath());
                 for (final String field : indexFiles) {
                     final var indexPath = getIndexPath(field);
                     MAP_DB.closeIndex(indexPath);
@@ -536,21 +540,25 @@ public interface ChronicleDao<V> {
                 }
                 initIndex(indexFiles);
             });
+            Logger.info("Refreshed indexes at [{}].", dataPath());
         }
     }
 
     default void refreshKeyMap() {
         CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            final var dataFileState = getDataFileState();
-            if (dataFileState.fileNames().size() > 1) {
-                Logger.info("Refreshing KeyMap at [{}]", dataPath());
-                final var keyMapPath = getKeyMapPath();
-                MAP_DB.closeMap(keyMapPath);
+            final var keyMapPath = getKeyMapPath();
+            MAP_DB.closeMap(keyMapPath);
+            CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
+            try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
+                populateKeyMap(getDataFileState().fileNames(), sharedKeyMap.map);
+            } catch (final Exception e) {
+                // Delete corrupt keyMap so it rebuilds on next startup
+                // (try-with-resources already closed the map)
+                Logger.error("Failed to refresh KeyMap at [{}]. Deleting for rebuild.", keyMapPath);
                 CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
-                try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath)) {
-                    populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
-                }
+                throw e;
             }
+            Logger.info("Refreshed KeyMap at [{}]", dataPath());
         });
     }
 
@@ -564,6 +572,11 @@ public interface ChronicleDao<V> {
      * @param fields
      */
     default void initDefaultIndexes() {
+        // Skip index initialization in recovery mode to avoid deadlocks
+        if (IN_RECOVERY) {
+            return;
+        }
+
         if (!getDataFileState().fileNames().isEmpty()) {
             CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
                 final var availableIndexes = availableIndexes();
@@ -575,6 +588,7 @@ public interface ChronicleDao<V> {
 
                     if (!missingIndexes.isEmpty()) {
                         initIndex(missingIndexes);
+                        Logger.info("Initialized {} indexes at [{}]", missingIndexes, dataPath());
                     }
                 }
             }, "Init Indexes - " + dataPath()));
@@ -592,7 +606,7 @@ public interface ChronicleDao<V> {
         final var dataFilePath = Path.of(dataFileStr);
 
         // 1. Make a backup before recovery
-        final var backupPath = Path.of(dataPath() + BACKUP_DIR + CORRUPTED_FILE);
+        final var backupPath = Path.of(dataPath() + BACKUP_DIR + CORRUPTED_FILE + dataFileName);
         Files.copy(dataFilePath, backupPath, StandardCopyOption.REPLACE_EXISTING);
         Logger.info("Backed up file to {}", backupPath);
         try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
@@ -602,23 +616,43 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Get the db file for this key from cache or default file is new key
-     * if cache is empty, use default file
+     * Looks up the database file name for a given primary key.
+     * Calculates the 128-bit hash internally.
+     *
+     * @param key the primary key to look up
+     * @return the database file name containing this key, or null if not found
      */
     private String getDbFile(final String key) {
-        if (getDataFileState().fileNames().size() <= 1) {
-            return DATA_FILE;
-        }
+        return getDbFileFromHash(CHRONICLE_UTILS.to128BitHash(key));
+    }
 
+    /**
+     * Looks up the database file name using a pre-calculated key hash.
+     * Avoids re-hashing when the hash is already available.
+     *
+     * @param keyHash the 16-byte hash of the primary key
+     * @return the database file name containing this key, or null if not found
+     */
+    private String getDbFileFromHash(final byte[] keyHash) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            final var file = sharedKeyMap.map.get(key);
-            if (file == null) {
+            final var keyMapValue = sharedKeyMap.map.get(keyHash);
+            if (keyMapValue == null) {
                 return null;
             }
-            return file;
+            return keyMapValue.fileName();
         }
     }
 
+    /**
+     * Result of grouping keys by their database file location.
+     * Contains a map of file names to iterables of primary keys, plus an
+     * AutoCloseable
+     * for the underlying KeyMap resource. Callers must use try-with-resources.
+     *
+     * @param fileGroups map of database file name to iterable of primary keys in
+     *                   that file
+     * @param closer     the AutoCloseable to release the KeyMap resource
+     */
     public record GroupedKeys(Map<String, Iterable<String>> fileGroups, AutoCloseable closer) implements AutoCloseable {
         @Override
         public void close() throws Exception {
@@ -630,22 +664,29 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Groups a collection of keys by the database file they belong to, performing
-     * the key-to-file mapping
-     * lazily and concurrently via a buffered, staged approach.
+     * Groups keys by their database file using lazy, batched lookups.
+     * Calculates key hashes internally. Thread-safe with demand-driven batch
+     * processing.
      *
-     * This method is thread-safe. It uses a custom {@code Iterator} structure that
-     * triggers batch key processing
-     * only when a consumer thread needs data, allowing the expensive index lookup
-     * to run in parallel
-     * with other file processing, but safely controlled by specialized locks.
-     *
-     * @param keys    The source collection of keys to be looked up and grouped.
-     * @param dbFiles The set of all possible data file names (destinations).
-     * @return A {@link GroupedKeys} record containing the file groups and an
-     *         {@link AutoCloseable} to close the shared index map.
+     * @param keys the primary keys to group
+     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
      */
     private GroupedKeys getDbFiles(final Iterable<String> keys) {
+        return getDbFilesFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+    }
+
+    /**
+     * Groups keys by their database file using pre-calculated hashes.
+     * Uses lazy, batched lookups with demand-driven processing. Thread-safe.
+     * <p>
+     * The returned {@link GroupedKeys} holds an open KeyMap resource and must be
+     * closed via try-with-resources.
+     *
+     * @param keys       the primary keys to group
+     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
+     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
+     */
+    private GroupedKeys getDbFilesFromHashes(final Iterable<String> keys, final Map<String, byte[]> keyHashMap) {
         // 1. Open the Key-to-File Index Map once.
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
         final Iterator<String> sourceIterator = keys.iterator();
@@ -679,12 +720,13 @@ public interface ChronicleDao<V> {
                 }
 
                 // --- PHASE 2: KEY MAPPING ---
-                for (final var key : keyBatch) {
-                    final String file = sharedKeyMap.map.get(key);
-                    if (file != null) {
-                        fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
+                keyBatch.parallelStream().forEach(key -> {
+                    final var keyMapValue = sharedKeyMap.map.get(keyHashMap.get(key));
+                    if (keyMapValue != null) {
+                        fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
+                                .add(key);
                     }
-                }
+                });
             } finally {
                 refillLock.unlock();
             }
@@ -728,7 +770,29 @@ public interface ChronicleDao<V> {
         return new GroupedKeys(fileGroups, sharedKeyMap::close);
     }
 
+    /**
+     * Groups keys by their database file with a limit on total keys processed.
+     * Calculates key hashes internally.
+     *
+     * @param keys  the primary keys to group
+     * @param limit maximum number of keys to process
+     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
+     */
     private GroupedKeys getDbFiles(final Iterable<String> keys, final int limit) {
+        return getDbFilesFromHashes(keys, limit, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+    }
+
+    /**
+     * Groups keys by their database file using pre-calculated hashes, with a limit.
+     * Uses lazy, batched lookups with demand-driven processing. Thread-safe.
+     *
+     * @param keys       the primary keys to group
+     * @param limit      maximum number of keys to process
+     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
+     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
+     */
+    private GroupedKeys getDbFilesFromHashes(final Iterable<String> keys, final int limit,
+            final Map<String, byte[]> keyHashMap) {
         // 1. Open the Key-to-File Index Map once.
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
         final Iterator<String> sourceIterator = keys.iterator();
@@ -766,13 +830,14 @@ public interface ChronicleDao<V> {
                 }
 
                 // --- PHASE 2: KEY MAPPING ---
-                for (final var key : keyBatch) {
-                    final String file = sharedKeyMap.map.get(key);
-                    if (file != null) {
+                keyBatch.parallelStream().forEach(key -> {
+                    final var keyMapValue = sharedKeyMap.map.get(keyHashMap.get(key));
+                    if (keyMapValue != null) {
                         totalFilled.incrementAndGet();
-                        fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
+                        fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
+                                .add(key);
                     }
-                }
+                });
 
                 final int remainingToFetch = limit - totalFilled.get();
                 if (remainingToFetch > 0) {
@@ -823,17 +888,37 @@ public interface ChronicleDao<V> {
         return new GroupedKeys(fileGroups, sharedKeyMap::close);
     }
 
+    /**
+     * Groups keys by their database file, excluding specified keys.
+     * Filters and hashes in one pass for efficiency.
+     *
+     * @param keys         the primary keys to group
+     * @param limit        maximum number of keys to process
+     * @param excludedKeys keys to exclude from processing
+     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
+     */
     private GroupedKeys getDbFiles(final Iterable<String> keys, final int limit, final Set<String> excludedKeys) {
+        return getDbFilesFromHashes(keys, limit, CHRONICLE_UTILS.preCalculateKeyHashes(keys, excludedKeys));
+    }
+
+    /**
+     * Groups pre-calculated hashes by their file location using direct KeyMap
+     * lookup.
+     * No re-hashing required. Returns primary keys grouped by file.
+     *
+     * @param hashes the 16-byte hashes to look up
+     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
+     */
+    private GroupedKeys getDbFilesFromHashes(final Iterable<byte[]> hashes) {
         // 1. Open the Key-to-File Index Map once.
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
-        final Iterator<String> sourceIterator = keys.iterator();
+        final Iterator<byte[]> sourceIterator = hashes.iterator();
         final var dbFiles = getDataFileState().fileNames();
 
         // 2. Setup dynamic, thread-safe buffers.
         final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
 
-        final AtomicInteger totalLeft = new AtomicInteger(limit);
-        final int batchSize = Math.min(limit, 25_000);
+        final int batchSize = 25_000;
         final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
 
         // CRITICAL: Lock for the entire refill process.
@@ -845,34 +930,24 @@ public interface ChronicleDao<V> {
                 if (sourceExhausted.get())
                     return;
 
-                final List<String> keyBatch = new ArrayList<>(batchSize);
+                final List<byte[]> hashBatch = new ArrayList<>(batchSize);
 
-                // --- PHASE 1: KEY FETCH ---
+                // --- PHASE 1: HASH FETCH ---
                 int count = 0;
-                while (sourceIterator.hasNext() && count < batchSize && totalLeft.get() > 0) {
-                    final var key = sourceIterator.next();
-                    if (!excludedKeys.contains(key)) {
-                        keyBatch.add(key);
-                        count++;
-                    }
+                while (sourceIterator.hasNext() && count < batchSize) {
+                    hashBatch.add(sourceIterator.next());
+                    count++;
                 }
-
-                if (!sourceIterator.hasNext() || totalLeft.get() <= 0) {
+                if (!sourceIterator.hasNext()) {
                     sourceExhausted.set(true);
                 }
 
-                // --- PHASE 2: KEY MAPPING ---
-                for (final var key : keyBatch) {
-                    if (totalLeft.get() <= 0) {
-                        break; // Stop early if we've already filled the limit
-                    }
-
-                    final String file = sharedKeyMap.map.get(key);
-                    if (file != null) {
-                        // Check and decrement atomically — same as getAndDecrement() > 0
-                        if (totalLeft.getAndDecrement() > 0) {
-                            fileBuffers.computeIfAbsent(file, k -> new ConcurrentLinkedQueue<>()).add(key);
-                        }
+                // --- PHASE 2: DIRECT KEY MAPPING (no re-hashing!) ---
+                for (final var hash : hashBatch) {
+                    final var keyMapValue = sharedKeyMap.map.get(hash);
+                    if (keyMapValue != null) {
+                        fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
+                                .add(keyMapValue.primaryKey());
                     }
                 }
             } finally {
@@ -888,8 +963,6 @@ public interface ChronicleDao<V> {
 
         // OPTIMIZATION: If source is exhausted after first refill, we know EXACTLY
         // which files are needed.
-        // We can return ONLY the discovered files, avoiding iteration over empty files.
-        // This makes update() extremely fast.
         final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
 
         for (final String file : filesToIterate) {
@@ -897,10 +970,9 @@ public interface ChronicleDao<V> {
                 @Override
                 public boolean hasNext() {
                     var buffer = fileBuffers.get(file);
-                    // While buffer is missing or empty and we still have source data, try to refill
                     while ((buffer == null || buffer.isEmpty()) && !sourceExhausted.get()) {
                         refillBuffers.run();
-                        buffer = fileBuffers.get(file); // Re-fetch buffer as it might have been created
+                        buffer = fileBuffers.get(file);
                     }
                     return buffer != null && !buffer.isEmpty();
                 }
@@ -909,7 +981,6 @@ public interface ChronicleDao<V> {
                 public String next() {
                     if (!hasNext())
                         throw new NoSuchElementException();
-                    // hasNext() guarantees buffer exists and is not empty
                     return fileBuffers.get(file).poll();
                 }
             });
@@ -918,94 +989,263 @@ public interface ChronicleDao<V> {
         return new GroupedKeys(fileGroups, sharedKeyMap::close);
     }
 
-    private void removeFromKeyMap(final String key) {
-        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            sharedKeyMap.map.remove(key);
+    /**
+     * Groups pre-calculated hashes by their file location with a limit.
+     * No re-hashing required. Returns primary keys grouped by file.
+     *
+     * @param hashes the 16-byte hashes to look up
+     * @param limit  maximum number of keys to process
+     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
+     */
+    private GroupedKeys getDbFilesFromHashes(final Iterable<byte[]> hashes, final int limit) {
+        final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
+        final Iterator<byte[]> sourceIterator = hashes.iterator();
+        final var dbFiles = getDataFileState().fileNames();
+
+        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
+
+        final int standardBatchSize = 25_000;
+        final AtomicInteger totalFilled = new AtomicInteger();
+        final AtomicInteger dynamicBatchSize = new AtomicInteger(Math.min(limit, standardBatchSize));
+        final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
+
+        final ReentrantLock refillLock = new ReentrantLock();
+
+        final Runnable refillBuffers = () -> {
+            refillLock.lock();
+            try {
+                if (sourceExhausted.get() || totalFilled.get() >= limit)
+                    return;
+
+                final List<byte[]> hashBatch = new ArrayList<>(dynamicBatchSize.get());
+
+                int count = 0;
+                while (sourceIterator.hasNext() && count < dynamicBatchSize.get()
+                        && totalFilled.get() + count < limit) {
+                    hashBatch.add(sourceIterator.next());
+                    count++;
+                }
+                if (!sourceIterator.hasNext()) {
+                    sourceExhausted.set(true);
+                }
+
+                for (final var hash : hashBatch) {
+                    final var keyMapValue = sharedKeyMap.map.get(hash);
+                    if (keyMapValue != null) {
+                        fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
+                                .add(keyMapValue.primaryKey());
+                        totalFilled.incrementAndGet();
+                    }
+                }
+
+                if (dynamicBatchSize.get() < standardBatchSize) {
+                    dynamicBatchSize.set(Math.min(dynamicBatchSize.get() * 2, standardBatchSize));
+                }
+            } finally {
+                refillLock.unlock();
+            }
+        };
+
+        refillBuffers.run();
+
+        final Map<String, Iterable<String>> fileGroups = new HashMap<>();
+        final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
+
+        for (final String file : filesToIterate) {
+            fileGroups.put(file, () -> new Iterator<>() {
+                @Override
+                public boolean hasNext() {
+                    var buffer = fileBuffers.get(file);
+                    while ((buffer == null || buffer.isEmpty()) && !sourceExhausted.get()
+                            && totalFilled.get() < limit) {
+                        refillBuffers.run();
+                        buffer = fileBuffers.get(file);
+                    }
+                    return buffer != null && !buffer.isEmpty();
+                }
+
+                @Override
+                public String next() {
+                    if (!hasNext())
+                        throw new NoSuchElementException();
+                    return fileBuffers.get(file).poll();
+                }
+            });
         }
-        Logger.info("Deleted [{}] from KeyMap at [{}].", key, dataPath());
+
+        return new GroupedKeys(fileGroups, sharedKeyMap::close);
     }
 
-    private void removeAllFromKeyMap(final Set<String> keys) {
-        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            sharedKeyMap.map.keySet().removeAll(keys);
+    /**
+     * Groups pre-calculated hashes by their file location with a limit, excluding
+     * specified keys.
+     * Exclusion is applied after resolving hash to primary key. No re-hashing
+     * required.
+     *
+     * @param hashes       the 16-byte hashes to look up
+     * @param limit        maximum number of keys to process
+     * @param excludedKeys primary keys to exclude from results
+     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
+     */
+    private GroupedKeys getDbFilesFromHashes(final Iterable<byte[]> hashes, final int limit,
+            final Set<String> excludedKeys) {
+        final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
+        final Iterator<byte[]> sourceIterator = hashes.iterator();
+        final var dbFiles = getDataFileState().fileNames();
+
+        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
+
+        final int standardBatchSize = 25_000;
+        final AtomicInteger totalFilled = new AtomicInteger();
+        final AtomicInteger dynamicBatchSize = new AtomicInteger(Math.min(limit, standardBatchSize));
+        final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
+
+        final ReentrantLock refillLock = new ReentrantLock();
+
+        final Runnable refillBuffers = () -> {
+            refillLock.lock();
+            try {
+                if (sourceExhausted.get() || totalFilled.get() >= limit)
+                    return;
+
+                final List<byte[]> hashBatch = new ArrayList<>(dynamicBatchSize.get());
+
+                int count = 0;
+                while (sourceIterator.hasNext() && count < dynamicBatchSize.get()
+                        && totalFilled.get() + count < limit) {
+                    hashBatch.add(sourceIterator.next());
+                    count++;
+                }
+                if (!sourceIterator.hasNext()) {
+                    sourceExhausted.set(true);
+                }
+
+                for (final var hash : hashBatch) {
+                    final var keyMapValue = sharedKeyMap.map.get(hash);
+                    if (keyMapValue != null) {
+                        final var primaryKey = keyMapValue.primaryKey();
+                        // Skip excluded keys
+                        if (excludedKeys != null && excludedKeys.contains(primaryKey)) {
+                            continue;
+                        }
+                        fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
+                                .add(primaryKey);
+                        totalFilled.incrementAndGet();
+                    }
+                }
+
+                if (dynamicBatchSize.get() < standardBatchSize) {
+                    dynamicBatchSize.set(Math.min(dynamicBatchSize.get() * 2, standardBatchSize));
+                }
+            } finally {
+                refillLock.unlock();
+            }
+        };
+
+        refillBuffers.run();
+
+        final Map<String, Iterable<String>> fileGroups = new HashMap<>();
+        final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
+
+        for (final String file : filesToIterate) {
+            fileGroups.put(file, () -> new Iterator<>() {
+                @Override
+                public boolean hasNext() {
+                    var buffer = fileBuffers.get(file);
+                    while ((buffer == null || buffer.isEmpty()) && !sourceExhausted.get()
+                            && totalFilled.get() < limit) {
+                        refillBuffers.run();
+                        buffer = fileBuffers.get(file);
+                    }
+                    return buffer != null && !buffer.isEmpty();
+                }
+
+                @Override
+                public String next() {
+                    if (!hasNext())
+                        throw new NoSuchElementException();
+                    return fileBuffers.get(file).poll();
+                }
+            });
         }
-        Logger.info("Deleted [{}] keys from KeyMap at [{}].", keys.size(), dataPath());
+
+        return new GroupedKeys(fileGroups, sharedKeyMap::close);
     }
 
-    private void addToKeyMap(final String key, final String file) {
+    /**
+     * Removes a single key from the KeyMap using its pre-calculated hash.
+     *
+     * @param key     the primary key (for logging only)
+     * @param keyHash the 16-byte hash of the key
+     */
+    private void removeFromKeyMap(final String key, final byte[] keyHash) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            sharedKeyMap.map.put(key, file);
+            sharedKeyMap.map.remove(keyHash);
         }
-        Logger.info("Inserted [{}] to KeyMap at [{}].", key, dataPath());
+        Logger.debug("Deleted [{}] from KeyMap at [{}].", key, dataPath());
     }
 
-    private void addToKeyMap(final Map<String, String> map) {
+    /**
+     * Removes multiple keys from the KeyMap using pre-calculated hashes.
+     *
+     * @param keyHashMap map of primary key to 16-byte hash
+     */
+    private void removeAllFromKeyMap(final Map<String, byte[]> keyHashMap) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            sharedKeyMap.map.putAll(map);
+            keyHashMap.values().parallelStream().forEach(sharedKeyMap.map::remove);
         }
-        Logger.info("Inserted [{}] keys to KeyMap at [{}].", map.size(), dataPath());
+        Logger.debug("Deleted [{}] keys from KeyMap at [{}].", keyHashMap.size(), dataPath());
     }
 
-    private int getKeyMapSize() {
+    /**
+     * Adds a single key to the KeyMap using its pre-calculated hash.
+     *
+     * @param key     the primary key
+     * @param file    the database file name containing this key
+     * @param keyHash the 16-byte hash of the key
+     */
+    private void addToKeyMap(final String key, final String file, final byte[] keyHash) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            return sharedKeyMap.map.size();
+            sharedKeyMap.map.put(keyHash, new KeyMapValue(key, file));
         }
+        Logger.debug("Inserted [{}] to KeyMap at [{}].", key, dataPath());
     }
 
-    private boolean getKeyMapExists(final String key) {
+    /**
+     * Adds multiple keys to the KeyMap using pre-calculated hashes.
+     * Uses parallel processing for efficiency.
+     *
+     * @param keyToFile  map of primary key to database file name
+     * @param keyHashMap map of primary key to 16-byte hash
+     */
+    private void addAllToKeyMap(final Map<String, String> keyToFile, final Map<String, byte[]> keyHashMap) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            return sharedKeyMap.map.containsKey(key);
+            keyToFile.entrySet().parallelStream().forEach(e -> sharedKeyMap.map.put(
+                    keyHashMap.get(e.getKey()),
+                    new KeyMapValue(e.getKey(), e.getValue())));
         }
+        Logger.debug("Inserted [{}] keys to KeyMap at [{}].", keyToFile.size(), dataPath());
     }
 
-    private Set<String> getKeyMapKeys() {
-        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            return new HashSet<>(sharedKeyMap.map.keySet());
+    /**
+     * Convert a set of String keys to a set of byte[] hashes for exclusion
+     * filtering.
+     *
+     * @param excludedKeys set of String keys to exclude
+     * @return set of byte[] hashes
+     */
+    private Set<byte[]> preCalculateExcludedHashes(final Set<String> excludedKeys) {
+        if (excludedKeys == null || excludedKeys.isEmpty()) {
+            return Collections.emptySet();
         }
-    }
-
-    private List<String> getKeyMapKeysList() {
-        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            return new ArrayList<>(sharedKeyMap.map.keySet());
-        }
-    }
-
-    private Map<String, Boolean> getKeyMapExists(final Collection<String> keys) {
-        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            return keys.parallelStream()
-                    .collect(Collectors.toConcurrentMap(
-                            key -> key,
-                            key -> sharedKeyMap.map.containsKey(key)));
-        }
-    }
-
-    private List<String> getKeyMapExistsList(final Collection<String> keys) {
-        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            return keys.parallelStream()
-                    .filter(sharedKeyMap.map::containsKey)
-                    .collect(Collectors.toList());
-        }
-    }
-
-    private Set<String> getKeyMapNotExists(final Collection<String> keys) {
-        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            return keys.parallelStream()
-                    .filter(k -> !sharedKeyMap.map.containsKey(k))
-                    .collect(Collectors.toSet());
-        }
-    }
-
-    private List<String> getKeyMapNotExistsList(final Collection<String> keys) {
-        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            return keys.parallelStream()
-                    .filter(k -> !sharedKeyMap.map.containsKey(k))
-                    .collect(Collectors.toList());
-        }
+        return excludedKeys.parallelStream()
+                .map(CHRONICLE_UTILS::to128BitHash)
+                .collect(Collectors.toSet());
     }
 
     /**
      * Resize a specific file to a diff size
-     * 
+     *
      * @param fileName the data- file name
      * @param newSize  the new size to set
      */
@@ -1105,7 +1345,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched [{}] entries at [{}].", result.size(), dataPath());
+        Logger.debug("Fetched [{}] entries at [{}].", result.size(), dataPath());
         return result;
     }
 
@@ -1128,7 +1368,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched [{}] CSV entries at [{}].", rowQueue.size(), dataPath());
+        Logger.debug("Fetched [{}] CSV entries at [{}].", rowQueue.size(), dataPath());
 
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
@@ -1148,7 +1388,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched [{}] entries at [{}].", result.size(), dataPath());
+        Logger.debug("Fetched [{}] entries at [{}].", result.size(), dataPath());
         return result;
     }
 
@@ -1169,7 +1409,7 @@ public interface ChronicleDao<V> {
                 });
             }
         }
-        Logger.info("Fetched subset CSV [{}] entries at [{}].", rowQueue.size(), dataPath());
+        Logger.debug("Fetched subset CSV [{}] entries at [{}].", rowQueue.size(), dataPath());
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
@@ -1195,23 +1435,25 @@ public interface ChronicleDao<V> {
      * @return Set<String>
      */
     default Set<String> fetchKeys() {
-        if (getDataFileState().fileNames().size() > 1) {
-            return getKeyMapKeys();
-        }
-        try (final var shared = openDb()) {
-            Logger.info("Fetching [{}] keys at [{}].", shared.map.size(), dataPath());
-            return new HashSet<>(shared.map.keySet());
-        }
+        final var result = ConcurrentHashMap.<String>newKeySet();
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
+            try (final var shared = openDb(file)) {
+                shared.map.forEachEntry(entry -> result.add(entry.key().get()));
+            }
+        });
+        Logger.debug("Fetched [{}] keys at [{}].", result.size(), dataPath());
+        return result;
     }
 
     default List<String> fetchKeysList() {
-        if (getDataFileState().fileNames().size() > 1) {
-            return getKeyMapKeysList();
-        }
-        try (final var shared = openDb()) {
-            Logger.info("Fetching [{}] keys at [{}].", shared.map.size(), dataPath());
-            return new ArrayList<>(shared.map.keySet());
-        }
+        final var result = new ConcurrentLinkedQueue<String>();
+        CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
+            try (final var shared = openDb(file)) {
+                shared.map.forEachEntry(entry -> result.add(entry.key().get()));
+            }
+        });
+        Logger.debug("Fetched [{}] keys list at [{}].", result.size(), dataPath());
+        return new ArrayList<>(result);
     }
 
     /**
@@ -1225,7 +1467,7 @@ public interface ChronicleDao<V> {
             return null;
         }
 
-        Logger.info("Querying key [{}] at [{}].", key, dataPath());
+        Logger.debug("Querying key [{}] at [{}].", key, dataPath());
         final var file = getDbFile(key);
         if (file == null) {
             return null;
@@ -1335,6 +1577,64 @@ public interface ChronicleDao<V> {
     private void processKeysByFile(final Iterable<String> keys, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
         try (final var grouped = getDbFiles(keys, limit, excludedKeys)) {
+            final var counter = new AtomicInteger(0);
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, counter, key -> {
+                        final var value = shared.map.get(key);
+                        if (value != null) {
+                            valueConsumer.accept(key, value);
+                            return true;
+                        }
+                        return false;
+                    });
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            });
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Process keys from byte[] hashes with limit - uses direct KeyMap lookup
+     * without re-hashing.
+     */
+    private void processKeysByFileFromHashes(final Iterable<byte[]> hashes, final int limit,
+            final BiConsumer<String, V> valueConsumer) {
+        try (final var grouped = getDbFilesFromHashes(hashes, limit)) {
+            final var counter = new AtomicInteger(0);
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, counter, key -> {
+                        final var value = shared.map.get(key);
+                        if (value != null) {
+                            valueConsumer.accept(key, value);
+                            return true;
+                        }
+                        return false;
+                    });
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            });
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Process keys from byte[] hashes with limit and excluded keys - uses direct
+     * KeyMap lookup.
+     */
+    private void processKeysByFileFromHashes(final Iterable<byte[]> hashes, final int limit,
+            final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
+        try (final var grouped = getDbFilesFromHashes(hashes, limit, excludedKeys)) {
             final var counter = new AtomicInteger(0);
             CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
@@ -1496,7 +1796,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying multiple keys at [{}].", dataPath());
+        Logger.debug("Querying multiple keys at [{}].", dataPath());
         final var map = new ConcurrentHashMap<String, V>(10_000);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1514,7 +1814,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying multiple keys for CSV at [{}].", dataPath());
+        Logger.debug("Querying multiple keys for CSV at [{}].", dataPath());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1541,7 +1841,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset multiple keys at [{}].", dataPath());
+        Logger.debug("Querying subset multiple keys at [{}].", dataPath());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(10_000);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -1563,7 +1863,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV multiple keys at [{}].", dataPath());
+        Logger.debug("Querying subset CSV multiple keys at [{}].", dataPath());
         final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1586,7 +1886,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, V>(limit);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1604,7 +1904,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
@@ -1632,7 +1932,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying subset multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -1654,7 +1954,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV multiple keys at [{}] with limit [{}].", dataPath(), limit);
+        Logger.debug("Querying subset CSV multiple keys at [{}] with limit [{}].", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1672,12 +1972,227 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
+    // ========== HASH-BASED OVERLOADS (no re-hashing, uses direct KeyMap lookup)
+    // ==========
+
+    /**
+     * Get values by byte[] hashes - uses direct KeyMap lookup without re-hashing.
+     */
+    default Map<String, V> getFromHashes(final Iterable<byte[]> hashes, final int limit) {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.debug("Querying by hashes at [{}] with limit [{}].", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, V>(limit);
+
+        processKeysByFileFromHashes(hashes, limit, (key, value) -> map.put(key, value));
+
+        return map;
+    }
+
+    /**
+     * Get subset values by byte[] hashes - uses direct KeyMap lookup without
+     * re-hashing.
+     */
+    default Map<String, Map<String, Object>> getSubsetFromHashes(final Iterable<byte[]> hashes,
+            final String[] fields, final int limit) {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.debug("Querying subset by hashes at [{}] with limit [{}].", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+
+        processKeysByFileFromHashes(hashes, limit,
+                (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
+
+        return map;
+    }
+
+    /**
+     * Get CSV by byte[] hashes - uses direct KeyMap lookup without re-hashing.
+     */
+    default CsvObject getCsvFromHashes(final Iterable<byte[]> hashes, final int limit) {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return CsvObject.empty();
+        }
+
+        Logger.debug("Querying CSV by hashes at [{}] with limit [{}].", dataPath(), limit);
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+
+        processKeysByFileFromHashes(hashes, limit, (key, value) -> {
+            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+        });
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+    }
+
+    /**
+     * Get subset CSV by byte[] hashes - uses direct KeyMap lookup without
+     * re-hashing.
+     */
+    default CsvObject getSubsetCsvFromHashes(final Iterable<byte[]> hashes, final String[] fields, final int limit) {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return CsvObject.empty();
+        }
+
+        Logger.debug("Querying subset CSV by hashes at [{}] with limit [{}].", dataPath(), limit);
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+
+        processKeysByFileFromHashes(hashes, limit,
+                (key, value) -> rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
+
+        return new CsvObject(headers, new ArrayList<>(rowQueue));
+    }
+
+    /**
+     * Convert byte[] hashes to String keys using KeyMap lookup.
+     * Use this when you need the actual key strings.
+     */
+    default Set<String> toSetOfKeysFromHashes(final Iterable<byte[]> hashes) {
+        if (hashes == null || !hashes.iterator().hasNext()) {
+            return Collections.emptySet();
+        }
+
+        // Use a high initial capacity to avoid resizing overhead for 4M records
+        final var result = ConcurrentHashMap.<String>newKeySet(10_000);
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            CHRONICLE_UTILS.parallelIterable(hashes, Integer.MAX_VALUE, hash -> {
+                final var keyMapValue = sharedKeyMap.map.get(hash);
+                if (keyMapValue != null) {
+                    result.add(keyMapValue.primaryKey());
+                }
+            });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Logger.error("InterruptedException while resolving keys to set from hashes", e);
+        }
+
+        return result;
+    }
+
+    /**
+     * Convert byte[] hashes to String keys list using KeyMap lookup.
+     * Use this when you need the actual key strings.
+     */
+    default List<String> toListOfKeysFromHashes(final Iterable<byte[]> hashes) {
+        if (hashes == null || !hashes.iterator().hasNext()) {
+            return Collections.emptyList();
+        }
+
+        // Lock-free collection
+        final var result = new ConcurrentLinkedQueue<String>();
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            CHRONICLE_UTILS.parallelIterable(hashes, Integer.MAX_VALUE, hash -> {
+                final var keyMapValue = sharedKeyMap.map.get(hash);
+                if (keyMapValue != null) {
+                    result.add(keyMapValue.primaryKey());
+                }
+            });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Logger.error("InterruptedException while resolving keys to list from hashes", e);
+        }
+
+        // Convert to final list
+        return new ArrayList<>(result);
+    }
+
+    // ========== HASH-BASED OVERLOADS WITH EXCLUDED KEYS ==========
+
+    /**
+     * Get values by byte[] hashes with excluded keys - uses direct KeyMap lookup
+     * without re-hashing.
+     */
+    default Map<String, V> getFromHashes(final Iterable<byte[]> hashes, final Set<String> excludedKeys,
+            final int limit) {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.debug("Querying by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, V>(limit);
+        processKeysByFileFromHashes(hashes, limit, excludedKeys, (key, value) -> map.put(key, value));
+        return map;
+    }
+
+    /**
+     * Get CSV by byte[] hashes with excluded keys - uses direct KeyMap lookup
+     * without re-hashing.
+     */
+    default CsvObject getCsvFromHashes(final Iterable<byte[]> hashes, final Set<String> excludedKeys,
+            final int limit) {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return CsvObject.empty();
+        }
+
+        Logger.debug("Querying CSV by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+
+        processKeysByFileFromHashes(hashes, limit, excludedKeys, (key, value) -> {
+            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+        });
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+    }
+
+    /**
+     * Get subset by byte[] hashes with excluded keys - uses direct KeyMap lookup
+     * without re-hashing.
+     */
+    default Map<String, Map<String, Object>> getSubsetFromHashes(final Iterable<byte[]> hashes,
+            final Set<String> excludedKeys, final String[] fields, final int limit) {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.debug("Querying subset by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+        processKeysByFileFromHashes(hashes, limit, excludedKeys,
+                (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
+        return map;
+    }
+
+    /**
+     * Get subset CSV by byte[] hashes with excluded keys - uses direct KeyMap
+     * lookup without re-hashing.
+     */
+    default CsvObject getSubsetCsvFromHashes(final Iterable<byte[]> hashes, final Set<String> excludedKeys,
+            final String[] fields, final int limit) {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return CsvObject.empty();
+        }
+
+        Logger.debug("Querying subset CSV by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+
+        processKeysByFileFromHashes(hashes, limit, excludedKeys,
+                (key, value) -> rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
+
+        return new CsvObject(headers, new ArrayList<>(rowQueue));
+    }
+
+    // ========== END HASH-BASED OVERLOADS ==========
+
     default Map<String, V> get(final Iterable<String> keys, final Set<String> excludedKeys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, V>(limit);
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -1696,7 +2211,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
@@ -1724,7 +2239,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying subset multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -1747,7 +2262,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
+        Logger.debug("Querying subset CSV multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1767,7 +2282,7 @@ public interface ChronicleDao<V> {
 
     /**
      * Remove a value using key
-     * 
+     *
      * @param key the key to remove
      * @return true if updated else false
      */
@@ -1776,39 +2291,40 @@ public interface ChronicleDao<V> {
             return false;
         }
 
+        // Pre-calculate hash ONCE before all operations
+        final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+        final var keyHashMap = Map.of(key, keyHash);
+
+        // STEP 0: Slow lookup outside the lock using pre-calculated hash
+        final var file = getDbFileFromHash(keyHash);
+        if (file == null)
+            return false;
+
+        // STEP 1: The Critical Section (Short Lock)
         return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            final var file = getDbFile(key);
-            if (file == null) {
-                return false;
-            }
-
-            final V value;
+            V deletedValue = null;
             try (final var shared = openDb(file)) {
-                value = shared.map.remove(key);
+                deletedValue = shared.map.remove(key);
             }
 
-            if (value == null) {
-                return false;
+            if (deletedValue != null) {
+                // STEP 2: The Cleanup
+                removeFromKeyMap(key, keyHash);
+                CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, deletedValue),
+                        averageValue().getClass(), keyHashMap);
+
+                Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
+                return true;
             }
 
-            final var tasks = new ArrayList<Runnable>();
-            if (getDataFileState().fileNames().size() > 1) {
-                tasks.add(() -> removeFromKeyMap(key));
-            }
-
-            tasks.add(() -> CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, value),
-                    averageValue().getClass()));
-
-            CHRONICLE_UTILS.processInParallel(tasks);
-
-            Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
-            return true;
+            return false;
         });
     }
 
-    private void removeFromIndex(final Map<String, V> deletedMap) {
+    private void removeFromIndex(final Map<String, V> deletedMap, final Map<String, byte[]> keyHashMap) {
+        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap, averageValue().getClass(),
+                keyHashMap);
         Logger.info("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
-        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap, averageValue().getClass());
     }
 
     /**
@@ -1822,71 +2338,69 @@ public interface ChronicleDao<V> {
             return false;
         }
 
+        // Pre-calculate hashes ONCE before all operations
+        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+
         final var deletedMap = new ConcurrentHashMap<String, V>(1000);
-        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            if (getDataFileState().fileNames().size() <= 1) {
-                try (final var shared = openDb()) {
-                    CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
-                        final var deleted = shared.map.remove(key);
-                        if (deleted != null) {
-                            deletedMap.put(key, deleted);
-                            return true;
-                        }
-                        return false;
-                    });
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-            } else {
-                try (final var grouped = getDbFiles(keys)) {
-                    if (grouped.fileGroups().isEmpty()) {
-                        return false;
+        // STEP 0: Group keys by file using pre-calculated hashes
+        final var grouped = getDbFilesFromHashes(keys, keyHashMap);
+        if (grouped.fileGroups().isEmpty()) {
+            return false;
+        }
+
+        try {
+            // STEP 1: The Critical Section (Short Lock)
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                    final var file = entry.getKey();
+                    try (final var shared = openDb(file)) {
+                        CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
+                            final var deleted = shared.map.remove(key);
+                            if (deleted != null) {
+                                deletedMap.put(key, deleted);
+                                return true;
+                            }
+                            return false;
+                        });
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
                     }
+                });
 
-                    CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                        final var file = entry.getKey();
-                        try (final var shared = openDb(file)) {
-                            CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
-                                final var deleted = shared.map.remove(key);
-                                if (deleted != null) {
-                                    deletedMap.put(key, deleted);
-                                    return true;
-                                }
-                                return false;
-                            });
-                        } catch (final InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException(e);
-                        }
-                    });
-                } catch (final Exception e) {
-                    throw new RuntimeException(e);
+                if (deletedMap.isEmpty()) {
+                    return false;
                 }
+
+                // Filter keyHashMap to only include deleted keys
+                final var deletedKeyHashMap = new HashMap<String, byte[]>();
+                for (final var key : deletedMap.keySet()) {
+                    deletedKeyHashMap.put(key, keyHashMap.get(key));
+                }
+
+                // STEP 2: Parallel Metadata Cleanup (Outside Lock)
+                // Since we are doing many keys, parallelizing here is great.
+                final var tasks = new ArrayList<Runnable>();
+                tasks.add(() -> removeAllFromKeyMap(deletedKeyHashMap));
+                tasks.add(() -> removeFromIndex(deletedMap, deletedKeyHashMap));
+                CHRONICLE_UTILS.processInParallel(tasks);
+                return true;
+            });
+        } finally {
+            try {
+                grouped.close();
+            } catch (final Exception e) {
+                throw new RuntimeException(e);
             }
-
-            if (deletedMap.isEmpty()) {
-                return false;
-            }
-
-            final var tasks = new ArrayList<Runnable>();
-            tasks.add(() -> removeAllFromKeyMap(deletedMap.keySet()));
-            tasks.add(() -> removeFromIndex(deletedMap));
-            CHRONICLE_UTILS.processInParallel(tasks);
-
-            return true;
-        });
+        }
     }
 
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared) {
         if (shared.map.size() >= entries()) {
+            // keymap is always being updated, this method just creates a new file
+            shared.close();
             final var dataFileState = getDataFileState();
             final String newFile = "data-" + (dataFileState.fileNames().size() + 1);
-            // Update key map using the provided ChronicleMap
-            try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-                shared.map.forEachEntry(entry -> sharedKeyMap.map.put(entry.key().get(), dataFileState.currentFile()));
-            }
-            shared.close(); // close after rotation
             dataFileState.fileNames().add(newFile);
             Logger.info("Rotated file [{}] at [{}].", dataFileState.currentFile(), dataPath());
             final var updateFileState = dataFileState.withCurrentFile(newFile);
@@ -1897,25 +2411,14 @@ public interface ChronicleDao<V> {
     }
 
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared,
-            final Map<String, String> keyMapUpdate) {
+            final Map<String, String> keyMapUpdate, final Map<String, byte[]> keyHashMap) {
         if (shared.map.size() >= entries()) {
             final var dataFileState = getDataFileState();
             final var currentSize = dataFileState.fileNames().size();
             final String newFile = "data-" + (currentSize + 1);
-
-            if (currentSize == 1) {
-                // For first rotation since no keys will be in keyMapUpdate
-                final int firstFileSize = shared.map.size();
-                try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-                    shared.map.forEachEntry(
-                            entry -> sharedKeyMap.map.put(entry.key().get(), dataFileState.currentFile()));
-                }
-                Logger.info("Inserted [{}] keys to KeyMap at [{}].", firstFileSize, dataPath());
-            } else {
-                addToKeyMap(keyMapUpdate);
-            }
+            // add the new keys to map
+            addAllToKeyMap(keyMapUpdate, keyHashMap);
             shared.close();
-
             dataFileState.fileNames().add(newFile);
             Logger.info("Rotated file [{}] at [{}].", dataFileState.currentFile(), dataPath());
             final var updateFileState = dataFileState.withCurrentFile(newFile);
@@ -1928,7 +2431,7 @@ public interface ChronicleDao<V> {
 
     /**
      * Add/Update a value
-     * 
+     *
      * @param key   the key
      * @param value the value
      * @return true if updated else false
@@ -1938,12 +2441,30 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
+        // Pre-calculate hash ONCE before all operations
+        final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+        final var keyHashMap = Map.of(key, keyHash);
+
+        // 1. Prepare Index (OUTSIDE LOCK)
+        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
+                averageValue().getClass(), indexExclusions(), keyHashMap);
+
+        // 2. PRE-LOCK: Look in MapDB using pre-calculated hash
+        final var initialFile = getDbFileFromHash(keyHash);
+
+        // 3. Lock short time
         return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            V prevValue = null;
-            var file = DATA_FILE;
-            file = getDbFile(key);
-            if (file == null) {
-                file = getDataFileState().currentFile();
+            String file;
+            String capturedFile = null;
+            // If key wasnt found and another thread beat current one in the insert
+            if (initialFile == null) {
+                file = getDbFileFromHash(keyHash);
+                if (file == null) {
+                    file = getDataFileState().currentFile();
+                    capturedFile = file;
+                }
+            } else {
+                file = initialFile;
             }
 
             var shared = openDb(file); // no try with resource here for rotation
@@ -1951,28 +2472,28 @@ public interface ChronicleDao<V> {
             try {
                 if (getDataFileState().currentFile().equals(file) && !shared.map.containsKey(key)) {
                     shared = checkAndRotate(shared);
+                    // if rotated, then the file = latest file
+                    capturedFile = getDataFileState().currentFile();
                 }
-                prevValue = shared.map.put(key, value);
+
+                final var prevValue = shared.map.put(key, value);
+                if (capturedFile != null) {
+                    addToKeyMap(key, capturedFile, keyHash);
+                }
+
+                if (prevValue != null) {
+                    CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
+                            averageValue().getClass(), indexExclusions(), keyHashMap);
+                    Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                    return PutStatus.UPDATED;
+                } else {
+                    CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
+                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                    return PutStatus.INSERTED;
+                }
             } finally {
                 shared.close();
             }
-
-            var status = PutStatus.INSERTED;
-            if (prevValue != null) {
-                CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                        Map.of(key, prevValue), averageValue().getClass(), indexExclusions());
-                status = PutStatus.UPDATED;
-                Logger.info("Updated using key [{}] at [{}].", key, dataPath());
-            } else {
-                if (getDataFileState().fileNames().size() > 1) {
-                    addToKeyMap(key, getDataFileState().currentFile());
-                }
-                CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                        Collections.emptyMap(), averageValue().getClass(), indexExclusions());
-                Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
-            }
-
-            return status;
         });
     }
 
@@ -1991,30 +2512,44 @@ public interface ChronicleDao<V> {
      * @return true if updated else false
      */
     default PutStatus update(final String key, final V value, final Set<String> indexFileNames) {
-        if (key == null || !exists(key)) {
+        if (key == null) {
+            return PutStatus.FAILED;
+        }
+
+        // Pre-calculate hash ONCE before all operations
+        final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+        final var keyHashMap = Map.of(key, keyHash);
+
+        // 1. Prepare Index (OUTSIDE LOCK)
+        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
+                averageValue().getClass(), indexExclusions(), keyHashMap);
+
+        // 2. PRE-LOCK: Look in MapDB using pre-calculated hash
+        final var file = getDbFileFromHash(keyHash);
+        if (file == null) {
             Logger.error("Key [{}] does not exist during update at [{}].", key, dataPath());
             return PutStatus.FAILED;
         }
 
+        // 3. Now update
         return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             V prevValue = null;
-            var status = PutStatus.FAILED;
-            final var file = getDbFile(key);
             try (final var shared = openDb(file)) {
+                // check if deleted in between by another thread
                 if (shared.map.containsKey(key)) {
-                    status = PutStatus.UPDATED;
                     prevValue = shared.map.put(key, value);
                 }
             }
 
-            if (status == PutStatus.UPDATED) {
-                CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value),
-                        Map.of(key, prevValue), averageValue().getClass(), indexExclusions());
+            if (prevValue != null) {
+                CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
+                        averageValue().getClass(), indexExclusions(), keyHashMap);
                 Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                return PutStatus.UPDATED;
             }
-
-            return status;
+            return PutStatus.FAILED;
         });
+
     }
 
     /**
@@ -2026,35 +2561,45 @@ public interface ChronicleDao<V> {
 
     /**
      * Add a value, will not return failed if it exists
-     * 
+     *
      * @param key   the key
      * @param value the value
      * @return true if updated else false
      */
     default PutStatus insert(final String key, final V value, final Set<String> indexFileNames) {
-        if (key == null || exists(key)) {
-            Logger.error("Key [{}] already exists during insert at [{}].", key, dataPath());
+        if (key == null) {
             return PutStatus.FAILED;
         }
 
+        // Pre-calculate hash ONCE before all operations
+        final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+        final var keyHashMap = Map.of(key, keyHash);
+
+        // 1. Prepare Index (OUTSIDE LOCK)
+        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
+                averageValue().getClass(), indexExclusions(), keyHashMap);
+
         return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+            final var file = getDbFileFromHash(keyHash);
+            if (file != null) {
+                Logger.error("Key [{}] already exists during insert at [{}].", key, dataPath());
+                return PutStatus.FAILED;
+            }
+
             var shared = openDb();
             try {
-                shared = checkAndRotate(shared);
-                shared.map.put(key, value);
+                if (!shared.map.containsKey(key)) {
+                    shared = checkAndRotate(shared);
+                    shared.map.put(key, value);
+                    addToKeyMap(key, getDataFileState().currentFile(), keyHash);
+                    CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
+                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                    return PutStatus.INSERTED;
+                }
+                return PutStatus.FAILED;
             } finally {
                 shared.close();
             }
-
-            if (getDataFileState().fileNames().size() > 1) {
-                addToKeyMap(key, getDataFileState().currentFile());
-            }
-
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames, Map.of(key, value), Collections.emptyMap(),
-                    averageValue().getClass(), indexExclusions());
-            Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
-
-            return PutStatus.INSERTED;
         });
     }
 
@@ -2080,111 +2625,117 @@ public interface ChronicleDao<V> {
         final Set<String> keysToInsert = new HashSet<>(map.keySet());
         final var keyMapUpdate = new ConcurrentHashMap<String, String>(putSize);
 
-        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            var status = PutStatus.INSERTED;
-            // update old records first then only move to new record inserts.
-            if (getDataFileState().fileNames().size() <= 1) {
-                // Single file
-                try (final var shared = openDb()) {
-                    CHRONICLE_UTILS.parallelIterable(map.keySet(), Integer.MAX_VALUE, key -> {
-                        if (shared.map.containsKey(key)) {
-                            prevValues.put(key, shared.map.put(key, map.get(key)));
-                            return true;
-                        }
-                        return false;
-                    });
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-            } else {
-                try (final var grouped = getDbFiles(map.keySet())) {
-                    CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                        final var file = entry.getKey();
-                        try (final var shared = openDb(file)) {
-                            CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
-                                final V prevValue = shared.map.put(key, map.get(key));
-                                if (prevValue != null) {
-                                    prevValues.put(key, prevValue);
-                                    return true;
-                                }
-                                return false;
-                            });
-                        } catch (final InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException(e);
-                        }
-                    });
-                } catch (final Exception e) {
-                    throw new RuntimeException(e);
-                }
-            }
+        // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
+        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashes(keysToInsert);
 
-            if (!prevValues.isEmpty()) {
-                status = PutStatus.UPDATED;
-                Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
-                keysToInsert.removeAll(prevValues.keySet());
-            }
+        // 1. Prepare index additions (OUTSIDE LOCK)
+        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), map,
+                averageValue().getClass(), indexExclusions(), keyHashMap);
 
-            if (!keysToInsert.isEmpty()) {
-                // Insert new records (only keys in keysToInsert) in batches
-                var shared = openDb();
-                try {
-                    final var batches = new ArrayList<>(keysToInsert);
-                    int startIndex = 0;
+        try (final var grouped = getDbFilesFromHashes(map.keySet(), keyHashMap)) {
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                var status = PutStatus.INSERTED;
 
-                    while (startIndex < batches.size()) {
-                        final long remainingEntries = entries() - shared.map.size();
-                        final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
-
-                        // Process this batch (sublist)
-                        final var batch = batches.subList(startIndex, endIndex);
-                        final var currentShared = shared;
-                        try {
-                            CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
-                                final V value = map.get(key);
-                                currentShared.map.put(key, value);
-
-                                if (getDataFileState().fileNames().size() > 1) {
-                                    keyMapUpdate.put(key, getDataFileState().currentFile());
-                                }
+                // 2. PHASE 1: Updates (Inside Lock)
+                CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                    final var file = entry.getKey();
+                    try (final var shared = openDb(file)) {
+                        CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
+                            if (shared.map.containsKey(key)) {
+                                prevValues.put(key, shared.map.put(key, map.get(key)));
                                 return true;
-                            });
-                        } catch (final InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException(e);
-                        }
-
-                        startIndex = endIndex;
-
-                        // More to insert? Rotate and continue
-                        if (startIndex < batches.size()) {
-                            shared = checkAndRotate(shared, keyMapUpdate);
-                        }
+                            }
+                            return false;
+                        });
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
                     }
-                    Logger.info("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
-                } finally {
-                    shared.close();
+                });
+
+                if (!prevValues.isEmpty()) {
+                    status = PutStatus.UPDATED;
+                    Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                    keysToInsert.removeAll(prevValues.keySet());
                 }
-            }
 
-            final var tasks = new ArrayList<Runnable>();
-            if (!keyMapUpdate.isEmpty()) {
-                tasks.add(() -> addToKeyMap(keyMapUpdate));
-            }
-            tasks.add(() -> CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues,
-                    averageValue().getClass(), indexExclusions()));
-            CHRONICLE_UTILS.processInParallel(tasks);
+                final var tasks = new ArrayList<Runnable>();
+                // 3. PHASE 2: Inserts (Inside Lock)
+                if (!keysToInsert.isEmpty()) {
+                    // Insert new records (only keys in keysToInsert) in batches
+                    var shared = openDb();
+                    try {
+                        final var batches = new ArrayList<>(keysToInsert);
+                        int startIndex = 0;
 
-            return status;
-        });
+                        while (startIndex < batches.size()) {
+                            final long remainingEntries = entries() - shared.map.size();
+                            final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
+
+                            // Process this batch (sublist)
+                            final var batch = batches.subList(startIndex, endIndex);
+                            final String currentFileSnap = getDataFileState().currentFile();
+                            final var currentShared = shared;
+                            try {
+                                CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
+                                    final V value = map.get(key);
+                                    currentShared.map.put(key, value);
+                                    keyMapUpdate.put(key, currentFileSnap);
+                                });
+                            } catch (final InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException(e);
+                            }
+
+                            startIndex = endIndex;
+
+                            // More to insert? Rotate and continue
+                            if (startIndex < batches.size()) {
+                                shared = checkAndRotate(shared, keyMapUpdate, keyHashMap);
+                            }
+                        }
+                        Logger.info("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
+                    } finally {
+                        shared.close();
+                    }
+
+                    // Filter prepared index to only include inserts for the additions task
+                    final var preparedInserts = new ConcurrentHashMap<String, Map<String, byte[]>>();
+                    preparedIndex.entrySet().parallelStream().forEach(entry -> {
+                        final var filtered = new HashMap<>(entry.getValue());
+                        filtered.keySet().retainAll(keysToInsert);
+
+                        if (!filtered.isEmpty()) {
+                            preparedInserts.put(entry.getKey(), filtered);
+                        }
+                    });
+
+                    tasks.add(() -> CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedInserts));
+                }
+
+                // 4. PHASE 3: KeyMap Update
+                if (!keyMapUpdate.isEmpty()) {
+                    tasks.add(() -> addAllToKeyMap(keyMapUpdate, keyHashMap));
+                }
+
+                // 5. PHASE 4: Indexing
+                // Apply Updates (Existing Keys)
+                tasks.add(
+                        () -> CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex, prevValues,
+                                averageValue().getClass(), indexExclusions(), keyHashMap));
+                CHRONICLE_UTILS.processInParallel(tasks);
+                return status;
+            });
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /**
      * Update multiple values into the db, then update all indexes related
      * This is useful as it does not increase db size. Never run with non existent
      * keys, it wont insert
-     * 
+     *
      * @param map the map to add
      */
     default PutStatus update(final Map<String, V> map) {
@@ -2195,73 +2746,68 @@ public interface ChronicleDao<V> {
         final var mapSize = map.size();
         final var prevValues = new ConcurrentHashMap<String, V>(mapSize);
 
-        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            var status = PutStatus.UPDATED;
-            if (getDataFileState().fileNames().size() <= 1) {
-                // Single file
-                try (final var shared = openDb()) {
-                    CHRONICLE_UTILS.parallelIterable(map.keySet(), Integer.MAX_VALUE, key -> {
-                        if (shared.map.containsKey(key)) {
-                            prevValues.put(key, shared.map.put(key, map.get(key)));
-                            return true;
-                        }
-                        return false;
-                    });
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
+        // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
+        final var keys = map.keySet();
+        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+
+        // 1. PHASE 1: Preparation (OUTSIDE LOCK)
+        // Identify exactly which files hold these keys before blocking other writers.
+        // Also prepare index additions (heavy reflection & hashing)
+        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), map,
+                averageValue().getClass(), indexExclusions(), keyHashMap);
+
+        try (final var grouped = getDbFilesFromHashes(keys, keyHashMap)) {
+            // 2. PHASE 2: Data Update (INSIDE LOCK)
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                    final var file = entry.getKey();
+                    try (final var shared = openDb(file)) {
+                        CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
+                            // STRICT UPDATE: Only put if it actually exists in this file
+                            if (shared.map.containsKey(key)) {
+                                prevValues.put(key, shared.map.put(key, map.get(key)));
+                                return true;
+                            }
+                            return false;
+                        });
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                });
+
+                final var prevValueSize = prevValues.size();
+                if (prevValueSize == 0) {
+                    Logger.error("All [{}] values do not exist during update at [{}]", mapSize, dataPath());
+                    return PutStatus.FAILED;
                 }
-            } else {
-                // Multi-file
-                try (final var grouped = getDbFiles(map.keySet())) {
-                    CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                        final var file = entry.getKey();
-                        try (final var shared = openDb(file)) {
-                            CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
-                                final V prevValue = shared.map.put(key, map.get(key));
-                                if (prevValue != null) {
-                                    prevValues.put(key, prevValue);
-                                    return true;
-                                }
-                                return false;
-                            });
-                        } catch (final InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException(e);
-                        }
-                    });
-                } catch (final Exception e) {
-                    throw new RuntimeException(e);
+
+                var status = PutStatus.UPDATED;
+                if (prevValueSize != mapSize) {
+                    // Calculation for logging can stay inside since it's error-path only
+                    final var missingKeys = new HashSet<>(keys);
+                    missingKeys.removeAll(prevValues.keySet());
+                    Logger.error("{} keys missing during update at [{}]. Missing: {}.",
+                            missingKeys.size(), dataPath(), missingKeys);
+                    status = PutStatus.PARTIAL;
                 }
-            }
 
-            final var prevValueSize = prevValues.size();
-            if (prevValueSize == 0) {
-                Logger.error("All [{}] values given do not exist during update at [{}]", mapSize, dataPath());
-                return PutStatus.FAILED;
-            }
+                // 3. PHASE 3: Indexing
+                // Only happens if the transaction succeeded.
+                CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex, prevValues,
+                        averageValue().getClass(), indexExclusions(), keyHashMap);
+                Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                return status;
+            });
 
-            if (prevValueSize != mapSize) {
-                final var missingKeys = new HashSet<>(map.keySet());
-                missingKeys.removeAll(prevValues.keySet());
-                final var extraSize = missingKeys.size();
-
-                Logger.error("{} extra keys found during update at [{}]. New keys: {}.", extraSize, dataPath(),
-                        missingKeys);
-                status = PutStatus.PARTIAL;
-            }
-
-            CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), map, prevValues,
-                    averageValue().getClass(), indexExclusions());
-            Logger.info("Updated [{}] records at [{}].", prevValueSize, dataPath());
-
-            return status;
-        });
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /**
      * Add multiple values into the db, this will skip existing values
-     * 
+     *
      * @param map the map to add
      */
     default PutStatus insert(final Map<String, V> map) {
@@ -2269,20 +2815,50 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        // only work with new keys
-        final var existingKeys = existsList(map.keySet());
+        // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
+        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashes(map.keySet());
+
         final var dataToInsert = new HashMap<>(map);
-        dataToInsert.keySet().removeAll(existingKeys);
+        final var keyMapUpdate = new ConcurrentHashMap<String, String>();
+
+        // 1. OUTSIDE LOCK: Optimistic Preparation
+        // Filter out existing keys to avoid preparing indexes for them (using
+        // pre-calculated hashes)
+        final var initiallyExisting = existsListFromHashes(dataToInsert.keySet(), keyHashMap);
+        dataToInsert.keySet().removeAll(initiallyExisting);
 
         if (dataToInsert.isEmpty()) {
-            Logger.error("No new records found during insert at [{}].", dataPath());
+            Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
             return PutStatus.FAILED;
         }
 
-        final var keyMapUpdate = new ConcurrentHashMap<String, String>();
+        // Filter keyHashMap to only include keys we're actually inserting
+        final var filteredKeyHashMap = new HashMap<String, byte[]>(dataToInsert.size());
+        dataToInsert.keySet().forEach(key -> filteredKeyHashMap.put(key, keyHashMap.get(key)));
+
+        // Prepare index for the "optimistically safe" subset
+        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), dataToInsert,
+                averageValue().getClass(), indexExclusions(), filteredKeyHashMap);
 
         return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            // insert in batches by checking remaining entries
+            // 2. INSIDE LOCK: Double-Check for Race Conditions (using pre-calculated
+            // hashes)
+            final var raceConditionKeys = existsListFromHashes(dataToInsert.keySet(), keyHashMap);
+
+            if (!raceConditionKeys.isEmpty()) {
+                // Race detected! Another thread inserted these keys while we were preparing.
+                dataToInsert.keySet().removeAll(raceConditionKeys);
+                if (dataToInsert.isEmpty()) {
+                    return PutStatus.FAILED;
+                }
+
+                // Cleanup: Remove the race-condition keys from our prepared index batch and
+                // hash map. This is fast and avoids re-calculating everything.
+                preparedIndex.values().forEach(idxMap -> idxMap.keySet().removeAll(raceConditionKeys));
+                filteredKeyHashMap.keySet().removeAll(raceConditionKeys);
+            }
+
+            // Insert in batches
             var shared = openDb();
             try {
                 final var batches = new ArrayList<>(dataToInsert.entrySet());
@@ -2291,18 +2867,14 @@ public interface ChronicleDao<V> {
                 while (startIndex < batches.size()) {
                     final long remainingEntries = entries() - shared.map.size();
                     final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
-
-                    // Process this batch (sublist)
                     final var batch = batches.subList(startIndex, endIndex);
+                    final var currentFileSnap = getDataFileState().currentFile();
                     final var currentShared = shared;
+
                     try {
                         CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, entry -> {
                             currentShared.map.put(entry.getKey(), entry.getValue());
-
-                            if (getDataFileState().fileNames().size() > 1) {
-                                keyMapUpdate.put(entry.getKey(), getDataFileState().currentFile());
-                            }
-                            return true;
+                            keyMapUpdate.put(entry.getKey(), currentFileSnap);
                         });
                     } catch (final InterruptedException e) {
                         Thread.currentThread().interrupt();
@@ -2310,10 +2882,8 @@ public interface ChronicleDao<V> {
                     }
 
                     startIndex = endIndex;
-
-                    // More to insert? Rotate and continue
                     if (startIndex < batches.size()) {
-                        shared = checkAndRotate(shared, keyMapUpdate);
+                        shared = checkAndRotate(shared, keyMapUpdate, filteredKeyHashMap);
                     }
                 }
             } finally {
@@ -2321,17 +2891,13 @@ public interface ChronicleDao<V> {
             }
 
             final var tasks = new ArrayList<Runnable>();
-            if (!keyMapUpdate.isEmpty()) {
-                tasks.add(() -> addToKeyMap(keyMapUpdate));
-            }
-            tasks.add(
-                    () -> CHRONICLE_UTILS.updateIndex(name(), dataPath(), indexFileNames(), dataToInsert,
-                            Collections.emptyMap(),
-                            averageValue().getClass(), indexExclusions()));
+            tasks.add(() -> addAllToKeyMap(keyMapUpdate, filteredKeyHashMap));
+
+            // 3. Apply Indexing (Always use the prepared batch, now cleaned)
+            tasks.add(() -> CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex));
+
             CHRONICLE_UTILS.processInParallel(tasks);
-
-            Logger.info("Inserted [{}] records at [{}].", map.size(), dataPath());
-
+            Logger.info("Inserted [{}] records at [{}].", dataToInsert.size(), dataPath());
             return PutStatus.INSERTED;
         });
     }
@@ -2342,7 +2908,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, V>(limit);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -2409,7 +2975,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Querying CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -2480,7 +3046,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Querying subset filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -2548,7 +3114,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(),
+        Logger.debug("Querying subset CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(),
                 filters.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
@@ -2618,7 +3184,7 @@ public interface ChronicleDao<V> {
             return;
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -2678,7 +3244,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
+        Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
                 filters.size(), excludedKeys.size());
         final var map = new ConcurrentHashMap<String, V>(limit);
         final var averageValueClass = averageValue().getClass();
@@ -2753,7 +3319,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
+        Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
                 filters.size(), excludedKeys.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var averageValueClass = averageValue().getClass();
@@ -2833,7 +3399,7 @@ public interface ChronicleDao<V> {
             return Collections.emptyMap();
         }
 
-        Logger.info("Querying subset filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
+        Logger.debug("Querying subset filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var averageValueClass = averageValue().getClass();
@@ -2909,7 +3475,7 @@ public interface ChronicleDao<V> {
             return CsvObject.empty();
         }
 
-        Logger.info("Querying subset CSV filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
+        Logger.debug("Querying subset CSV filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
@@ -2986,7 +3552,7 @@ public interface ChronicleDao<V> {
             return 0;
         }
 
-        Logger.info("Counting filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
+        Logger.debug("Counting filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
         final var limit = Integer.MAX_VALUE;
 
         // Determine minimum positive limit across all filters
@@ -3048,9 +3614,552 @@ public interface ChronicleDao<V> {
         return count.sum();
     }
 
+    // ========== HASH-BASED SEARCH METHODS (no re-hashing) ==========
+
+    /**
+     * Search by byte[] hashes with filters - uses direct KeyMap lookup without
+     * re-hashing.
+     */
+    default Map<String, V> searchFromHashes(final Iterable<byte[]> hashes, final List<Search> filters, final int limit)
+            throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext() || filters.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Logger.debug("Searching by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        final var map = new ConcurrentHashMap<String, V>(limit);
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+
+        final AtomicInteger count = new AtomicInteger();
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, count,
+                            key -> {
+                                final V value = shared.map.get(key);
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                map.put(key, value);
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return map;
+    }
+
+    /**
+     * Search subset by byte[] hashes with filters - uses direct KeyMap lookup
+     * without re-hashing.
+     */
+    default Map<String, Map<String, Object>> searchSubsetFromHashes(final Iterable<byte[]> hashes,
+            final List<Search> filters, final String[] fields, final int limit)
+            throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext()) {
+            return Collections.emptyMap();
+        }
+
+        Logger.debug("Searching subset by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+        final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
+
+        final AtomicInteger count = new AtomicInteger();
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, count,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return map;
+    }
+
+    /**
+     * Search CSV by byte[] hashes with filters - uses direct KeyMap lookup without
+     * re-hashing.
+     */
+    default CsvObject searchCsvFromHashes(final Iterable<byte[]> hashes, final List<Search> filters, final int limit)
+            throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext() || filters.isEmpty()) {
+            return CsvObject.empty();
+        }
+
+        Logger.debug("Searching CSV by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+        final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
+        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+
+        final AtomicInteger count = new AtomicInteger();
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, count,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
+    }
+
+    /**
+     * Search subset CSV by byte[] hashes with filters - uses direct KeyMap lookup
+     * without re-hashing.
+     */
+    default CsvObject searchSubsetCsvFromHashes(final Iterable<byte[]> hashes, final List<Search> filters,
+            final String[] fields, final int limit) throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext()) {
+            return CsvObject.empty();
+        }
+
+        Logger.debug("Searching subset CSV by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+        final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
+        final var csvHeaders = CHRONICLE_UTILS.getCsvHeaders(fields);
+
+        final AtomicInteger count = new AtomicInteger();
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, count,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return new CsvObject(csvHeaders, new ArrayList<>(rowQueue));
+    }
+
+    /**
+     * Search keys by byte[] hashes with filters - returns String keys.
+     */
+    default Set<String> searchKeysFromHashes(final Iterable<byte[]> hashes, final List<Search> filters)
+            throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext()) {
+            return Collections.emptySet();
+        }
+
+        Logger.debug("Searching keys by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        final var result = ConcurrentHashMap.<String>newKeySet();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                result.add(key);
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return result;
+    }
+
+    /**
+     * Search keys list by byte[] hashes with filters - returns String keys.
+     */
+    default List<String> searchKeysListFromHashes(final Iterable<byte[]> hashes, final List<Search> filters)
+            throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext()) {
+            return Collections.emptyList();
+        }
+
+        Logger.debug("Searching keys list by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        final var result = new ConcurrentLinkedQueue<String>();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                result.add(key);
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return new ArrayList<>(result);
+    }
+
+    /**
+     * Search count by byte[] hashes with filters.
+     */
+    default long searchCountFromHashes(final Iterable<byte[]> hashes, final List<Search> filters)
+            throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext()) {
+            return 0;
+        }
+
+        Logger.debug("Counting by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
+        final var count = new LongAdder();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+
+        try (final var grouped = getDbFilesFromHashes(hashes)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                count.increment();
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return count.sum();
+    }
+
+    // ========== HASH-BASED SEARCH METHODS WITH EXCLUDED KEYS ==========
+
+    /**
+     * Search by byte[] hashes with filters and excluded keys.
+     */
+    default Map<String, V> searchFromHashes(final Iterable<byte[]> hashes, final List<Search> filters,
+            final Set<String> excludedKeys, final int limit) throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.debug("Searching by hashes at [{}] with [{}] filters and excluded keys.", dataPath(), filters.size());
+        final var result = new ConcurrentHashMap<String, V>(limit);
+        final var counter = new AtomicInteger();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+
+        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (counter.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, counter,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                result.put(key, value);
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return result;
+    }
+
+    /**
+     * Search CSV by byte[] hashes with filters and excluded keys.
+     */
+    default CsvObject searchCsvFromHashes(final Iterable<byte[]> hashes, final List<Search> filters,
+            final Set<String> excludedKeys, final int limit) throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return CsvObject.empty();
+        }
+
+        Logger.debug("Searching CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
+                filters.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+        final AtomicReference<String[]> csvHeaders = new AtomicReference<>(null);
+        final AtomicInteger count = new AtomicInteger();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+
+        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, count,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                csvHeaders.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return new CsvObject(csvHeaders.get(), new ArrayList<>(rowQueue));
+    }
+
+    /**
+     * Search subset by byte[] hashes with filters and excluded keys.
+     */
+    default Map<String, Map<String, Object>> searchSubsetFromHashes(final Iterable<byte[]> hashes,
+            final List<Search> filters, final Set<String> excludedKeys, final String[] fields, final int limit)
+            throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return Collections.emptyMap();
+        }
+
+        Logger.debug("Searching subset by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
+                filters.size());
+        final var result = new ConcurrentHashMap<String, Map<String, Object>>(limit);
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+        final AtomicInteger count = new AtomicInteger();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+
+        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, count,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                result.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value));
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return result;
+    }
+
+    /**
+     * Search subset CSV by byte[] hashes with filters and excluded keys.
+     */
+    default CsvObject searchSubsetCsvFromHashes(final Iterable<byte[]> hashes, final List<Search> filters,
+            final Set<String> excludedKeys, final String[] fields, final int limit) throws InterruptedException {
+        if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
+            return CsvObject.empty();
+        }
+
+        Logger.debug("Searching subset CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
+                filters.size());
+        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
+        final var csvHeaders = CHRONICLE_UTILS.getCsvHeaders(fields);
+        final AtomicInteger count = new AtomicInteger();
+        final var averageValueClass = averageValue().getClass();
+        final var preparedFilters = filters.stream()
+                .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
+                .toList();
+
+        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
+            for (final var entry : grouped.fileGroups().entrySet()) {
+                if (count.get() >= limit)
+                    break;
+
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, count,
+                            key -> {
+                                final V value = shared.map.getUsing(key, using());
+                                if (value == null)
+                                    return false;
+
+                                for (final var search : preparedFilters) {
+                                    if (!CHRONICLE_UTILS.search(search, key, value)) {
+                                        return false;
+                                    }
+                                }
+
+                                rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value));
+                                return true;
+                            });
+                }
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return new CsvObject(csvHeaders, new ArrayList<>(rowQueue));
+    }
+
+    // ========== END HASH-BASED SEARCH METHODS ==========
+
     private void search(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final Map<String, V> result, final AtomicInteger counter) {
-        Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -3075,7 +4184,7 @@ public interface ChronicleDao<V> {
     private void searchCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
             final AtomicReference<String[]> headers) {
-        Logger.info("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
         final var preparedFilters = filters.stream()
@@ -3100,7 +4209,7 @@ public interface ChronicleDao<V> {
     private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final Map<String, Map<String, Object>> result, final AtomicInteger counter,
             final String[] fields) {
-        Logger.info("Subset searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Subset searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -3123,7 +4232,7 @@ public interface ChronicleDao<V> {
 
     private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
             final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter, final String[] fields) {
-        Logger.info("Subset CSV searching DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Subset CSV searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -3147,7 +4256,7 @@ public interface ChronicleDao<V> {
 
     private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
             final Collection<String> results) {
-        Logger.info("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -3169,7 +4278,7 @@ public interface ChronicleDao<V> {
 
     private void search(final ChronicleMap<String, V> db, final List<Search> filters, final Set<String> excludedKeys,
             final int limit, final Map<String, V> result, final AtomicInteger counter) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+        Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3197,7 +4306,7 @@ public interface ChronicleDao<V> {
     private void searchCsv(final ChronicleMap<String, V> db, final List<Search> filters, final Set<String> excludedKeys,
             final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
             final AtomicReference<String[]> headers) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+        Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
@@ -3227,7 +4336,7 @@ public interface ChronicleDao<V> {
     private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final int limit, final Map<String, Map<String, Object>> result,
             final AtomicInteger counter, final String[] fields) {
-        Logger.info("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+        Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
@@ -3256,7 +4365,7 @@ public interface ChronicleDao<V> {
     private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue,
             final AtomicInteger counter, final String[] fields) {
-        Logger.info("Subset CSV searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
+        Logger.debug("Subset CSV searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
@@ -3284,7 +4393,7 @@ public interface ChronicleDao<V> {
 
     private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
             final Set<String> excludedKeys, final Collection<String> results) {
-        Logger.info("Searching DB keys at [{}] using [{}] filters and [{}] excluded keys.",
+        Logger.debug("Searching DB keys at [{}] using [{}] filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3310,7 +4419,7 @@ public interface ChronicleDao<V> {
     }
 
     private int searchCount(final ChronicleMap<String, V> db, final List<Search> filters) {
-        Logger.info("Counting DB at [{}] for {} filters.", dataPath(), filters.size());
+        Logger.debug("Counting DB at [{}] for {} filters.", dataPath(), filters.size());
         final var count = new AtomicInteger();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3338,7 +4447,7 @@ public interface ChronicleDao<V> {
         }
 
         final var size = db.size();
-        Logger.info("Searching in-memory map of [{}] with [{}] filters.", size, filters.size());
+        Logger.debug("Searching in-memory map of [{}] with [{}] filters.", size, filters.size());
         final Map<String, V> result = new ConcurrentHashMap<>(Math.min(size, 10_000));
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -3378,7 +4487,7 @@ public interface ChronicleDao<V> {
      * @param index
      */
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index) {
-        Logger.info("Index searching at [{}] for {}.", dataPath(), search.field());
+        Logger.debug("Index searching at [{}] for {}.", dataPath(), search.field());
         if (index == null || index.isEmpty()) {
             return new SearchResult(Collections.emptyList());
         }
@@ -3415,8 +4524,8 @@ public interface ChronicleDao<V> {
     }
 
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index,
-            final Set<String> excludedKeys) {
-        Logger.info("Index searching at [{}] with [{}] excluded keys for {}.", dataPath(), excludedKeys.size(),
+            final Set<byte[]> excludedHashes) {
+        Logger.debug("Index searching at [{}] with [{}] excluded keys for {}.", dataPath(), excludedHashes.size(),
                 search.field());
         if (index == null || index.isEmpty()) {
             return new SearchResult(Collections.emptyList());
@@ -3430,38 +4539,29 @@ public interface ChronicleDao<V> {
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
         return switch (searchType) {
-            case EQUAL -> MAP_DB.getEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case EQUAL -> MAP_DB.getEqualIndexSearch(index, searchTerm, search.limit(), excludedHashes);
             case NOT_EQUAL -> {
-                final var keysBefore = MAP_DB.getBeforeIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-                final var keysAfter = MAP_DB.getAfterIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+                final var keysBefore = MAP_DB.getBeforeIndexSearch(index, searchTerm, search.limit(), excludedHashes);
+                final var keysAfter = MAP_DB.getAfterIndexSearch(index, searchTerm, search.limit(), excludedHashes);
                 yield new SearchResult(
                         CHRONICLE_UTILS.concatIterable(keysBefore.results(), keysAfter.results(), search.limit()));
             }
-            case LESS -> MAP_DB.getLessThanIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            case LESS_OR_EQUAL -> MAP_DB.getLessThanOrEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            case GREATER -> MAP_DB.getGreaterThanIndexSearch(index, searchTerm, search.limit(), excludedKeys);
+            case LESS -> MAP_DB.getLessThanIndexSearch(index, searchTerm, search.limit(), excludedHashes);
+            case LESS_OR_EQUAL ->
+                MAP_DB.getLessThanOrEqualIndexSearch(index, searchTerm, search.limit(), excludedHashes);
+            case GREATER -> MAP_DB.getGreaterThanIndexSearch(index, searchTerm, search.limit(), excludedHashes);
             case GREATER_OR_EQUAL ->
-                MAP_DB.getGreaterThanOrEqualIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            case LIKE -> MAP_DB.getLikeIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            case NOT_LIKE -> MAP_DB.getNotLikeIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            case STARTS_WITH -> MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            case ENDS_WITH -> MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit(), excludedKeys);
-            case IN -> MAP_DB.getInIndexSearch(index, searchTermSet, search.limit(), excludedKeys);
-            case NOT_IN -> MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit(), excludedKeys);
+                MAP_DB.getGreaterThanOrEqualIndexSearch(index, searchTerm, search.limit(), excludedHashes);
+            case LIKE -> MAP_DB.getLikeIndexSearch(index, searchTerm, search.limit(), excludedHashes);
+            case NOT_LIKE -> MAP_DB.getNotLikeIndexSearch(index, searchTerm, search.limit(), excludedHashes);
+            case STARTS_WITH -> MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit(), excludedHashes);
+            case ENDS_WITH -> MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit(), excludedHashes);
+            case IN -> MAP_DB.getInIndexSearch(index, searchTermSet, search.limit(), excludedHashes);
+            case NOT_IN -> MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit(), excludedHashes);
             case BETWEEN -> MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
-                    searchTermBetween.get(1).toString(), search.limit(), excludedKeys);
+                    searchTermBetween.get(1).toString(), search.limit(), excludedHashes);
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
         };
-    }
-
-    default List<String> toListOfKeys(final Iterable<String> keys) {
-        return StreamSupport.stream(keys.spliterator(), true)
-                .collect(Collectors.toList());
-    }
-
-    default Set<String> toSetOfKeys(final Iterable<String> keys) {
-        return StreamSupport.stream(keys.spliterator(), true)
-                .collect(Collectors.toSet());
     }
 
     private <T> boolean isResultEmpty(final Iterable<T> result) {
@@ -3471,68 +4571,71 @@ public interface ChronicleDao<V> {
     default Map<String, V> indexedSearch(final Search search) {
         final String indexPath = getIndexPath(search.field());
         final int limit = search.limit() > 0 ? search.limit() : HARD_LIMIT;
-        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
-            final var searchResult = indexedSearch(search, sharedIndexMap.index);
+        try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
+            final var searchResult = indexedSearch(search, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyMap();
             }
-            return get(searchResult.results(), limit);
+            return getFromHashes(searchResult.results(), limit);
         }
     }
 
     default Set<String> indexedSearchKeys(final Search search) {
         final String indexPath = getIndexPath(search.field());
-        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
-            final var searchResult = indexedSearch(search, sharedIndexMap.index);
+        try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
+            final var searchResult = indexedSearch(search, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptySet();
             }
-            return toSetOfKeys(searchResult.results());
+            return toSetOfKeysFromHashes(searchResult.results());
         }
     }
 
     default List<String> indexedSearchKeysList(final Search search) {
         final String indexPath = getIndexPath(search.field());
-        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
-            final var searchResult = indexedSearch(search, sharedIndexMap.index);
+        try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
+            final var searchResult = indexedSearch(search, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyList();
             }
-            return toListOfKeys(searchResult.results());
+            return toListOfKeysFromHashes(searchResult.results());
         }
     }
 
     default Map<String, V> indexedSearch(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
         final int limit = search.limit() > 0 ? search.limit() : HARD_LIMIT;
-        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
-            final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
+        try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
+            final var excludedHashes = preCalculateExcludedHashes(excludedKeys);
+            final var searchResult = indexedSearch(search, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyMap();
             }
-            return get(searchResult.results(), limit);
+            return getFromHashes(searchResult.results(), limit);
         }
     }
 
     default Set<String> indexedSearchKeys(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
-        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
-            final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
+        try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
+            final var excludedHashes = preCalculateExcludedHashes(excludedKeys);
+            final var searchResult = indexedSearch(search, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptySet();
             }
-            return toSetOfKeys(searchResult.results());
+            return toSetOfKeysFromHashes(searchResult.results());
         }
     }
 
     default List<String> indexedSearchKeysList(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
-        try (final var sharedIndexMap = MAP_DB.openIndex(indexPath)) {
-            final var searchResult = indexedSearch(search, sharedIndexMap.index, excludedKeys);
+        try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
+            final var excludedHashes = preCalculateExcludedHashes(excludedKeys);
+            final var searchResult = indexedSearch(search, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 return Collections.emptyList();
             }
-            return toListOfKeys(searchResult.results());
+            return toListOfKeysFromHashes(searchResult.results());
         }
     }
 
@@ -3672,22 +4775,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return Collections.emptyMap();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return getSubset(searchResult.results(), fields, limit);
+                    return getSubsetFromHashes(searchResult.results(), fields, limit);
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -3708,11 +4811,11 @@ public interface ChronicleDao<V> {
 
                 return result;
             } else {
-                return searchSubset(searchResult.results(), remainingSearches, fields, limit);
+                return searchSubsetFromHashes(searchResult.results(), remainingSearches, fields, limit);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -3749,22 +4852,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return CsvObject.empty();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return getSubsetCsv(searchResult.results(), fields, limit);
+                    return getSubsetCsvFromHashes(searchResult.results(), fields, limit);
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -3786,11 +4889,11 @@ public interface ChronicleDao<V> {
                 final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
                 return new CsvObject(headers, new ArrayList<>(rowQueue));
             } else {
-                return searchSubsetCsv(searchResult.results(), remainingSearches, fields, limit);
+                return searchSubsetCsvFromHashes(searchResult.results(), remainingSearches, fields, limit);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -3826,22 +4929,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return Collections.emptyMap();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return get(searchResult.results(), limit);
+                    return getFromHashes(searchResult.results(), limit);
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -3862,11 +4965,11 @@ public interface ChronicleDao<V> {
 
                 return result;
             } else {
-                return search(searchResult.results(), remainingSearches, limit);
+                return searchFromHashes(searchResult.results(), remainingSearches, limit);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -3902,22 +5005,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return CsvObject.empty();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return getCsv(searchResult.results(), limit);
+                    return getCsvFromHashes(searchResult.results(), limit);
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -3939,11 +5042,11 @@ public interface ChronicleDao<V> {
 
                 return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
             } else {
-                return searchCsv(searchResult.results(), remainingSearches, limit);
+                return searchCsvFromHashes(searchResult.results(), remainingSearches, limit);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -3969,22 +5072,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return Collections.emptySet();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return toSetOfKeys(searchResult.results());
+                    return toSetOfKeysFromHashes(searchResult.results());
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -3994,11 +5097,11 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 return searchKeys(searches);
             } else {
-                return searchKeys(searchResult.results(), remainingSearches);
+                return searchKeysFromHashes(searchResult.results(), remainingSearches);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -4024,22 +5127,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return Collections.emptyList();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return toListOfKeys(searchResult.results());
+                    return toListOfKeysFromHashes(searchResult.results());
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -4049,11 +5152,11 @@ public interface ChronicleDao<V> {
             if (searchResult == null) {
                 return searchKeysList(searches);
             } else {
-                return searchKeysList(searchResult.results(), remainingSearches);
+                return searchKeysListFromHashes(searchResult.results(), remainingSearches);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -4090,22 +5193,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return Collections.emptyMap();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return get(searchResult.results(), excludedKeys, limit);
+                    return getFromHashes(searchResult.results(), excludedKeys, limit);
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -4126,11 +5229,11 @@ public interface ChronicleDao<V> {
 
                 return result;
             } else {
-                return search(searchResult.results(), remainingSearches, excludedKeys, limit);
+                return searchFromHashes(searchResult.results(), remainingSearches, excludedKeys, limit);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -4167,22 +5270,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return CsvObject.empty();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return getCsv(searchResult.results(), excludedKeys, limit);
+                    return getCsvFromHashes(searchResult.results(), excludedKeys, limit);
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -4204,11 +5307,11 @@ public interface ChronicleDao<V> {
 
                 return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
             } else {
-                return searchCsv(searchResult.results(), remainingSearches, excludedKeys, limit);
+                return searchCsvFromHashes(searchResult.results(), remainingSearches, excludedKeys, limit);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -4245,22 +5348,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return Collections.emptyMap();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return getSubset(searchResult.results(), excludedKeys, fields, limit);
+                    return getSubsetFromHashes(searchResult.results(), excludedKeys, fields, limit);
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -4281,11 +5384,11 @@ public interface ChronicleDao<V> {
 
                 return result;
             } else {
-                return searchSubset(searchResult.results(), remainingSearches, excludedKeys, limit, fields);
+                return searchSubsetFromHashes(searchResult.results(), remainingSearches, excludedKeys, fields, limit);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -4322,22 +5425,22 @@ public interface ChronicleDao<V> {
 
         SearchResult searchResult = null;
         String indexPath = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Perform indexed search (only if indexedSearch != null)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return CsvObject.empty();
             }
 
             if (remainingSearches.isEmpty()) {
                 try {
-                    return getSubsetCsv(searchResult.results(), excludedKeys, fields, limit);
+                    return getSubsetCsvFromHashes(searchResult.results(), excludedKeys, fields, limit);
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -4359,11 +5462,12 @@ public interface ChronicleDao<V> {
                 final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
                 return new CsvObject(headers, new ArrayList<>(rowQueue));
             } else {
-                return searchSubsetCsv(searchResult.results(), remainingSearches, excludedKeys, fields, limit);
+                return searchSubsetCsvFromHashes(searchResult.results(), remainingSearches, excludedKeys, fields,
+                        limit);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
@@ -4420,21 +5524,21 @@ public interface ChronicleDao<V> {
 
         String indexPath = null;
         SearchResult searchResult = null;
-        SharedIndexMap sharedIndexMap = null;
+        SharedIndexSet sharedIndexSet = null;
         // Step 2: Indexed search (only first index used)
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
-            sharedIndexMap = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexMap.index);
+            sharedIndexSet = MAP_DB.openIndex(indexPath);
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
             if (isResultEmpty(searchResult.results())) {
-                sharedIndexMap.close();
+                sharedIndexSet.close();
                 return 0;
             }
             if (remainingSearches.isEmpty()) {
                 try {
                     return MAP_DB.fastCount(searchResult.results());
                 } finally {
-                    sharedIndexMap.close();
+                    sharedIndexSet.close();
                 }
             }
         }
@@ -4449,29 +5553,24 @@ public interface ChronicleDao<V> {
                 });
                 return totalCount.intValue();
             } else {
-                return searchCount(searchResult.results(), remainingSearches);
+                return searchCountFromHashes(searchResult.results(), remainingSearches);
             }
         } finally {
-            if (sharedIndexMap != null) {
-                sharedIndexMap.close();
+            if (sharedIndexSet != null) {
+                sharedIndexSet.close();
             }
         }
     }
 
     /**
      * Current size of the data
-     * 
+     *
      * @return int size
      */
     default int size() {
-        Logger.info("Getting DB size at [{}].", dataPath());
-
-        if (getDataFileState().fileNames().size() > 1) {
-            return getKeyMapSize();
-        }
-
-        try (var shared = openDb()) {
-            return shared.map.size();
+        Logger.debug("Getting DB size at [{}].", dataPath());
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            return sharedKeyMap.map.size();
         }
     }
 
@@ -4484,96 +5583,135 @@ public interface ChronicleDao<V> {
         DATA_FILE_CACHE.remove(dataPath());
     }
 
+    /**
+     * Checks if a key exists in the database.
+     *
+     * @param key the primary key to check
+     * @return true if the key exists, false otherwise
+     */
     default boolean exists(final String key) {
-        Logger.info("Checking [{}] existence at [{}].", key, dataPath());
-
-        if (getDataFileState().fileNames().size() > 1) {
-            return getKeyMapExists(key);
-        }
-
-        try (var shared = openDb()) {
-            return shared.map.containsKey(key);
-        }
+        Logger.debug("Checking [{}] existence at [{}].", key, dataPath());
+        return existsFromHash(CHRONICLE_UTILS.to128BitHash(key));
     }
 
-    default Map<String, Boolean> exists(final Collection<String> keys) {
-        Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
-
-        if (getDataFileState().fileNames().size() > 1) {
-            return getKeyMapExists(keys);
-        }
-
-        try (var shared = openDb()) {
-            if (shared.map.size() == 0) {
-                return Collections.emptyMap();
-            }
-
-            return keys.parallelStream()
-                    .collect(Collectors.toConcurrentMap(
-                            key -> key,
-                            key -> shared.map.containsKey(key)));
+    /**
+     * Checks if a key exists using a pre-calculated hash.
+     * Avoids re-hashing when the hash is already available.
+     *
+     * @param keyHash the 16-byte hash of the key
+     * @return true if the key exists, false otherwise
+     */
+    default boolean existsFromHash(final byte[] keyHash) {
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            return sharedKeyMap.map.containsKey(keyHash);
         }
     }
 
     /**
-     * Returns only the keys that exist
+     * Checks existence for multiple keys.
+     *
+     * @param keys the keys to check
+     * @return map of key to existence boolean
+     */
+    default Map<String, Boolean> exists(final Collection<String> keys) {
+        Logger.debug("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
+        return existsFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+    }
+
+    /**
+     * Checks existence for multiple keys using pre-calculated hashes.
+     * Avoids re-hashing when hashes are already available.
+     *
+     * @param keys       the keys to check
+     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
+     * @return map of key to existence boolean
+     */
+    default Map<String, Boolean> existsFromHashes(final Collection<String> keys, final Map<String, byte[]> keyHashMap) {
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            return keys.parallelStream()
+                    .collect(Collectors.toConcurrentMap(
+                            key -> key,
+                            key -> sharedKeyMap.map.containsKey(keyHashMap.get(key))));
+        }
+    }
+
+    /**
+     * Returns only the keys that exist in the database.
+     *
+     * @param keys the keys to check
+     * @return list of keys that exist
      */
     default List<String> existsList(final Collection<String> keys) {
-        Logger.info("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
+        Logger.debug("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
+        return existsListFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+    }
 
-        if (getDataFileState().fileNames().size() > 1) {
-            return getKeyMapExistsList(keys);
-        }
-
-        try (var shared = openDb()) {
-            if (shared.map.size() == 0) {
-                return Collections.emptyList();
-            }
-
+    /**
+     * Returns only the keys that exist, using pre-calculated hashes.
+     * Avoids re-hashing when hashes are already available.
+     *
+     * @param keys       the keys to check
+     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
+     * @return list of keys that exist
+     */
+    default List<String> existsListFromHashes(final Collection<String> keys, final Map<String, byte[]> keyHashMap) {
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             return keys.parallelStream()
-                    .filter(shared.map::containsKey)
+                    .filter(key -> sharedKeyMap.map.containsKey(keyHashMap.get(key)))
                     .collect(Collectors.toList());
         }
     }
 
     /**
-     * Returns only the keys that dont exist
+     * Returns only the keys that do not exist in the database.
+     *
+     * @param keys the keys to check
+     * @return set of keys that do not exist
      */
     default Set<String> notExists(final Collection<String> keys) {
-        Logger.info("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
+        Logger.debug("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
+        return notExistsFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+    }
 
-        if (getDataFileState().fileNames().size() > 1) {
-            return getKeyMapNotExists(keys);
-        }
-
-        try (var shared = openDb()) {
-            if (shared.map.size() == 0) {
-                return new HashSet<>(keys);
-            }
-
+    /**
+     * Returns only the keys that do not exist, using pre-calculated hashes.
+     * Avoids re-hashing when hashes are already available.
+     *
+     * @param keys       the keys to check
+     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
+     * @return set of keys that do not exist
+     */
+    default Set<String> notExistsFromHashes(final Collection<String> keys, final Map<String, byte[]> keyHashMap) {
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             return keys.parallelStream()
-                    .filter(key -> !shared.map.containsKey(key))
+                    .filter(k -> !sharedKeyMap.map.containsKey(keyHashMap.get(k)))
                     .collect(Collectors.toSet());
         }
     }
 
     /**
-     * Returns only the keys that dont exist
+     * Returns only the keys that do not exist in the database.
+     *
+     * @param keys the keys to check
+     * @return list of keys that do not exist
      */
     default List<String> notExistsList(final Collection<String> keys) {
-        Logger.info("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
+        Logger.debug("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
+        return notExistsListFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+    }
 
-        if (getDataFileState().fileNames().size() > 1) {
-            return getKeyMapNotExistsList(keys);
-        }
-
-        try (var shared = openDb()) {
-            if (shared.map.size() == 0) {
-                return new ArrayList<>(keys);
-            }
-
+    /**
+     * Returns only the keys that do not exist, using pre-calculated hashes.
+     * Avoids re-hashing when hashes are already available.
+     *
+     * @param keys       the keys to check
+     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
+     * @return list of keys that do not exist
+     */
+    default List<String> notExistsListFromHashes(final Collection<String> keys, final Map<String, byte[]> keyHashMap) {
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             return keys.parallelStream()
-                    .filter(key -> !shared.map.containsKey(key))
+                    .filter(k -> !sharedKeyMap.map.containsKey(keyHashMap.get(k)))
                     .collect(Collectors.toList());
         }
     }
