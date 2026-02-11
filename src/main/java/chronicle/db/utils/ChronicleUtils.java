@@ -819,7 +819,10 @@ public final class ChronicleUtils {
             }
             batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyHashMap.get(key)));
         }
-        batchToRemove.parallelStream().unordered().forEach(index::remove);
+        // MUST synchronize or MAPDB gets messed up with indexing in diff places
+        synchronized (index) {
+            batchToRemove.parallelStream().unordered().forEach(index::remove);
+        }
     }
 
     /**
@@ -992,7 +995,10 @@ public final class ChronicleUtils {
                             return;
 
                         try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
-                            keysToAddMap.values().parallelStream().unordered().forEach(sharedIndex.index::add);
+                            // MUST synchronize or MAPDB gets messed up with indexing in diff places
+                            synchronized (sharedIndex.index) {
+                                keysToAddMap.values().parallelStream().unordered().forEach(sharedIndex.index::add);
+                            }
                             Logger.debug("Inserted [{}] indexes at [{}]", keysToAddMap.size(), indexPath);
                         }
                     });
@@ -1091,13 +1097,16 @@ public final class ChronicleUtils {
 
                         // Flush Chunk
                         if (!toRemove.isEmpty() || !toAdd.isEmpty()) {
-                            if (!toRemove.isEmpty()) {
-                                toRemove.parallelStream().unordered().forEach(sharedIndex.index::remove);
-                                Logger.debug("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
-                            }
-                            if (!toAdd.isEmpty()) {
-                                toAdd.parallelStream().unordered().forEach(sharedIndex.index::add);
-                                Logger.debug("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
+                            // MUST synchronize or MAPDB gets messed up with indexing in diff places
+                            synchronized (sharedIndex.index) {
+                                if (!toRemove.isEmpty()) {
+                                    toRemove.parallelStream().unordered().forEach(sharedIndex.index::remove);
+                                    Logger.debug("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
+                                }
+                                if (!toAdd.isEmpty()) {
+                                    toAdd.parallelStream().unordered().forEach(sharedIndex.index::add);
+                                    Logger.debug("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
+                                }
                             }
                         }
                     }
