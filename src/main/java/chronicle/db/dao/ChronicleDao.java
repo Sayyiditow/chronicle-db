@@ -340,9 +340,11 @@ public interface ChronicleDao<V> {
                 final var keys = new ArrayList<String>((int) shared.map.size());
                 CHRONICLE_UTILS.safeForEachEntry(shared, entry -> keys.add(entry.key().get()));
 
-                // Parallel: compute hash + insert (HTreeMap is thread-safe)
-                keys.parallelStream().forEach(primaryKey -> keyMap.put(CHRONICLE_UTILS.to128BitHash(primaryKey),
-                        new KeyMapValue(primaryKey, file)));
+                // Parallel: compute hash + insert
+                synchronized (keyMap) {
+                    keys.parallelStream().forEach(primaryKey -> keyMap.put(CHRONICLE_UTILS.to128BitHash(primaryKey),
+                            new KeyMapValue(primaryKey, file)));
+                }
             }
         });
     }
@@ -943,13 +945,13 @@ public interface ChronicleDao<V> {
                 }
 
                 // --- PHASE 2: DIRECT KEY MAPPING (no re-hashing!) ---
-                for (final var hash : hashBatch) {
+                hashBatch.parallelStream().forEach(hash -> {
                     final var keyMapValue = sharedKeyMap.map.get(hash);
                     if (keyMapValue != null) {
                         fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
                                 .add(keyMapValue.primaryKey());
                     }
-                }
+                });
             } finally {
                 refillLock.unlock();
             }
@@ -1029,17 +1031,20 @@ public interface ChronicleDao<V> {
                     sourceExhausted.set(true);
                 }
 
-                for (final var hash : hashBatch) {
+                hashBatch.parallelStream().forEach(hash -> {
                     final var keyMapValue = sharedKeyMap.map.get(hash);
                     if (keyMapValue != null) {
+                        totalFilled.incrementAndGet();
                         fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
                                 .add(keyMapValue.primaryKey());
-                        totalFilled.incrementAndGet();
                     }
-                }
+                });
 
-                if (dynamicBatchSize.get() < standardBatchSize) {
-                    dynamicBatchSize.set(Math.min(dynamicBatchSize.get() * 2, standardBatchSize));
+                final int remainingToFetch = limit - totalFilled.get();
+                if (remainingToFetch > 0) {
+                    dynamicBatchSize.set(Math.min(remainingToFetch, standardBatchSize));
+                } else {
+                    sourceExhausted.set(true);
                 }
             } finally {
                 refillLock.unlock();
@@ -1120,22 +1125,25 @@ public interface ChronicleDao<V> {
                     sourceExhausted.set(true);
                 }
 
-                for (final var hash : hashBatch) {
+                hashBatch.parallelStream().forEach(hash -> {
                     final var keyMapValue = sharedKeyMap.map.get(hash);
                     if (keyMapValue != null) {
                         final var primaryKey = keyMapValue.primaryKey();
                         // Skip excluded keys
                         if (excludedKeys != null && excludedKeys.contains(primaryKey)) {
-                            continue;
+                            return;
                         }
+                        totalFilled.incrementAndGet();
                         fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
                                 .add(primaryKey);
-                        totalFilled.incrementAndGet();
                     }
-                }
+                });
 
-                if (dynamicBatchSize.get() < standardBatchSize) {
-                    dynamicBatchSize.set(Math.min(dynamicBatchSize.get() * 2, standardBatchSize));
+                final int remainingToFetch = limit - totalFilled.get();
+                if (remainingToFetch > 0) {
+                    dynamicBatchSize.set(Math.min(remainingToFetch, standardBatchSize));
+                } else {
+                    sourceExhausted.set(true);
                 }
             } finally {
                 refillLock.unlock();
@@ -1221,8 +1229,7 @@ public interface ChronicleDao<V> {
     private void addAllToKeyMap(final Map<String, String> keyToFile, final Map<String, byte[]> keyHashMap) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             keyToFile.entrySet().parallelStream().forEach(e -> sharedKeyMap.map.put(
-                    keyHashMap.get(e.getKey()),
-                    new KeyMapValue(e.getKey(), e.getValue())));
+                    keyHashMap.get(e.getKey()), new KeyMapValue(e.getKey(), e.getValue())));
         }
         Logger.debug("Inserted [{}] keys to KeyMap at [{}].", keyToFile.size(), dataPath());
     }
