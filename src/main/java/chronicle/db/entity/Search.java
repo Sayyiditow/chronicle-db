@@ -60,10 +60,18 @@ public record Search(String field, SearchType searchType, Object searchTerm, int
         
         /** Value is in the provided list */
         IN,
-        
+
+        /**
+         * Value is in the provided list - uses full index scan approach.
+         * More efficient than IN when the search term set is very large (e.g., millions)
+         * and comparable to index size. Trades N individual index lookups for
+         * 1 full index scan with O(1) HashSet lookups per entry.
+         */
+        IN_FULL_SCAN,
+
         /** Value is not in the provided list */
         NOT_IN,
-        
+
         /** Value is between two values (inclusive) */
         BETWEEN
     }

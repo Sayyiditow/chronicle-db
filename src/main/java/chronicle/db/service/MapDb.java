@@ -1029,6 +1029,100 @@ public final class MapDb {
         return new SearchResult(lazyResults);
     }
 
+    /**
+     * Full scan IN search - iterates through entire index and checks HashSet.
+     * More efficient than individual lookups when searchTerms is very large
+     * (e.g., millions of terms) and index size is comparable.
+     *
+     * Trade-off: N index lookups vs 1 full scan + N HashSet lookups (O(1) each)
+     * Use when: searchTerms.size() > 10000 AND index.size() < searchTerms.size() * 10
+     */
+    public SearchResult getInIndexSearchFullScan(final NavigableSet<byte[]> index, final Set<String> searchTerms,
+            final int limit) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            final Iterator<byte[]> it = index.iterator();
+            byte[] nextValid = null;
+            int returned = 0;
+
+            @Override
+            public boolean hasNext() {
+                if (limit != -1 && returned >= limit)
+                    return false;
+
+                if (nextValid != null)
+                    return true;
+
+                while (it.hasNext()) {
+                    final var indexValueAndKey = extractIndexValueAndKey(it.next());
+                    if (searchTerms.contains(indexValueAndKey[0])) {
+                        nextValid = (byte[]) indexValueAndKey[1];
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            @Override
+            public byte[] next() {
+                if (!hasNext())
+                    throw new NoSuchElementException();
+                returned++;
+                final var result = nextValid;
+                nextValid = null;
+                return result;
+            }
+        };
+
+        return new SearchResult(iterable);
+    }
+
+    /**
+     * Full scan IN search with excluded keys - iterates through entire index and checks HashSet.
+     */
+    public SearchResult getInIndexSearchFullScan(final NavigableSet<byte[]> index, final Set<String> searchTerms,
+            final int limit, final Set<byte[]> excludedKeyHashes) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            final Iterator<byte[]> it = index.iterator();
+            byte[] nextValid = null;
+            int returned = 0;
+
+            @Override
+            public boolean hasNext() {
+                if (limit != -1 && returned >= limit)
+                    return false;
+
+                if (nextValid != null)
+                    return true;
+
+                while (it.hasNext()) {
+                    final var indexValueAndKey = extractIndexValueAndKey(it.next());
+                    final byte[] keyHash = (byte[]) indexValueAndKey[1];
+
+                    if (containsHash(excludedKeyHashes, keyHash))
+                        continue;
+
+                    if (searchTerms.contains(indexValueAndKey[0])) {
+                        nextValid = keyHash;
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            @Override
+            public byte[] next() {
+                if (!hasNext())
+                    throw new NoSuchElementException();
+                returned++;
+                final var result = nextValid;
+                nextValid = null;
+                return result;
+            }
+        };
+
+        return new SearchResult(iterable);
+    }
+
     public SearchResult getNotInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
         final Iterable<byte[]> iterable = () -> new Iterator<>() {

@@ -4494,9 +4494,10 @@ public interface ChronicleDao<V> {
 
         final SearchType searchType = search.searchType();
         final String searchTerm = CHRONICLE_UTILS.toStringOptimized(search.searchTerm());
-        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? new HashSet<>((Collection<String>) search.searchTerm())
-                : null;
+        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN
+                || searchType == SearchType.IN_FULL_SCAN)
+                        ? new HashSet<>((Collection<String>) search.searchTerm())
+                        : null;
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
         return switch (searchType) {
@@ -4516,6 +4517,7 @@ public interface ChronicleDao<V> {
             case STARTS_WITH -> MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit());
             case ENDS_WITH -> MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit());
             case IN -> MAP_DB.getInIndexSearch(index, searchTermSet, search.limit());
+            case IN_FULL_SCAN -> MAP_DB.getInIndexSearchFullScan(index, searchTermSet, search.limit());
             case NOT_IN -> MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit());
             case BETWEEN -> MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
                     searchTermBetween.get(1).toString(), search.limit());
@@ -4533,9 +4535,10 @@ public interface ChronicleDao<V> {
 
         final SearchType searchType = search.searchType();
         final String searchTerm = CHRONICLE_UTILS.toStringOptimized(search.searchTerm());
-        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN)
-                ? new HashSet<>((Collection<String>) search.searchTerm())
-                : null;
+        final Set<String> searchTermSet = (searchType == SearchType.IN || searchType == SearchType.NOT_IN
+                || searchType == SearchType.IN_FULL_SCAN)
+                        ? new HashSet<>((Collection<String>) search.searchTerm())
+                        : null;
         final var searchTermBetween = searchType == SearchType.BETWEEN ? (List<Object>) search.searchTerm() : null;
 
         return switch (searchType) {
@@ -4557,6 +4560,8 @@ public interface ChronicleDao<V> {
             case STARTS_WITH -> MAP_DB.getStartsWithIndexSearch(index, searchTerm, search.limit(), excludedHashes);
             case ENDS_WITH -> MAP_DB.getEndsWithIndexSearch(index, searchTerm, search.limit(), excludedHashes);
             case IN -> MAP_DB.getInIndexSearch(index, searchTermSet, search.limit(), excludedHashes);
+            case IN_FULL_SCAN ->
+                MAP_DB.getInIndexSearchFullScan(index, searchTermSet, search.limit(), excludedHashes);
             case NOT_IN -> MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit(), excludedHashes);
             case BETWEEN -> MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
                     searchTermBetween.get(1).toString(), search.limit(), excludedHashes);
@@ -4637,6 +4642,27 @@ public interface ChronicleDao<V> {
             }
             return toListOfKeysFromHashes(searchResult.results());
         }
+    }
+
+    /**
+     * Full scan IN search - more efficient than batched IN searches when matching
+     * against a very large set of values (e.g., millions of transaction IDs).
+     *
+     * Instead of N individual index lookups, this does 1 full index scan with
+     * O(1) HashSet lookups per entry.
+     *
+     * Use when: matchValues.size() > 10000 (e.g., archiving 8M transactions)
+     *
+     * @deprecated Use
+     *             {@code indexedSearchKeysList(new Search(field, SearchType.IN_FULL_SCAN, matchValues))}
+     *             instead
+     */
+    @Deprecated
+    default List<String> indexedSearchKeysListFullScan(final String field, final Set<String> matchValues) {
+        if (matchValues == null || matchValues.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return indexedSearchKeysList(new Search(field, SearchType.IN_FULL_SCAN, new ArrayList<>(matchValues)));
     }
 
     default Map<String, V> searchMatching(final Collection<String> matchingKeys, final Search search)
