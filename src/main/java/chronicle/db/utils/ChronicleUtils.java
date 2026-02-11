@@ -762,7 +762,7 @@ public final class ChronicleUtils {
                                 if (!batch.isEmpty()) {
                                     final var indexPath = indexDirPath + field;
                                     final var sharedIndexSet = openIndexes.get(indexPath);
-                                    batch.parallelStream().unordered().forEach(sharedIndexSet.index::add);
+                                    batch.parallelStream().forEach(sharedIndexSet.index::add);
                                     batch.clear();
                                 }
                             });
@@ -787,7 +787,7 @@ public final class ChronicleUtils {
                     if (!batch.isEmpty()) {
                         final var indexPath = indexDirPath + field;
                         final var sharedIndexSet = openIndexes.get(indexPath);
-                        batch.parallelStream().unordered().forEach(sharedIndexSet.index::add);
+                        batch.parallelStream().forEach(sharedIndexSet.index::add);
                     }
                 });
             } catch (final InterruptedException e) {
@@ -821,7 +821,7 @@ public final class ChronicleUtils {
         }
         // MUST synchronize or MAPDB gets messed up with indexing in diff places
         synchronized (index) {
-            batchToRemove.parallelStream().unordered().forEach(index::remove);
+            batchToRemove.parallelStream().forEach(index::remove);
         }
     }
 
@@ -997,7 +997,7 @@ public final class ChronicleUtils {
                         try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
                             // MUST synchronize or MAPDB gets messed up with indexing in diff places
                             synchronized (sharedIndex.index) {
-                                keysToAddMap.values().parallelStream().unordered().forEach(sharedIndex.index::add);
+                                keysToAddMap.values().parallelStream().forEach(sharedIndex.index::add);
                             }
                             Logger.debug("Inserted [{}] indexes at [{}]", keysToAddMap.size(), indexPath);
                         }
@@ -1100,11 +1100,11 @@ public final class ChronicleUtils {
                             // MUST synchronize or MAPDB gets messed up with indexing in diff places
                             synchronized (sharedIndex.index) {
                                 if (!toRemove.isEmpty()) {
-                                    toRemove.parallelStream().unordered().forEach(sharedIndex.index::remove);
+                                    toRemove.parallelStream().forEach(sharedIndex.index::remove);
                                     Logger.debug("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
                                 }
                                 if (!toAdd.isEmpty()) {
-                                    toAdd.parallelStream().unordered().forEach(sharedIndex.index::add);
+                                    toAdd.parallelStream().forEach(sharedIndex.index::add);
                                     Logger.debug("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
                                 }
                             }
