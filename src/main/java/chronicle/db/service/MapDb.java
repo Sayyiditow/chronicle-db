@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.NavigableSet;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -341,6 +342,7 @@ public final class MapDb {
                         .make();
                 final var tree = db.treeSet("index")
                         .serializer(Serializer.BYTE_ARRAY_DELTA)
+                        .maxNodeSize(Integer.getInteger("chronicle.indexes.nodeSize", 32))
                         .createOrOpen();
 
                 return new SharedIndexSet(db, tree, filePath);
@@ -888,6 +890,25 @@ public final class MapDb {
 
     public SearchResult getInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
+        // For small term sets, use sequential (parallel overhead not worth it)
+        if (searchTerms.size() <= 100) {
+            return getInIndexSearchSequential(index, searchTerms, limit);
+        }
+
+        // Parallel lookup for large term sets
+        final List<byte[]> allResults = searchTerms.parallelStream()
+                .flatMap(term -> {
+                    final NavigableSet<byte[]> matches = getEqualIndexSubset(index, term);
+                    return matches.stream().map(this::extractIndexKey);
+                })
+                .limit(limit == -1 ? Long.MAX_VALUE : limit)
+                .toList();
+
+        return new SearchResult(allResults);
+    }
+
+    private SearchResult getInIndexSearchSequential(final NavigableSet<byte[]> index, final Set<String> searchTerms,
+            final int limit) {
         final Iterable<byte[]> lazyResults = () -> new Iterator<>() {
             private final Iterator<String> termIterator = searchTerms.iterator();
             private Iterator<byte[]> currentTermResults = Collections.emptyIterator();
@@ -932,6 +953,27 @@ public final class MapDb {
     }
 
     public SearchResult getInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
+            final int limit, final Set<byte[]> excludedKeyHashes) {
+        // For small term sets, use sequential (parallel overhead not worth it)
+        if (searchTerms.size() <= 100) {
+            return getInIndexSearchSequential(index, searchTerms, limit, excludedKeyHashes);
+        }
+
+        // Parallel lookup for large term sets
+        final List<byte[]> allResults = searchTerms.parallelStream()
+                .flatMap(term -> {
+                    final NavigableSet<byte[]> matches = getEqualIndexSubset(index, term);
+                    return matches.stream()
+                            .map(this::extractIndexKey)
+                            .filter(hash -> !containsHash(excludedKeyHashes, hash));
+                })
+                .limit(limit == -1 ? Long.MAX_VALUE : limit)
+                .toList();
+
+        return new SearchResult(allResults);
+    }
+
+    private SearchResult getInIndexSearchSequential(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit, final Set<byte[]> excludedKeyHashes) {
         final Iterable<byte[]> lazyResults = () -> new Iterator<>() {
             private final Iterator<String> termIterator = searchTerms.iterator();
