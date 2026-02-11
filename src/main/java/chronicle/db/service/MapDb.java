@@ -339,6 +339,7 @@ public final class MapDb {
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable()
+                        .concurrencyScale(Integer.getInteger("chronicle.indexes.concurrencyScale", 16))
                         .make();
                 final var tree = db.treeSet("index")
                         .serializer(Serializer.BYTE_ARRAY_DELTA)
