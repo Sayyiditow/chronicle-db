@@ -254,6 +254,7 @@ public final class MapDb {
                         .fileMmapEnableIfSupported()
                         .fileMmapPreclearDisable()
                         .cleanerHackEnable()
+                        .concurrencyScale(Integer.getInteger("chronicle.keyMap.concurrencyScale", 16))
                         .make()
                         .hashMap("map")
                         .keySerializer(Serializer.BYTE_ARRAY)

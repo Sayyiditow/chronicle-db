@@ -111,7 +111,7 @@ public final class ChronicleUtils {
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
     private static final int flushSize = 5_242_880;
-    private static final int indexChunkSize = 10_000;
+    private static final int indexChunkSize = Integer.getInteger("chronicle.indexes.chunkSize", 10000);
     // CRITICAL: Changing these seeds will invalidate all existing KeyMaps and
     // Indexes! These values must be permanent for the life of the database.
     private static final long hashSeed1 = 0L;
@@ -765,7 +765,8 @@ public final class ChronicleUtils {
                                 if (!batch.isEmpty()) {
                                     final var indexPath = indexDirPath + field;
                                     final var sharedIndexSet = openIndexes.get(indexPath);
-                                    batch.parallelStream().forEach(sharedIndexSet.index::add);
+                                    // MUST use sequential, parallel writes are an issue.
+                                    batch.forEach(sharedIndexSet.index::add);
                                     batch.clear();
                                 }
                             });
@@ -790,7 +791,8 @@ public final class ChronicleUtils {
                     if (!batch.isEmpty()) {
                         final var indexPath = indexDirPath + field;
                         final var sharedIndexSet = openIndexes.get(indexPath);
-                        batch.parallelStream().forEach(sharedIndexSet.index::add);
+                        // MUST use sequential, parallel writes are an issue.
+                        batch.forEach(sharedIndexSet.index::add);
                     }
                 });
             } catch (final InterruptedException e) {
@@ -822,10 +824,8 @@ public final class ChronicleUtils {
             }
             batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyHashMap.get(key)));
         }
-        // MUST synchronize or MAPDB gets messed up with indexing in diff places
-        synchronized (index) {
-            batchToRemove.parallelStream().forEach(index::remove);
-        }
+        // MUST use sequential, parallel writes are an issue.
+        batchToRemove.forEach(index::remove);
     }
 
     /**
@@ -866,7 +866,7 @@ public final class ChronicleUtils {
                 }
             }
 
-            // Step 2: Remove from each index
+            // Step 2: Remove from each index (no chunking - process all at once)
             final List<Map.Entry<String, V>> recordList = new ArrayList<>(values.entrySet());
             final int totalRecords = recordList.size();
 
@@ -876,22 +876,7 @@ public final class ChronicleUtils {
                 if (sharedIndexSet == null)
                     return;
 
-                if (totalRecords <= indexChunkSize) {
-                    processRemoveChunk(recordList, fieldGetters, keyHashMap, sharedIndexSet.index);
-                } else {
-                    final var chunks = new ArrayList<List<Map.Entry<String, V>>>();
-                    for (int i = 0; i < totalRecords; i += indexChunkSize) {
-                        chunks.add(recordList.subList(i, Math.min(i + indexChunkSize, totalRecords)));
-                    }
-                    try {
-                        parallelIterable(chunks, Integer.MAX_VALUE, chunk -> {
-                            processRemoveChunk(chunk, fieldGetters, keyHashMap, sharedIndexSet.index);
-                        });
-                    } catch (final InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException("InterruptedException while proccessing chunk index removal.");
-                    }
-                }
+                processRemoveChunk(recordList, fieldGetters, keyHashMap, sharedIndexSet.index);
                 Logger.debug("Deleted [{}] indexes at [{}]", totalRecords, indexPath);
             });
         } finally {
@@ -922,7 +907,6 @@ public final class ChronicleUtils {
 
         final var indexAdditions = new ConcurrentHashMap<String, Map<String, byte[]>>();
         final var recordList = new ArrayList<>(values.entrySet());
-        final int size = recordList.size();
 
         // Parse fields once
         final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
@@ -935,38 +919,35 @@ public final class ChronicleUtils {
             indexFieldMap.put(indexName, getters);
         }
 
-        // Parallel Calculation
+        // Process each index field in parallel (different indexes are independent)
         processInParallel(indexFieldMap.entrySet(), entry -> {
             final String indexName = entry.getKey();
             final List<FieldData> fieldGetters = entry.getValue();
             final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
-            final Map<String, byte[]> additions = new ConcurrentHashMap<>(values.size());
+            final Map<String, byte[]> additions = new HashMap<>(values.size());
+            final StringBuilder sb = new StringBuilder();
 
-            // Process chunks manually
-            for (int i = 0; i < size; i += indexChunkSize) {
-                final var chunk = recordList.subList(i, Math.min(i + indexChunkSize, size));
-                final StringBuilder sb = new StringBuilder();
-                for (final var e : chunk) {
-                    sb.setLength(0);
-                    boolean skipAdd = false;
-                    try {
-                        for (final FieldData fd : fieldGetters) {
-                            final Object objVal = fd.varHandle.get(e.getValue());
-                            if (excluded.isEmpty()) {
-                                appendValue(sb, objVal);
-                            } else {
-                                final var valStr = toStringOptimized(objVal);
-                                if (excluded.contains(valStr))
-                                    skipAdd = true;
-                                sb.append(valStr);
-                            }
+            // No chunking needed - just iterate through all records
+            for (final var e : recordList) {
+                sb.setLength(0);
+                boolean skipAdd = false;
+                try {
+                    for (final FieldData fd : fieldGetters) {
+                        final Object objVal = fd.varHandle.get(e.getValue());
+                        if (excluded.isEmpty()) {
+                            appendValue(sb, objVal);
+                        } else {
+                            final var valStr = toStringOptimized(objVal);
+                            if (excluded.contains(valStr))
+                                skipAdd = true;
+                            sb.append(valStr);
                         }
-                        if (!skipAdd) {
-                            additions.put(e.getKey(), MAP_DB.createIndexKey(sb.toString(), keyHashMap.get(e.getKey())));
-                        }
-                    } catch (final Throwable t) {
-                        Logger.error(t);
                     }
+                    if (!skipAdd) {
+                        additions.put(e.getKey(), MAP_DB.createIndexKey(sb.toString(), keyHashMap.get(e.getKey())));
+                    }
+                } catch (final Throwable t) {
+                    Logger.error(t);
                 }
             }
             indexAdditions.put(indexName, additions);
@@ -998,10 +979,8 @@ public final class ChronicleUtils {
                             return;
 
                         try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {
-                            // MUST synchronize or MAPDB gets messed up with indexing in diff places
-                            synchronized (sharedIndex.index) {
-                                keysToAddMap.values().parallelStream().forEach(sharedIndex.index::add);
-                            }
+                            // MUST use sequential, parallel writes are an issue.
+                            keysToAddMap.values().forEach(sharedIndex.index::add);
                             Logger.debug("Inserted [{}] indexes at [{}]", keysToAddMap.size(), indexPath);
                         }
                     });
@@ -1100,16 +1079,14 @@ public final class ChronicleUtils {
 
                         // Flush Chunk
                         if (!toRemove.isEmpty() || !toAdd.isEmpty()) {
-                            // MUST synchronize or MAPDB gets messed up with indexing in diff places
-                            synchronized (sharedIndex.index) {
-                                if (!toRemove.isEmpty()) {
-                                    toRemove.parallelStream().forEach(sharedIndex.index::remove);
-                                    Logger.debug("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
-                                }
-                                if (!toAdd.isEmpty()) {
-                                    toAdd.parallelStream().forEach(sharedIndex.index::add);
-                                    Logger.debug("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
-                                }
+                            // MUST use sequential, parallel writes are an issue.
+                            if (!toRemove.isEmpty()) {
+                                toRemove.forEach(sharedIndex.index::remove);
+                                Logger.debug("Deleted [{}] indexes at [{}]", toRemove.size(), indexPath);
+                            }
+                            if (!toAdd.isEmpty()) {
+                                toAdd.forEach(sharedIndex.index::add);
+                                Logger.debug("Inserted [{}] indexes at [{}]", toAdd.size(), indexPath);
                             }
                         }
                     }

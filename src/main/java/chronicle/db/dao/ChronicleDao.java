@@ -340,11 +340,9 @@ public interface ChronicleDao<V> {
                 final var keys = new ArrayList<String>((int) shared.map.size());
                 CHRONICLE_UTILS.safeForEachEntry(shared, entry -> keys.add(entry.key().get()));
 
-                // Parallel: compute hash + insert
-                synchronized (keyMap) {
-                    keys.parallelStream().forEach(primaryKey -> keyMap.put(CHRONICLE_UTILS.to128BitHash(primaryKey),
-                            new KeyMapValue(primaryKey, file)));
-                }
+                // Sequential insert to avoid MapDB concurrency issues
+                keys.forEach(primaryKey -> keyMap.put(CHRONICLE_UTILS.to128BitHash(primaryKey),
+                        new KeyMapValue(primaryKey, file)));
             }
         });
     }
@@ -1200,7 +1198,7 @@ public interface ChronicleDao<V> {
      */
     private void removeAllFromKeyMap(final Map<String, byte[]> keyHashMap) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            keyHashMap.values().parallelStream().forEach(sharedKeyMap.map::remove);
+            keyHashMap.values().forEach(sharedKeyMap.map::remove);
         }
         Logger.debug("Deleted [{}] keys from KeyMap at [{}].", keyHashMap.size(), dataPath());
     }
@@ -1228,8 +1226,8 @@ public interface ChronicleDao<V> {
      */
     private void addAllToKeyMap(final Map<String, String> keyToFile, final Map<String, byte[]> keyHashMap) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
-            keyToFile.entrySet().parallelStream().forEach(e -> sharedKeyMap.map.put(
-                    keyHashMap.get(e.getKey()), new KeyMapValue(e.getKey(), e.getValue())));
+            keyToFile.forEach((key, file) -> sharedKeyMap.map.put(
+                    keyHashMap.get(key), new KeyMapValue(key, file)));
         }
         Logger.debug("Inserted [{}] keys to KeyMap at [{}].", keyToFile.size(), dataPath());
     }
