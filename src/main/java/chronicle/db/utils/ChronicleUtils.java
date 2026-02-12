@@ -230,7 +230,10 @@ public final class ChronicleUtils {
                 final VarHandle varHandle = MethodHandles.lookup().unreflectVarHandle(field);
                 return new FieldData(field, varHandle);
             } catch (NoSuchFieldException | IllegalAccessException e) {
-                Logger.warn("No such field [{}] in class [{}].", f, clazz.getSimpleName());
+                // Don't warn for composite index (+) or OR search (|) fields
+                if (!f.contains("+") && !f.contains("|")) {
+                    Logger.warn("No such field [{}] in class [{}].", f, clazz.getSimpleName());
+                }
                 return null;
             }
         });
