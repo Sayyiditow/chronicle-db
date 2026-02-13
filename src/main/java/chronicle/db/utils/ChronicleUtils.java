@@ -1570,7 +1570,8 @@ public final class ChronicleUtils {
                                 // Note: May slightly exceed limit, acceptable for performance
                             }
                         } catch (final Exception e) {
-                            Logger.error("[Parallel Iterable] - Error processing item", e);
+                            Logger.error("[Parallel Iterable] - Error processing item");
+                            Logger.error(e);
                         }
                     }
                 }
@@ -1582,7 +1583,8 @@ public final class ChronicleUtils {
             try {
                 future.get();
             } catch (final ExecutionException e) {
-                Logger.error("[Parallel Iterable] - Consumer thread failed", e.getCause());
+                Logger.error("[Parallel Iterable] - Consumer thread failed");
+                Logger.error(e);
             } catch (final CancellationException e) {
                 // Expected if cancelled
             }
@@ -1654,7 +1656,8 @@ public final class ChronicleUtils {
                             action.accept(item); // The "Runnable-style" call
                             matchCounter.incrementAndGet();
                         } catch (final Exception e) {
-                            Logger.error("Error processing item", e);
+                            Logger.error("Error processing item");
+                            Logger.error(e);
                         }
                     }
                 }
@@ -1666,7 +1669,8 @@ public final class ChronicleUtils {
             try {
                 future.get();
             } catch (final ExecutionException e) {
-                Logger.error("[Parallel Iterable] - Consumer thread failed", e.getCause());
+                Logger.error("[Parallel Iterable] - Consumer thread failed");
+                Logger.error(e);
             } catch (final CancellationException e) {
                 // Expected if cancelled
             }
