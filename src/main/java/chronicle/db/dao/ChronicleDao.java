@@ -46,7 +46,6 @@ import chronicle.db.service.MapDb.KeyMapValue;
 import chronicle.db.service.MapDb.SearchResult;
 import chronicle.db.service.MapDb.SharedIndexSet;
 import chronicle.db.utils.SafeRunnable;
-import net.openhft.chronicle.map.ChronicleMap;
 
 /**
  * High-performance, disk-persisted data access object built on ChronicleMap and
@@ -141,7 +140,7 @@ import net.openhft.chronicle.map.ChronicleMap;
  * <ul>
  * <li>{@code /data/} - ChronicleMap data files (sharded)</li>
  * <li>{@code /indexes/} - MapDB secondary indexes</li>
- * <li>{@code /files/} - Metadata files (keys, entry sizes)</li>
+ * <li>{@code /files/} - static files (pdf, html)</li>
  * <li>{@code /backup/} - Backup files</li>
  * </ul>
  * </p>
@@ -176,7 +175,7 @@ public interface ChronicleDao<V> {
     ConcurrentMap<String, DataFileState> DATA_FILE_CACHE = new ConcurrentHashMap<>();
     ConcurrentMap<String, String> KEY_MAP_PATH_CACHE = new ConcurrentHashMap<>();
     String DATA_DIR = "/data/", INDEX_DIR = "/indexes/", FILES_DIR = "/files/", BACKUP_DIR = "/backup/",
-            DATA_FILE = "data", CORRUPTED_FILE = "corrupted", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
+            DATA_FILE = "data", LOCKED_FILE = "locked-", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
             KEY_FILE = "keys";
     String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
     int HARD_LIMIT = 100_000;
@@ -307,32 +306,102 @@ public interface ChronicleDao<V> {
         return Collections.emptyMap();
     }
 
+    /**
+     * Opens a ChronicleMap database file from a specific directory.
+     * <p>
+     * Returns a {@link SharedChronicleMap} that must be closed after use (use
+     * try-with-resources).
+     * Uses the configured {@link #entries()} for capacity.
+     * </p>
+     *
+     * @param dataDir  the subdirectory (e.g., {@link #DATA_DIR},
+     *                 {@link #BACKUP_DIR})
+     * @param fileName the database file name
+     * @return a SharedChronicleMap handle (must be closed)
+     */
     default SharedChronicleMap<String, V> openDb(final String dataDir, final String fileName) {
         return CHRONICLE_DB.open(name(), entries(), averageKey(), averageValue(), dataPath() + dataDir + fileName,
                 bloatFactor());
     }
 
+    /**
+     * Opens a ChronicleMap database file with a custom entry capacity.
+     * <p>
+     * Use this overload when creating a new file with a different size than the
+     * default.
+     * </p>
+     *
+     * @param dataDir  the subdirectory (e.g., {@link #DATA_DIR},
+     *                 {@link #BACKUP_DIR})
+     * @param fileName the database file name
+     * @param entries  the maximum number of entries for this file
+     * @return a SharedChronicleMap handle (must be closed)
+     */
     default SharedChronicleMap<String, V> openDb(final String dataDir, final String fileName, final long entries) {
         return CHRONICLE_DB.open(name(), entries, averageKey(), averageValue(), dataPath() + dataDir + fileName,
                 bloatFactor());
     }
 
+    /**
+     * Opens the current active data file for this DAO.
+     * <p>
+     * This is the primary method for accessing data. Opens the current file
+     * (the latest file in rotation sequence) from the data directory.
+     * </p>
+     *
+     * @return a SharedChronicleMap handle (must be closed)
+     */
     default SharedChronicleMap<String, V> openDb() {
         return openDb(DATA_DIR, getDataFileState().currentFile());
     }
 
+    /**
+     * Opens a specific data file by name from the data directory.
+     *
+     * @param fileName the database file name (e.g., "data", "data-2")
+     * @return a SharedChronicleMap handle (must be closed)
+     */
     default SharedChronicleMap<String, V> openDb(final String fileName) {
         return openDb(DATA_DIR, fileName);
     }
 
+    /**
+     * Opens a specific data file with a custom entry capacity.
+     *
+     * @param fileName the database file name
+     * @param entries  the maximum number of entries for this file
+     * @return a SharedChronicleMap handle (must be closed)
+     */
     default SharedChronicleMap<String, V> openDb(final String fileName, final long entries) {
         return openDb(DATA_DIR, fileName, entries);
     }
 
+    /**
+     * Returns the file path for the KeyMap (hash → primary key + file mapping).
+     * <p>
+     * The KeyMap is a MapDB HTreeMap that maps 128-bit hashes to
+     * {@link KeyMapValue}
+     * containing the primary key and the data file where it resides.
+     * Path is cached for performance.
+     * </p>
+     *
+     * @return the KeyMap file path
+     */
     default String getKeyMapPath() {
         return KEY_MAP_PATH_CACHE.computeIfAbsent(dataPath(), k -> k + DATA_DIR + KEY_FILE);
     }
 
+    /**
+     * Populates the KeyMap from all data files.
+     * <p>
+     * Iterates through all data files in parallel, collecting keys and inserting
+     * them into the KeyMap with their 128-bit hash and file location.
+     * Called during initialization when KeyMap doesn't exist.
+     * </p>
+     *
+     * @param dataFiles the set of data file names to scan
+     * @param keyMap    the MapDB HTreeMap to populate
+     */
     private void populateKeyMap(final Set<String> dataFiles, final HTreeMap<byte[], KeyMapValue> keyMap) {
         CHRONICLE_UTILS.processInParallel(dataFiles, file -> {
             try (final var shared = openDb(file)) {
@@ -348,8 +417,40 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Create the folders required on init
+     * Checks if this DAO requires a KeyMap for operations.
+     * <p>
+     * KeyMap is required when:
+     * <ul>
+     * <li>Multiple data files exist (need to look up which file contains a
+     * key)</li>
+     * <li>Indexes exist (indexes store hashes, so KeyMap is needed for
+     * lookups)</li>
+     * </ul>
+     * When {@code false}, operations can skip hash calculations and KeyMap lookups,
+     * directly accessing the single data file.
+     * </p>
      *
+     * @return {@code true} if KeyMap is needed, {@code false} for single-file
+     *         no-index DAOs
+     */
+    private boolean hasKeyMap() {
+        return getDataFileState().fileNames().size() > 1 || !indexFileNames().isEmpty();
+    }
+
+    /**
+     * Initializes the directory structure and KeyMap for this DAO.
+     * <p>
+     * Creates the required subdirectories ({@code /data/}, {@code /indexes/},
+     * {@code /files/}, {@code /backup/}) if they don't exist.
+     * </p>
+     * <p>
+     * Also initializes the KeyMap if {@link #hasKeyMap()} returns {@code true}
+     * and the KeyMap file doesn't exist. Skipped in recovery mode to avoid
+     * deadlocks.
+     * </p>
+     * <p>
+     * Call this method once during application startup for each DAO.
+     * </p>
      */
     default void createDataDirs() {
         // check if the backup directory exists, this is the last dir to be created
@@ -371,11 +472,12 @@ public interface ChronicleDao<V> {
         }
 
         CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            final var dataFileState = getDataFileState();
             final var keyMapPath = getKeyMapPath();
-            if (!Files.exists(Path.of(keyMapPath))) {
+            // only if we have indexes/have multiple files otherwise hashes are not required
+            // to be tracked
+            if (hasKeyMap() && !Files.exists(Path.of(keyMapPath))) {
                 try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
-                    populateKeyMap(dataFileState.fileNames(), sharedKeyMap.map);
+                    populateKeyMap(getDataFileState().fileNames(), sharedKeyMap.map);
                 } catch (final Exception e) {
                     // Delete corrupt keyMap so it rebuilds on next startup
                     // (try-with-resources already closed the map)
@@ -389,9 +491,13 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Helps to backup all data files in /data to /backup
-     * 
-     * @throws IOException
+     * Backs up all data files from {@code /data/} to {@code /backup/}.
+     * <p>
+     * Clears existing backup files first, then copies all current data files.
+     * Does not backup indexes or KeyMap (these can be rebuilt).
+     * </p>
+     *
+     * @throws IOException if file operations fail
      */
     default void backup() throws IOException {
         final var dataPath = dataPath() + DATA_DIR;
@@ -407,6 +513,13 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Deletes all data files for this DAO.
+     * <p>
+     * <b>Warning:</b> This permanently deletes all data. Typically called
+     * after {@link #backup()} during vacuum or truncate operations.
+     * </p>
+     */
     default void deleteDataFiles() {
         for (final var file : getDataFileState().fileNames()) {
             CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
@@ -414,8 +527,14 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Delete and rerun all indexes. Faster when inserting a lot of records.
-     * 
+     * Deletes all secondary index files for this DAO.
+     * <p>
+     * Useful before bulk inserts - delete indexes, insert data, then
+     * call {@link #refreshIndexes()} to rebuild. This is faster than
+     * updating indexes incrementally during large batch operations.
+     * </p>
+     *
+     * @return the set of index field names that were deleted
      */
     default Set<String> deleteIndexes() {
         final var available = indexFileNames();
@@ -428,17 +547,28 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Get the index map to use
-     * 
-     * @param field the field of the V value object
-     * @return map of the index
+     * Returns the file path for a secondary index.
+     *
+     * @param field the field name that is indexed
+     * @return the full path to the index file
      */
     default String getIndexPath(final String field) {
         return dataPath() + INDEX_DIR + field;
     }
 
     /**
-     * Cache to store data file names
+     * Returns the current state of data files for this DAO.
+     * <p>
+     * Lazily initializes and caches the file state by scanning the data directory.
+     * Returns the set of all data file names and the current active file for
+     * writes.
+     * </p>
+     * <p>
+     * File naming: {@code data} (first file), {@code data-2}, {@code data-3}, etc.
+     * The current file is always the highest numbered file.
+     * </p>
+     *
+     * @return the {@link DataFileState} containing file names and current file
      */
     default DataFileState getDataFileState() {
         return DATA_FILE_CACHE.computeIfAbsent(dataPath(), k -> {
@@ -502,20 +632,22 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Only runs to initialize an index on the field first time
-     * 
-     * @param field the field of the V value object
-     * 
+     * Builds secondary indexes for the specified fields from a single data file.
+     *
+     * @param db     the open ChronicleMap to index
+     * @param fields the field names to create indexes for
      */
     private void initIndex(final SharedChronicleMap<String, V> db, final Set<String> fields) {
         CHRONICLE_UTILS.index(db, name(), fields, dataPath(), averageValue().getClass(), indexExclusions(), entries());
     }
 
     /**
-     * Only runs to initialize an index on the field first time
-     * 
-     * @param field the field of the V value object
-     * 
+     * Builds secondary indexes for the specified fields across all data files.
+     * <p>
+     * Processes all data files in parallel for efficiency.
+     * </p>
+     *
+     * @param fields the field names to create indexes for
      */
     private void initIndex(final Set<String> fields) {
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
@@ -526,8 +658,14 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Delete and rerun all indexes. Faster when inserting a lot of records.
-     * 
+     * Rebuilds all secondary indexes from scratch.
+     * <p>
+     * Deletes existing index files and recreates them by scanning all data files.
+     * Acquires a write lock to prevent concurrent modifications.
+     * </p>
+     * <p>
+     * Use this after bulk operations or when indexes may be out of sync.
+     * </p>
      */
     default void refreshIndexes() {
         final var indexFiles = indexFileNames();
@@ -544,6 +682,17 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Rebuilds the KeyMap from scratch by scanning all data files.
+     * <p>
+     * Deletes the existing KeyMap and repopulates it with all keys from all data
+     * files.
+     * Acquires a write lock to prevent concurrent modifications.
+     * </p>
+     * <p>
+     * Use this when the KeyMap may be out of sync with the data files.
+     * </p>
+     */
     default void refreshKeyMap() {
         CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
             final var keyMapPath = getKeyMapPath();
@@ -562,14 +711,23 @@ public interface ChronicleDao<V> {
         });
     }
 
+    /**
+     * Returns the list of index files that currently exist on disk.
+     *
+     * @return list of index file names
+     * @throws IOException if directory listing fails
+     */
     default List<String> availableIndexes() throws IOException {
         return CHRONICLE_UTILS.getFileList(dataPath() + INDEX_DIR);
     }
 
     /**
-     * Initialize indexes at dao creation
-     * 
-     * @param fields
+     * Initializes any missing indexes defined by {@link #indexFileNames()}.
+     * <p>
+     * Compares configured indexes against existing index files and creates
+     * any that are missing. Called during application startup.
+     * Skipped in recovery mode to avoid deadlocks.
+     * </p>
      */
     default void initDefaultIndexes() {
         // Skip index initialization in recovery mode to avoid deadlocks
@@ -596,17 +754,21 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * In cases of data corruption, we can recover the db using this method
-     * 
-     * @param dataFileName the data- file name to recover
-     * @throws IOException
+     * Attempts to recover a corrupted ChronicleMap data file.
+     * <p>
+     * Creates a backup of the corrupted file to {@code /backup/corrupted<filename>}
+     * before attempting recovery. Uses ChronicleMap's built-in recovery mechanism.
+     * </p>
+     *
+     * @param dataFileName the data file name to recover (e.g., "data", "data-2")
+     * @throws IOException if backup or recovery fails
      */
     default void recoverData(final String dataFileName) throws IOException {
         final var dataFileStr = dataPath() + DATA_DIR + dataFileName;
         final var dataFilePath = Path.of(dataFileStr);
 
         // 1. Make a backup before recovery
-        final var backupPath = Path.of(dataPath() + BACKUP_DIR + CORRUPTED_FILE + dataFileName);
+        final var backupPath = Path.of(dataPath() + BACKUP_DIR + LOCKED_FILE + dataFileName);
         Files.copy(dataFilePath, backupPath, StandardCopyOption.REPLACE_EXISTING);
         Logger.info("Backed up file to {}", backupPath);
         try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
@@ -623,7 +785,7 @@ public interface ChronicleDao<V> {
      * @return the database file name containing this key, or null if not found
      */
     private String getDbFile(final String key) {
-        return getDbFileFromHash(CHRONICLE_UTILS.to128BitHash(key));
+        return getDbFile(CHRONICLE_UTILS.to128BitHash(key));
     }
 
     /**
@@ -633,7 +795,7 @@ public interface ChronicleDao<V> {
      * @param keyHash the 16-byte hash of the primary key
      * @return the database file name containing this key, or null if not found
      */
-    private String getDbFileFromHash(final byte[] keyHash) {
+    private String getDbFile(final byte[] keyHash) {
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             final var keyMapValue = sharedKeyMap.map.get(keyHash);
             if (keyMapValue == null) {
@@ -664,244 +826,6 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Groups keys by their database file using lazy, batched lookups.
-     * Calculates key hashes internally. Thread-safe with demand-driven batch
-     * processing.
-     *
-     * @param keys the primary keys to group
-     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
-     */
-    private GroupedKeys getDbFiles(final Iterable<String> keys) {
-        return getDbFilesFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
-    }
-
-    /**
-     * Groups keys by their database file using pre-calculated hashes.
-     * Uses lazy, batched lookups with demand-driven processing. Thread-safe.
-     * <p>
-     * The returned {@link GroupedKeys} holds an open KeyMap resource and must be
-     * closed via try-with-resources.
-     *
-     * @param keys       the primary keys to group
-     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
-     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
-     */
-    private GroupedKeys getDbFilesFromHashes(final Iterable<String> keys, final Map<String, byte[]> keyHashMap) {
-        // 1. Open the Key-to-File Index Map once.
-        final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
-        final Iterator<String> sourceIterator = keys.iterator();
-        final var dbFiles = getDataFileState().fileNames();
-
-        // 2. Setup dynamic, thread-safe buffers.
-        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
-
-        final int batchSize = 25_000;
-        final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
-
-        // CRITICAL: Lock for the entire refill process.
-        final ReentrantLock refillLock = new ReentrantLock();
-
-        final Runnable refillBuffers = () -> {
-            refillLock.lock();
-            try {
-                if (sourceExhausted.get())
-                    return;
-
-                final List<String> keyBatch = new ArrayList<>(batchSize);
-
-                // --- PHASE 1: KEY FETCH ---
-                int count = 0;
-                while (sourceIterator.hasNext() && count < batchSize) {
-                    keyBatch.add(sourceIterator.next());
-                    count++;
-                }
-                if (!sourceIterator.hasNext()) {
-                    sourceExhausted.set(true);
-                }
-
-                // --- PHASE 2: KEY MAPPING ---
-                keyBatch.parallelStream().forEach(key -> {
-                    final var keyMapValue = sharedKeyMap.map.get(keyHashMap.get(key));
-                    if (keyMapValue != null) {
-                        fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
-                                .add(key);
-                    }
-                });
-            } finally {
-                refillLock.unlock();
-            }
-        };
-
-        // 3. Pre-fill buffers to see if we can optimize
-        refillBuffers.run();
-
-        // 4. Create Iterators
-        final Map<String, Iterable<String>> fileGroups = new HashMap<>();
-
-        // OPTIMIZATION: If source is exhausted after first refill, we know EXACTLY
-        // which files are needed.
-        // We can return ONLY the discovered files, avoiding iteration over empty files.
-        // This makes update() extremely fast.
-        final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
-
-        for (final String file : filesToIterate) {
-            fileGroups.put(file, () -> new Iterator<>() {
-                @Override
-                public boolean hasNext() {
-                    var buffer = fileBuffers.get(file);
-                    // While buffer is missing or empty and we still have source data, try to refill
-                    while ((buffer == null || buffer.isEmpty()) && !sourceExhausted.get()) {
-                        refillBuffers.run();
-                        buffer = fileBuffers.get(file); // Re-fetch buffer as it might have been created
-                    }
-                    return buffer != null && !buffer.isEmpty();
-                }
-
-                @Override
-                public String next() {
-                    if (!hasNext())
-                        throw new NoSuchElementException();
-                    // hasNext() guarantees buffer exists and is not empty
-                    return fileBuffers.get(file).poll();
-                }
-            });
-        }
-
-        return new GroupedKeys(fileGroups, sharedKeyMap::close);
-    }
-
-    /**
-     * Groups keys by their database file with a limit on total keys processed.
-     * Calculates key hashes internally.
-     *
-     * @param keys  the primary keys to group
-     * @param limit maximum number of keys to process
-     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
-     */
-    private GroupedKeys getDbFiles(final Iterable<String> keys, final int limit) {
-        return getDbFilesFromHashes(keys, limit, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
-    }
-
-    /**
-     * Groups keys by their database file using pre-calculated hashes, with a limit.
-     * Uses lazy, batched lookups with demand-driven processing. Thread-safe.
-     *
-     * @param keys       the primary keys to group
-     * @param limit      maximum number of keys to process
-     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
-     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
-     */
-    private GroupedKeys getDbFilesFromHashes(final Iterable<String> keys, final int limit,
-            final Map<String, byte[]> keyHashMap) {
-        // 1. Open the Key-to-File Index Map once.
-        final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
-        final Iterator<String> sourceIterator = keys.iterator();
-        final var dbFiles = getDataFileState().fileNames();
-
-        // 2. Setup dynamic, thread-safe buffers.
-        final Map<String, ConcurrentLinkedQueue<String>> fileBuffers = new ConcurrentHashMap<>();
-
-        final int standardBatchSize = 25_000;
-        final AtomicInteger totalFilled = new AtomicInteger();
-        final AtomicInteger dynamicBatchSize = new AtomicInteger(Math.min(limit, standardBatchSize));
-        final AtomicBoolean sourceExhausted = new AtomicBoolean(false);
-
-        // CRITICAL: Lock for the entire refill process.
-        final ReentrantLock refillLock = new ReentrantLock();
-
-        final Runnable refillBuffers = () -> {
-            refillLock.lock();
-            try {
-                if (sourceExhausted.get())
-                    return;
-
-                final var batchSize = dynamicBatchSize.get();
-                final List<String> keyBatch = new ArrayList<>(batchSize);
-
-                // --- PHASE 1: KEY FETCH ---
-                int count = 0;
-                while (sourceIterator.hasNext() && count < batchSize) {
-                    keyBatch.add(sourceIterator.next());
-                    count++;
-                }
-
-                if (!sourceIterator.hasNext()) {
-                    sourceExhausted.set(true);
-                }
-
-                // --- PHASE 2: KEY MAPPING ---
-                keyBatch.parallelStream().forEach(key -> {
-                    final var keyMapValue = sharedKeyMap.map.get(keyHashMap.get(key));
-                    if (keyMapValue != null) {
-                        totalFilled.incrementAndGet();
-                        fileBuffers.computeIfAbsent(keyMapValue.fileName(), k -> new ConcurrentLinkedQueue<>())
-                                .add(key);
-                    }
-                });
-
-                final int remainingToFetch = limit - totalFilled.get();
-                if (remainingToFetch > 0) {
-                    dynamicBatchSize.set(Math.min(remainingToFetch, standardBatchSize));
-                } else {
-                    sourceExhausted.set(true);
-                }
-            } finally {
-                refillLock.unlock();
-            }
-        };
-
-        // 3. Pre-fill buffers to see if we can optimize
-        refillBuffers.run();
-
-        // 4. Create Iterators
-        final Map<String, Iterable<String>> fileGroups = new HashMap<>();
-
-        // OPTIMIZATION: If source is exhausted after first refill, we know EXACTLY
-        // which files are needed.
-        // We can return ONLY the discovered files, avoiding iteration over empty files.
-        // This makes update() extremely fast.
-        final Set<String> filesToIterate = sourceExhausted.get() ? fileBuffers.keySet() : dbFiles;
-
-        for (final String file : filesToIterate) {
-            fileGroups.put(file, () -> new Iterator<>() {
-                @Override
-                public boolean hasNext() {
-                    var buffer = fileBuffers.get(file);
-                    // While buffer is missing or empty and we still have source data, try to refill
-                    while ((buffer == null || buffer.isEmpty()) && !sourceExhausted.get()) {
-                        refillBuffers.run();
-                        buffer = fileBuffers.get(file); // Re-fetch buffer as it might have been created
-                    }
-                    return buffer != null && !buffer.isEmpty();
-                }
-
-                @Override
-                public String next() {
-                    if (!hasNext())
-                        throw new NoSuchElementException();
-                    // hasNext() guarantees buffer exists and is not empty
-                    return fileBuffers.get(file).poll();
-                }
-            });
-        }
-
-        return new GroupedKeys(fileGroups, sharedKeyMap::close);
-    }
-
-    /**
-     * Groups keys by their database file, excluding specified keys.
-     * Filters and hashes in one pass for efficiency.
-     *
-     * @param keys         the primary keys to group
-     * @param limit        maximum number of keys to process
-     * @param excludedKeys keys to exclude from processing
-     * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
-     */
-    private GroupedKeys getDbFiles(final Iterable<String> keys, final int limit, final Set<String> excludedKeys) {
-        return getDbFilesFromHashes(keys, limit, CHRONICLE_UTILS.preCalculateKeyHashes(keys, excludedKeys));
-    }
-
-    /**
      * Groups pre-calculated hashes by their file location using direct KeyMap
      * lookup.
      * No re-hashing required. Returns primary keys grouped by file.
@@ -909,7 +833,7 @@ public interface ChronicleDao<V> {
      * @param hashes the 16-byte hashes to look up
      * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
      */
-    private GroupedKeys getDbFilesFromHashes(final Iterable<byte[]> hashes) {
+    private GroupedKeys getDbFiles(final Iterable<byte[]> hashes) {
         // 1. Open the Key-to-File Index Map once.
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
         final Iterator<byte[]> sourceIterator = hashes.iterator();
@@ -997,7 +921,7 @@ public interface ChronicleDao<V> {
      * @param limit  maximum number of keys to process
      * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
      */
-    private GroupedKeys getDbFilesFromHashes(final Iterable<byte[]> hashes, final int limit) {
+    private GroupedKeys getDbFiles(final Iterable<byte[]> hashes, final int limit) {
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
         final Iterator<byte[]> sourceIterator = hashes.iterator();
         final var dbFiles = getDataFileState().fileNames();
@@ -1090,7 +1014,7 @@ public interface ChronicleDao<V> {
      * @param excludedKeys primary keys to exclude from results
      * @return a {@link GroupedKeys} record (must be closed via try-with-resources)
      */
-    private GroupedKeys getDbFilesFromHashes(final Iterable<byte[]> hashes, final int limit,
+    private GroupedKeys getDbFiles(final Iterable<byte[]> hashes, final int limit,
             final Set<String> excludedKeys) {
         final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath());
         final Iterator<byte[]> sourceIterator = hashes.iterator();
@@ -1332,9 +1256,14 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Fetches all records in the db
-     * 
-     * @return Map<String, V>
+     * Fetches records from all data files up to the specified limit.
+     * <p>
+     * Iterates through data files sequentially and returns full entity objects.
+     * For large datasets, prefer using search methods with indexes.
+     * </p>
+     *
+     * @param limit maximum number of records to return
+     * @return map of primary key to entity
      */
     default Map<String, V> fetch(final int limit) {
         final Map<String, V> result = new HashMap<>(limit);
@@ -1343,7 +1272,7 @@ public interface ChronicleDao<V> {
                 break;
             }
             try (final var shared = openDb(file)) {
-                shared.map.forEachEntryWhile(entry -> {
+                CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
                     final var key = entry.key().get();
                     result.put(key, entry.value().getUsing(null));
                     return result.size() < limit;
@@ -1354,6 +1283,15 @@ public interface ChronicleDao<V> {
         return result;
     }
 
+    /**
+     * Fetches records as CSV-formatted data up to the specified limit.
+     * <p>
+     * Returns data suitable for CSV export with headers and row arrays.
+     * </p>
+     *
+     * @param limit maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows
+     */
     default CsvObject fetchCsv(final int limit) {
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1364,7 +1302,7 @@ public interface ChronicleDao<V> {
                 break;
             }
             try (final var shared = openDb(file)) {
-                shared.map.forEachEntryWhile(entry -> {
+                CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
                     final var key = entry.key().get();
                     final var value = entry.value().getUsing(using());
                     headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
@@ -1378,6 +1316,17 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Fetches only specified fields from records up to the limit.
+     * <p>
+     * More memory-efficient than {@link #fetch(int)} when only specific fields are
+     * needed.
+     * </p>
+     *
+     * @param fields the field names to include in the result
+     * @param limit  maximum number of records to return
+     * @return map of primary key to field-value map
+     */
     default Map<String, Map<String, Object>> fetchSubset(final String[] fields, final int limit) {
         final var result = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
@@ -1386,7 +1335,7 @@ public interface ChronicleDao<V> {
                 break;
             }
             try (final var shared = openDb(file)) {
-                shared.map.forEachEntryWhile(entry -> {
+                CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
                     result.put(entry.key().get(),
                             CHRONICLE_UTILS.getSubsetFromObject(classData, fields, entry.value().getUsing(using())));
                     return result.size() < limit;
@@ -1397,6 +1346,13 @@ public interface ChronicleDao<V> {
         return result;
     }
 
+    /**
+     * Fetches only specified fields as CSV-formatted data up to the limit.
+     *
+     * @param fields the field names to include
+     * @param limit  maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows
+     */
     default CsvObject fetchSubsetCsv(final String[] fields, final int limit) {
         final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
@@ -1407,7 +1363,7 @@ public interface ChronicleDao<V> {
                 break;
             }
             try (final var shared = openDb(file)) {
-                shared.map.forEachEntryWhile(entry -> {
+                CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
                     rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, entry.key().get(), fields,
                             entry.value().getUsing(using())));
                     return rowQueue.size() < limit;
@@ -1418,43 +1374,88 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Fetches all records up to {@link #HARD_LIMIT}.
+     *
+     * @return map of primary key to entity
+     * @see #fetch(int)
+     */
     default Map<String, V> fetch() {
         return fetch(HARD_LIMIT);
     }
 
+    /**
+     * Fetches all records as CSV up to {@link #HARD_LIMIT}.
+     *
+     * @return {@link CsvObject} containing headers and rows
+     * @see #fetchCsv(int)
+     */
     default CsvObject fetchCsv() {
         return fetchCsv(HARD_LIMIT);
     }
 
+    /**
+     * Fetches specified fields from all records up to {@link #HARD_LIMIT}.
+     *
+     * @param fields the field names to include
+     * @return map of primary key to field-value map
+     * @see #fetchSubset(String[], int)
+     */
     default Map<String, Map<String, Object>> fetchSubset(final String[] fields) {
         return fetchSubset(fields, HARD_LIMIT);
     }
 
+    /**
+     * Fetches specified fields as CSV from all records up to {@link #HARD_LIMIT}.
+     *
+     * @param fields the field names to include
+     * @return {@link CsvObject} containing headers and rows
+     * @see #fetchSubsetCsv(String[], int)
+     */
     default CsvObject fetchSubsetCsv(final String[] fields) {
         return fetchSubsetCsv(fields, HARD_LIMIT);
     }
 
     /**
-     * Fetches all keys in the db, never run directly for huge files
-     * 
-     * @return Set<String>
+     * Fetches all primary keys from all data files.
+     * <p>
+     * Processes files in parallel for efficiency.
+     * <b>Warning:</b> May be slow and memory-intensive for large datasets.
+     * </p>
+     *
+     * @return set of all primary keys
      */
     default Set<String> fetchKeys() {
         final var result = ConcurrentHashMap.<String>newKeySet();
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
-                shared.map.forEachEntry(entry -> result.add(entry.key().get()));
+                CHRONICLE_UTILS.safeForEachEntry(shared, entry -> result.add(entry.key().get()));
             }
         });
         Logger.debug("Fetched [{}] keys at [{}].", result.size(), dataPath());
         return result;
     }
 
+    /**
+     * Fetches all primary keys from all data files as a list.
+     * <p>
+     * Similar to {@link #fetchKeys()} but returns a {@link List} instead of a
+     * {@link Set}.
+     * Processes files in parallel using a {@link ConcurrentLinkedQueue} for
+     * thread-safe collection.
+     * </p>
+     * <p>
+     * <b>Warning:</b> May be slow and memory-intensive for large datasets.
+     * </p>
+     *
+     * @return list of all primary keys (order is not guaranteed)
+     * @see #fetchKeys()
+     */
     default List<String> fetchKeysList() {
         final var result = new ConcurrentLinkedQueue<String>();
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
-                shared.map.forEachEntry(entry -> result.add(entry.key().get()));
+                CHRONICLE_UTILS.safeForEachEntry(shared, entry -> result.add(entry.key().get()));
             }
         });
         Logger.debug("Fetched [{}] keys list at [{}].", result.size(), dataPath());
@@ -1462,10 +1463,14 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Get a value using key
-     * 
-     * @param key the key to search in the db
-     * @return V value
+     * Retrieves a single entity by its primary key.
+     * <p>
+     * For single-file DAOs, directly accesses the data file.
+     * For multi-file DAOs, looks up the file location via KeyMap first.
+     * </p>
+     *
+     * @param key the primary key
+     * @return the entity, or {@code null} if not found
      */
     default V get(final String key) {
         if (key == null) {
@@ -1473,6 +1478,13 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying key [{}] at [{}].", key, dataPath());
+
+        if (getDataFileState().fileNames().size() <= 1) {
+            try (final var shared = openDb()) {
+                return shared.map.get(key);
+            }
+        }
+
         final var file = getDbFile(key);
         if (file == null) {
             return null;
@@ -1483,18 +1495,79 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Processes keys grouped by their data file using pre-calculated hashes.
+     * <p>
+     * Groups keys by file location via {@link #getDbFiles(Iterable)}, then
+     * processes
+     * each file group in parallel. Within each file, keys are processed in parallel
+     * using {@code parallelIterable}.
+     * </p>
+     *
+     * @param hashes        pre-calculated 128-bit hashes of the keys
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysByFileFromHashes(final Iterable<byte[]> hashes, final BiConsumer<String, V> valueConsumer) {
+        try (final var grouped = getDbFiles(hashes)) {
+            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                final var file = entry.getKey();
+                try (final var shared = openDb(file)) {
+                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
+                        final var value = shared.map.get(key);
+                        if (value != null) {
+                            valueConsumer.accept(key, value);
+                        }
+                    });
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            });
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Processes keys grouped by their data file.
+     * <p>
+     * Convenience wrapper that pre-calculates hashes and delegates to
+     * {@link #processKeysByFileFromHashes(Iterable, BiConsumer)}.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
     private void processKeysByFile(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys)) {
+        processKeysByFileFromHashes(CHRONICLE_UTILS.preCalculateKeyHashes(keys), valueConsumer);
+    }
+
+    /**
+     * Processes keys grouped by their data file using memory-efficient value reuse.
+     * <p>
+     * Similar to {@link #processKeysByFileFromHashes(Iterable, BiConsumer)} but
+     * uses
+     * {@code getUsing()} with a reusable value instance from {@link #using()}.
+     * This reduces GC pressure for large batch operations.
+     * </p>
+     *
+     * @param hashes        pre-calculated 128-bit hashes of the keys
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysByFileUsingFromHashes(final Iterable<byte[]> hashes,
+            final BiConsumer<String, V> valueConsumer) {
+        try (final var grouped = getDbFiles(hashes)) {
             CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
-                        final var value = shared.map.get(key);
+                        final var value = shared.map.getUsing(key, using());
                         if (value != null) {
                             valueConsumer.accept(key, value);
-                            return true;
                         }
-                        return false;
                     });
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -1506,32 +1579,36 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Processes keys grouped by their data file using memory-efficient value reuse.
+     * <p>
+     * Convenience wrapper that pre-calculates hashes and delegates to
+     * {@link #processKeysByFileUsingFromHashes(Iterable, BiConsumer)}.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
     private void processKeysByFileUsing(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys)) {
-            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                final var file = entry.getKey();
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            valueConsumer.accept(key, value);
-                            return true;
-                        }
-                        return false;
-                    });
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-            });
-        } catch (final Exception e) {
-            throw new RuntimeException(e);
-        }
+        processKeysByFileUsingFromHashes(CHRONICLE_UTILS.preCalculateKeyHashes(keys), valueConsumer);
     }
 
-    private void processKeysByFile(final Iterable<String> keys, final int limit,
+    /**
+     * Processes keys grouped by their data file with a limit on total results.
+     * <p>
+     * Uses an {@link AtomicInteger} counter shared across parallel file processing
+     * to enforce the limit. Processing stops early once the limit is reached.
+     * </p>
+     *
+     * @param hashes        pre-calculated 128-bit hashes of the keys
+     * @param limit         maximum number of records to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysByFileFromHashes(final Iterable<byte[]> hashes, final int limit,
             final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, limit)) {
+        try (final var grouped = getDbFiles(hashes, limit)) {
             final var counter = new AtomicInteger(0);
             CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
@@ -1540,59 +1617,7 @@ public interface ChronicleDao<V> {
                         final var value = shared.map.get(key);
                         if (value != null) {
                             valueConsumer.accept(key, value);
-                            return true;
                         }
-                        return false;
-                    });
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-            });
-        } catch (final Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
-            final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, limit)) {
-            final var counter = new AtomicInteger(0);
-            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                final var file = entry.getKey();
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, counter, key -> {
-                        final var value = shared.map.getUsing(key, using());
-                        if (value != null) {
-                            valueConsumer.accept(key, value);
-                            return true;
-                        }
-                        return false;
-                    });
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-            });
-        } catch (final Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private void processKeysByFile(final Iterable<String> keys, final int limit,
-            final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, limit, excludedKeys)) {
-            final var counter = new AtomicInteger(0);
-            CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                final var file = entry.getKey();
-                try (final var shared = openDb(file)) {
-                    CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, counter, key -> {
-                        final var value = shared.map.get(key);
-                        if (value != null) {
-                            valueConsumer.accept(key, value);
-                            return true;
-                        }
-                        return false;
                     });
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -1605,23 +1630,48 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Process keys from byte[] hashes with limit - uses direct KeyMap lookup
-     * without re-hashing.
+     * Processes keys grouped by their data file with a result limit.
+     * <p>
+     * Convenience wrapper that pre-calculates hashes and delegates to
+     * {@link #processKeysByFileFromHashes(Iterable, int, BiConsumer)}.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param limit         maximum number of records to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
      */
-    private void processKeysByFileFromHashes(final Iterable<byte[]> hashes, final int limit,
+    private void processKeysByFile(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFilesFromHashes(hashes, limit)) {
+        processKeysByFileFromHashes(CHRONICLE_UTILS.preCalculateKeyHashes(keys), limit, valueConsumer);
+    }
+
+    /**
+     * Processes keys grouped by their data file with limit and memory-efficient
+     * value reuse.
+     * <p>
+     * Combines the limit enforcement with the memory-efficient {@code getUsing()}
+     * pattern.
+     * Uses an {@link AtomicInteger} counter shared across parallel file processing.
+     * </p>
+     *
+     * @param hashes        pre-calculated 128-bit hashes of the keys
+     * @param limit         maximum number of records to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysByFileUsingFromHashes(final Iterable<byte[]> hashes, final int limit,
+            final BiConsumer<String, V> valueConsumer) {
+        try (final var grouped = getDbFiles(hashes, limit)) {
             final var counter = new AtomicInteger(0);
             CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
                     CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, counter, key -> {
-                        final var value = shared.map.get(key);
+                        final var value = shared.map.getUsing(key, using());
                         if (value != null) {
                             valueConsumer.accept(key, value);
-                            return true;
                         }
-                        return false;
                     });
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -1634,12 +1684,40 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Process keys from byte[] hashes with limit and excluded keys - uses direct
-     * KeyMap lookup.
+     * Processes keys grouped by their data file with limit and memory-efficient
+     * value reuse.
+     * <p>
+     * Convenience wrapper that pre-calculates hashes and delegates to
+     * {@link #processKeysByFileUsingFromHashes(Iterable, int, BiConsumer)}.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param limit         maximum number of records to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
+            final BiConsumer<String, V> valueConsumer) {
+        processKeysByFileUsingFromHashes(CHRONICLE_UTILS.preCalculateKeyHashes(keys), limit, valueConsumer);
+    }
+
+    /**
+     * Processes keys grouped by their data file with limit and key exclusion.
+     * <p>
+     * Excluded keys are filtered out during hash pre-calculation, avoiding
+     * unnecessary KeyMap lookups for keys that will be skipped.
+     * </p>
+     *
+     * @param hashes        pre-calculated 128-bit hashes (already filtered for
+     *                      exclusions)
+     * @param limit         maximum number of records to process
+     * @param excludedKeys  keys to skip (already filtered in hash calculation)
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
      */
     private void processKeysByFileFromHashes(final Iterable<byte[]> hashes, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFilesFromHashes(hashes, limit, excludedKeys)) {
+        try (final var grouped = getDbFiles(hashes, limit)) {
             final var counter = new AtomicInteger(0);
             CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
@@ -1648,9 +1726,7 @@ public interface ChronicleDao<V> {
                         final var value = shared.map.get(key);
                         if (value != null) {
                             valueConsumer.accept(key, value);
-                            return true;
                         }
-                        return false;
                     });
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -1662,9 +1738,43 @@ public interface ChronicleDao<V> {
         }
     }
 
-    private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
+    /**
+     * Processes keys grouped by their data file with limit and key exclusion.
+     * <p>
+     * Pre-calculates hashes while filtering out excluded keys, then delegates to
+     * {@link #processKeysByFileFromHashes(Iterable, int, Set, BiConsumer)}.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param limit         maximum number of records to process
+     * @param excludedKeys  keys to skip during processing
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysByFile(final Iterable<String> keys, final int limit,
             final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
-        try (final var grouped = getDbFiles(keys, limit, excludedKeys)) {
+        processKeysByFileFromHashes(CHRONICLE_UTILS.preCalculateKeyHashes(keys, excludedKeys), limit, excludedKeys,
+                valueConsumer);
+    }
+
+    /**
+     * Processes keys grouped by file with limit, exclusion, and memory-efficient
+     * value reuse.
+     * <p>
+     * Combines all optimizations: key exclusion filtering, result limiting,
+     * and the memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param hashes        pre-calculated 128-bit hashes (already filtered for
+     *                      exclusions)
+     * @param limit         maximum number of records to process
+     * @param excludedKeys  keys to skip (already filtered in hash calculation)
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysByFileUsingFromHashes(final Iterable<byte[]> hashes, final int limit,
+            final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
+        try (final var grouped = getDbFiles(hashes, limit)) {
             final var counter = new AtomicInteger(0);
             CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
                 final var file = entry.getKey();
@@ -1673,9 +1783,7 @@ public interface ChronicleDao<V> {
                         final var value = shared.map.getUsing(key, using());
                         if (value != null) {
                             valueConsumer.accept(key, value);
-                            return true;
                         }
-                        return false;
                     });
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -1687,15 +1795,44 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Processes keys grouped by file with limit, exclusion, and memory-efficient
+     * value reuse.
+     * <p>
+     * Pre-calculates hashes while filtering out excluded keys, then delegates to
+     * {@link #processKeysByFileUsingFromHashes(Iterable, int, Set, BiConsumer)}.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param limit         maximum number of records to process
+     * @param excludedKeys  keys to skip during processing
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysByFileUsing(final Iterable<String> keys, final int limit,
+            final Set<String> excludedKeys, final BiConsumer<String, V> valueConsumer) {
+        processKeysByFileUsingFromHashes(CHRONICLE_UTILS.preCalculateKeyHashes(keys, excludedKeys), limit, excludedKeys,
+                valueConsumer);
+    }
+
+    /**
+     * Processes keys directly from the single data file.
+     * <p>
+     * Used for single-file DAOs (when {@code fileNames().size() <= 1}).
+     * Avoids the overhead of file grouping and KeyMap lookups.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
     private void processKeys(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
         try (final var shared = openDb()) {
             CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
                 final var value = shared.map.get(key);
                 if (value != null) {
                     valueConsumer.accept(key, value);
-                    return true;
                 }
-                return false;
             });
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1703,15 +1840,26 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Processes keys directly from the single data file with memory-efficient value
+     * reuse.
+     * <p>
+     * Used for single-file DAOs. Uses {@code getUsing()} with a reusable value
+     * instance
+     * to reduce GC pressure for large batch operations.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
     private void processKeysUsing(final Iterable<String> keys, final BiConsumer<String, V> valueConsumer) {
         try (final var shared = openDb()) {
             CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
                 final var value = shared.map.getUsing(key, using());
                 if (value != null) {
                     valueConsumer.accept(key, value);
-                    return true;
                 }
-                return false;
             });
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1719,15 +1867,24 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Processes keys directly from the single data file with a result limit.
+     * <p>
+     * Used for single-file DAOs. Stops processing early once the limit is reached.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param limit         maximum number of records to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
     private void processKeys(final Iterable<String> keys, final int limit, final BiConsumer<String, V> valueConsumer) {
         try (final var shared = openDb()) {
             CHRONICLE_UTILS.parallelIterable(keys, limit, key -> {
                 final var value = shared.map.get(key);
                 if (value != null) {
                     valueConsumer.accept(key, value);
-                    return true;
                 }
-                return false;
             });
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1735,6 +1892,19 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Processes keys directly from the single data file with limit and
+     * memory-efficient value reuse.
+     * <p>
+     * Combines result limiting with the memory-efficient {@code getUsing()} pattern
+     * for single-file DAOs.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param limit         maximum number of records to process
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
     private void processKeysUsing(final Iterable<String> keys, final int limit,
             final BiConsumer<String, V> valueConsumer) {
         try (final var shared = openDb()) {
@@ -1742,9 +1912,7 @@ public interface ChronicleDao<V> {
                 final var value = shared.map.getUsing(key, using());
                 if (value != null) {
                     valueConsumer.accept(key, value);
-                    return true;
                 }
-                return false;
             });
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1752,6 +1920,20 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Processes keys directly from the single data file with limit and key
+     * exclusion.
+     * <p>
+     * For single-file DAOs. Skips keys present in the exclusion set and stops
+     * once the limit is reached.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param limit         maximum number of records to process
+     * @param excludedKeys  keys to skip during processing
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
     private void processKeys(final Iterable<String> keys, final int limit, final Set<String> excludedKeys,
             final BiConsumer<String, V> valueConsumer) {
         try (final var shared = openDb()) {
@@ -1760,29 +1942,8 @@ public interface ChronicleDao<V> {
                     final var value = shared.map.get(key);
                     if (value != null) {
                         valueConsumer.accept(key, value);
-                        return true;
                     }
                 }
-                return false;
-            });
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException(e);
-        }
-    }
-
-    private void processKeysUsing(final Iterable<String> keys, final int limit, final Set<String> excludedKeys,
-            final BiConsumer<String, V> valueConsumer) {
-        try (final var shared = openDb()) {
-            CHRONICLE_UTILS.parallelIterable(keys, limit, key -> {
-                if (!excludedKeys.contains(key)) {
-                    final var value = shared.map.getUsing(key, using());
-                    if (value != null) {
-                        valueConsumer.accept(key, value);
-                        return true;
-                    }
-                }
-                return false;
             });
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1791,10 +1952,49 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Get all the values for a list of keys
-     * 
-     * @param keys list of keys
-     * @return Map<String, V> values
+     * Processes keys directly from the single data file with limit, exclusion, and
+     * memory reuse.
+     * <p>
+     * For single-file DAOs. Combines all optimizations: key exclusion, result
+     * limiting,
+     * and the memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys          the primary keys to process
+     * @param limit         maximum number of records to process
+     * @param excludedKeys  keys to skip during processing
+     * @param valueConsumer callback receiving (key, value) pairs for existing
+     *                      records
+     */
+    private void processKeysUsing(final Iterable<String> keys, final int limit, final Set<String> excludedKeys,
+            final BiConsumer<String, V> valueConsumer) {
+        try (final var shared = openDb()) {
+            CHRONICLE_UTILS.parallelIterable(keys, limit, key -> {
+                if (!excludedKeys.contains(key)) {
+                    final var value = shared.map.getUsing(key, using());
+                    if (value != null) {
+                        valueConsumer.accept(key, value);
+                    }
+                }
+            });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Retrieves values for multiple keys in batch.
+     * <p>
+     * For single-file DAOs, uses direct lookup via
+     * {@link #processKeys(Iterable, BiConsumer)}.
+     * For multi-file DAOs, groups keys by file via
+     * {@link #processKeysByFile(Iterable, BiConsumer)}
+     * to minimize file opens.
+     * </p>
+     *
+     * @param keys the primary keys to retrieve
+     * @return map of key to value for existing records (missing keys are omitted)
      */
     default Map<String, V> get(final Iterable<String> keys) {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -1814,6 +2014,16 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Retrieves values for multiple keys as CSV format.
+     * <p>
+     * Uses memory-efficient {@code getUsing()} pattern for processing.
+     * Headers are extracted from the first encountered value.
+     * </p>
+     *
+     * @param keys the primary keys to retrieve
+     * @return {@link CsvObject} containing headers and rows for existing records
+     */
     default CsvObject getCsv(final Iterable<String> keys) {
         if (keys == null || !keys.iterator().hasNext()) {
             return CsvObject.empty();
@@ -1841,6 +2051,17 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Retrieves specified fields for multiple keys in batch.
+     * <p>
+     * Uses memory-efficient {@code getUsing()} pattern. Only the specified fields
+     * are extracted from each record.
+     * </p>
+     *
+     * @param keys   the primary keys to retrieve
+     * @param fields the field names to include in the result
+     * @return map of key to field-value map for existing records
+     */
     default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final String[] fields) {
         if (keys == null || !keys.iterator().hasNext()) {
             return Collections.emptyMap();
@@ -1863,6 +2084,17 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Retrieves specified fields for multiple keys as CSV format.
+     * <p>
+     * Combines field projection with CSV formatting. Uses memory-efficient
+     * {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys   the primary keys to retrieve
+     * @param fields the field names to include
+     * @return {@link CsvObject} containing headers and rows for existing records
+     */
     default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields) {
         if (keys == null || !keys.iterator().hasNext()) {
             return CsvObject.empty();
@@ -1886,6 +2118,17 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Retrieves values for multiple keys with a result limit.
+     * <p>
+     * Processing stops early once the limit is reached. Useful for paginated
+     * retrieval or when only a subset of results is needed.
+     * </p>
+     *
+     * @param keys  the primary keys to retrieve
+     * @param limit maximum number of records to return
+     * @return map of key to value for existing records (up to limit)
+     */
     default Map<String, V> get(final Iterable<String> keys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
@@ -1904,6 +2147,17 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Retrieves values for multiple keys as CSV format with a result limit.
+     * <p>
+     * Uses memory-efficient {@code getUsing()} pattern. Processing stops
+     * early once the limit is reached.
+     * </p>
+     *
+     * @param keys  the primary keys to retrieve
+     * @param limit maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows (up to limit)
+     */
     default CsvObject getCsv(final Iterable<String> keys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return CsvObject.empty();
@@ -1931,6 +2185,18 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Retrieves specified fields for multiple keys with a result limit.
+     * <p>
+     * Combines field projection with result limiting. Processing stops early
+     * once the limit is reached.
+     * </p>
+     *
+     * @param keys   the primary keys to retrieve
+     * @param fields the field names to include
+     * @param limit  maximum number of records to return
+     * @return map of key to field-value map (up to limit)
+     */
     default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final String[] fields,
             final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
@@ -1954,6 +2220,19 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Retrieves specified fields for multiple keys as CSV format with a result
+     * limit.
+     * <p>
+     * Combines field projection, CSV formatting, and result limiting.
+     * Processing stops early once the limit is reached.
+     * </p>
+     *
+     * @param keys   the primary keys to retrieve
+     * @param fields the field names to include
+     * @param limit  maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows (up to limit)
+     */
     default CsvObject getSubsetCsv(final Iterable<String> keys, final String[] fields, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return CsvObject.empty();
@@ -1977,11 +2256,16 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
-    // ========== HASH-BASED OVERLOADS (no re-hashing, uses direct KeyMap lookup)
-    // ==========
-
     /**
-     * Get values by byte[] hashes - uses direct KeyMap lookup without re-hashing.
+     * Retrieves values using pre-calculated 128-bit hashes.
+     * <p>
+     * Optimized for cases where hashes were already computed (e.g., from a search).
+     * Avoids the overhead of re-calculating hashes from keys.
+     * </p>
+     *
+     * @param hashes pre-calculated 128-bit hashes
+     * @param limit  maximum number of records to return
+     * @return map of key to value for existing records (up to limit)
      */
     default Map<String, V> getFromHashes(final Iterable<byte[]> hashes, final int limit) {
         if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
@@ -1997,8 +2281,16 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Get subset values by byte[] hashes - uses direct KeyMap lookup without
-     * re-hashing.
+     * Retrieves specified fields using pre-calculated 128-bit hashes.
+     * <p>
+     * Optimized for cases where hashes were already computed. Combines hash-based
+     * lookup with field projection.
+     * </p>
+     *
+     * @param hashes pre-calculated 128-bit hashes
+     * @param fields the field names to include
+     * @param limit  maximum number of records to return
+     * @return map of key to field-value map (up to limit)
      */
     default Map<String, Map<String, Object>> getSubsetFromHashes(final Iterable<byte[]> hashes,
             final String[] fields, final int limit) {
@@ -2010,14 +2302,22 @@ public interface ChronicleDao<V> {
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
-        processKeysByFileFromHashes(hashes, limit,
+        processKeysByFileUsingFromHashes(hashes, limit,
                 (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
 
         return map;
     }
 
     /**
-     * Get CSV by byte[] hashes - uses direct KeyMap lookup without re-hashing.
+     * Retrieves values as CSV format using pre-calculated 128-bit hashes.
+     * <p>
+     * Optimized for cases where hashes were already computed. Combines hash-based
+     * lookup with CSV formatting.
+     * </p>
+     *
+     * @param hashes pre-calculated 128-bit hashes
+     * @param limit  maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows (up to limit)
      */
     default CsvObject getCsvFromHashes(final Iterable<byte[]> hashes, final int limit) {
         if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
@@ -2029,7 +2329,7 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
 
-        processKeysByFileFromHashes(hashes, limit, (key, value) -> {
+        processKeysByFileUsingFromHashes(hashes, limit, (key, value) -> {
             headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
@@ -2038,8 +2338,15 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Get subset CSV by byte[] hashes - uses direct KeyMap lookup without
-     * re-hashing.
+     * Retrieves specified fields as CSV format using pre-calculated 128-bit hashes.
+     * <p>
+     * Combines hash-based lookup, field projection, and CSV formatting.
+     * </p>
+     *
+     * @param hashes pre-calculated 128-bit hashes
+     * @param fields the field names to include
+     * @param limit  maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows (up to limit)
      */
     default CsvObject getSubsetCsvFromHashes(final Iterable<byte[]> hashes, final String[] fields, final int limit) {
         if (hashes == null || !hashes.iterator().hasNext() || limit <= 0) {
@@ -2051,15 +2358,22 @@ public interface ChronicleDao<V> {
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
-        processKeysByFileFromHashes(hashes, limit,
+        processKeysByFileUsingFromHashes(hashes, limit,
                 (key, value) -> rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
 
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
     /**
-     * Convert byte[] hashes to String keys using KeyMap lookup.
-     * Use this when you need the actual key strings.
+     * Converts pre-calculated 128-bit hashes back to their string keys.
+     * <p>
+     * Performs KeyMap lookups to retrieve the original keys. Useful when you've
+     * been working with hashes (e.g., from index operations) and need the actual
+     * key strings.
+     * </p>
+     *
+     * @param hashes pre-calculated 128-bit hashes
+     * @return set of string keys corresponding to the hashes
      */
     default Set<String> toSetOfKeysFromHashes(final Iterable<byte[]> hashes) {
         if (hashes == null || !hashes.iterator().hasNext()) {
@@ -2084,8 +2398,16 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Convert byte[] hashes to String keys list using KeyMap lookup.
-     * Use this when you need the actual key strings.
+     * Converts pre-calculated 128-bit hashes back to their string keys as a list.
+     * <p>
+     * Similar to {@link #toSetOfKeysFromHashes(Iterable)} but returns a
+     * {@link List}.
+     * Uses a {@link ConcurrentLinkedQueue} internally for thread-safe collection.
+     * </p>
+     *
+     * @param hashes pre-calculated 128-bit hashes
+     * @return list of string keys corresponding to the hashes (order is not
+     *         guaranteed)
      */
     default List<String> toListOfKeysFromHashes(final Iterable<byte[]> hashes) {
         if (hashes == null || !hashes.iterator().hasNext()) {
@@ -2110,11 +2432,18 @@ public interface ChronicleDao<V> {
         return new ArrayList<>(result);
     }
 
-    // ========== HASH-BASED OVERLOADS WITH EXCLUDED KEYS ==========
-
     /**
-     * Get values by byte[] hashes with excluded keys - uses direct KeyMap lookup
-     * without re-hashing.
+     * Retrieves values using pre-calculated hashes with key exclusion.
+     * <p>
+     * Combines hash-based lookup with key exclusion filtering.
+     * Excluded keys are skipped during processing.
+     * </p>
+     *
+     * @param hashes       pre-calculated 128-bit hashes
+     * @param excludedKeys keys to skip during processing
+     * @param limit        maximum number of records to return
+     * @return map of key to value for existing records (up to limit, excluding
+     *         specified keys)
      */
     default Map<String, V> getFromHashes(final Iterable<byte[]> hashes, final Set<String> excludedKeys,
             final int limit) {
@@ -2129,8 +2458,16 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Get CSV by byte[] hashes with excluded keys - uses direct KeyMap lookup
-     * without re-hashing.
+     * Retrieves values as CSV format using pre-calculated hashes with key
+     * exclusion.
+     * <p>
+     * Combines hash-based lookup, CSV formatting, and key exclusion.
+     * </p>
+     *
+     * @param hashes       pre-calculated 128-bit hashes
+     * @param excludedKeys keys to skip during processing
+     * @param limit        maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows (up to limit)
      */
     default CsvObject getCsvFromHashes(final Iterable<byte[]> hashes, final Set<String> excludedKeys,
             final int limit) {
@@ -2143,7 +2480,7 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
 
-        processKeysByFileFromHashes(hashes, limit, excludedKeys, (key, value) -> {
+        processKeysByFileUsingFromHashes(hashes, limit, excludedKeys, (key, value) -> {
             headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
@@ -2152,8 +2489,16 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Get subset by byte[] hashes with excluded keys - uses direct KeyMap lookup
-     * without re-hashing.
+     * Retrieves specified fields using pre-calculated hashes with key exclusion.
+     * <p>
+     * Combines hash-based lookup, field projection, and key exclusion.
+     * </p>
+     *
+     * @param hashes       pre-calculated 128-bit hashes
+     * @param excludedKeys keys to skip during processing
+     * @param fields       the field names to include
+     * @param limit        maximum number of records to return
+     * @return map of key to field-value map (up to limit)
      */
     default Map<String, Map<String, Object>> getSubsetFromHashes(final Iterable<byte[]> hashes,
             final Set<String> excludedKeys, final String[] fields, final int limit) {
@@ -2164,14 +2509,24 @@ public interface ChronicleDao<V> {
         Logger.debug("Querying subset by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
         final var map = new ConcurrentHashMap<String, Map<String, Object>>(limit);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
-        processKeysByFileFromHashes(hashes, limit, excludedKeys,
+        processKeysByFileUsingFromHashes(hashes, limit, excludedKeys,
                 (key, value) -> map.put(key, CHRONICLE_UTILS.getSubsetFromObject(classData, fields, value)));
         return map;
     }
 
     /**
-     * Get subset CSV by byte[] hashes with excluded keys - uses direct KeyMap
-     * lookup without re-hashing.
+     * Retrieves specified fields as CSV format using pre-calculated hashes with key
+     * exclusion.
+     * <p>
+     * Combines hash-based lookup, field projection, CSV formatting, and key
+     * exclusion.
+     * </p>
+     *
+     * @param hashes       pre-calculated 128-bit hashes
+     * @param excludedKeys keys to skip during processing
+     * @param fields       the field names to include
+     * @param limit        maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows (up to limit)
      */
     default CsvObject getSubsetCsvFromHashes(final Iterable<byte[]> hashes, final Set<String> excludedKeys,
             final String[] fields, final int limit) {
@@ -2184,14 +2539,24 @@ public interface ChronicleDao<V> {
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
-        processKeysByFileFromHashes(hashes, limit, excludedKeys,
+        processKeysByFileUsingFromHashes(hashes, limit, excludedKeys,
                 (key, value) -> rowQueue.add(CHRONICLE_UTILS.getSubsetRowFromObject(classData, key, fields, value)));
 
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
-    // ========== END HASH-BASED OVERLOADS ==========
-
+    /**
+     * Retrieves values for multiple keys with exclusion and result limit.
+     * <p>
+     * Skips keys present in the exclusion set. Processing stops early once
+     * the limit is reached.
+     * </p>
+     *
+     * @param keys         the primary keys to retrieve
+     * @param excludedKeys keys to skip during processing
+     * @param limit        maximum number of records to return
+     * @return map of key to value (up to limit, excluding specified keys)
+     */
     default Map<String, V> get(final Iterable<String> keys, final Set<String> excludedKeys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return Collections.emptyMap();
@@ -2211,6 +2576,17 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Retrieves values as CSV format with exclusion and result limit.
+     * <p>
+     * Combines CSV formatting, key exclusion, and result limiting.
+     * </p>
+     *
+     * @param keys         the primary keys to retrieve
+     * @param excludedKeys keys to skip during processing
+     * @param limit        maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows (up to limit)
+     */
     default CsvObject getCsv(final Iterable<String> keys, final Set<String> excludedKeys, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
             return CsvObject.empty();
@@ -2238,6 +2614,18 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Retrieves specified fields with exclusion and result limit.
+     * <p>
+     * Combines field projection, key exclusion, and result limiting.
+     * </p>
+     *
+     * @param keys         the primary keys to retrieve
+     * @param excludedKeys keys to skip during processing
+     * @param fields       the field names to include
+     * @param limit        maximum number of records to return
+     * @return map of key to field-value map (up to limit)
+     */
     default Map<String, Map<String, Object>> getSubset(final Iterable<String> keys, final Set<String> excludedKeys,
             final String[] fields, final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
@@ -2261,6 +2649,19 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Retrieves specified fields as CSV format with exclusion and result limit.
+     * <p>
+     * Combines field projection, CSV formatting, key exclusion, and result
+     * limiting.
+     * </p>
+     *
+     * @param keys         the primary keys to retrieve
+     * @param excludedKeys keys to skip during processing
+     * @param fields       the field names to include
+     * @param limit        maximum number of records to return
+     * @return {@link CsvObject} containing headers and rows (up to limit)
+     */
     default CsvObject getSubsetCsv(final Iterable<String> keys, final Set<String> excludedKeys, final String[] fields,
             final int limit) {
         if (keys == null || !keys.iterator().hasNext() || limit <= 0) {
@@ -2286,14 +2687,35 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Remove a value using key
+     * Deletes a single entity by its primary key.
+     * <p>
+     * For single-file DAOs without indexes, directly removes from the data file.
+     * For multi-file or indexed DAOs, also updates the KeyMap and indexes.
+     * </p>
      *
-     * @param key the key to remove
-     * @return true if updated else false
+     * @param key the primary key to delete
+     * @return {@code true} if the key existed and was deleted, {@code false}
+     *         otherwise
      */
     default boolean delete(final String key) {
         if (key == null) {
             return false;
+        }
+
+        if (!hasKeyMap()) {
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                V deletedValue = null;
+                try (final var shared = openDb()) {
+                    deletedValue = shared.map.remove(key);
+                }
+
+                if (deletedValue != null) {
+                    Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
+                    return true;
+                }
+
+                return false;
+            });
         }
 
         // Pre-calculate hash ONCE before all operations
@@ -2301,7 +2723,7 @@ public interface ChronicleDao<V> {
         final var keyHashMap = Map.of(key, keyHash);
 
         // STEP 0: Slow lookup outside the lock using pre-calculated hash
-        final var file = getDbFileFromHash(keyHash);
+        final var file = getDbFile(keyHash);
         if (file == null)
             return false;
 
@@ -2326,29 +2748,45 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void removeFromIndex(final Map<String, V> deletedMap, final Map<String, byte[]> keyHashMap) {
-        CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap, averageValue().getClass(),
-                keyHashMap);
-        Logger.info("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
-    }
-
     /**
-     * Remove a value using a list of keys
-     * 
-     * @param keys the keys to remove
-     * @return true if updated else false
+     * Deletes multiple entities by their primary keys.
+     * <p>
+     * For single-file DAOs without indexes, directly removes from the data file.
+     * For multi-file or indexed DAOs, groups keys by file, performs deletions
+     * in parallel, then updates KeyMap and indexes.
+     * </p>
+     *
+     * @param keys the primary keys to delete
+     * @return {@code true} if at least one key was deleted, {@code false} otherwise
      */
     default boolean delete(final Iterable<String> keys) {
         if (keys == null || !keys.iterator().hasNext()) {
             return false;
         }
 
-        // Pre-calculate hashes ONCE before all operations
-        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
-
         final var deletedMap = new ConcurrentHashMap<String, V>(1000);
+        if (!hasKeyMap()) {
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                try (final var shared = openDb()) {
+                    CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
+                        final var deleted = shared.map.remove(key);
+                        if (deleted != null) {
+                            deletedMap.put(key, deleted);
+                        }
+                    });
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+
+                return !deletedMap.isEmpty();
+            });
+        }
+
+        // Pre-calculate hashes ONCE before all operations
+        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keys);
         // STEP 0: Group keys by file using pre-calculated hashes
-        final var grouped = getDbFilesFromHashes(keys, keyHashMap);
+        final var grouped = getDbFiles(keyHashMap.values());
         if (grouped.fileGroups().isEmpty()) {
             return false;
         }
@@ -2363,9 +2801,7 @@ public interface ChronicleDao<V> {
                             final var deleted = shared.map.remove(key);
                             if (deleted != null) {
                                 deletedMap.put(key, deleted);
-                                return true;
                             }
-                            return false;
                         });
                     } catch (final InterruptedException e) {
                         Thread.currentThread().interrupt();
@@ -2387,8 +2823,10 @@ public interface ChronicleDao<V> {
                 // Since we are doing many keys, parallelizing here is great.
                 final var tasks = new ArrayList<Runnable>();
                 tasks.add(() -> removeAllFromKeyMap(deletedKeyHashMap));
-                tasks.add(() -> removeFromIndex(deletedMap, deletedKeyHashMap));
+                tasks.add(() -> CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap,
+                        averageValue().getClass(), keyHashMap));
                 CHRONICLE_UTILS.processInParallel(tasks);
+                Logger.info("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
                 return true;
             });
         } finally {
@@ -2400,34 +2838,69 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Checks if the current data file is full and rotates to a new file if needed.
+     * <p>
+     * When rotation occurs:
+     * <ol>
+     * <li>Populates the KeyMap with all keys from the current file (first rotation
+     * only)</li>
+     * <li>Closes the current file</li>
+     * <li>Creates a new data file</li>
+     * <li>Updates the file state cache</li>
+     * </ol>
+     * </p>
+     *
+     * @param shared the current data file handle
+     * @return the same handle if not full, or a new handle to the rotated file
+     */
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared) {
         if (shared.map.size() >= entries()) {
-            // keymap is always being updated, this method just creates a new file
-            shared.close();
             final var dataFileState = getDataFileState();
             final String newFile = "data-" + (dataFileState.fileNames().size() + 1);
+            // Update key map using the provided ChronicleMap
+            try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath(), entries())) {
+                CHRONICLE_UTILS.safeForEachEntry(shared, entry -> {
+                    final var key = entry.key().get();
+                    sharedKeyMap.map.put(CHRONICLE_UTILS.to128BitHash(key),
+                            new KeyMapValue(key, dataFileState.currentFile()));
+                });
+            }
+            shared.close();
             dataFileState.fileNames().add(newFile);
             Logger.info("Rotated file [{}] at [{}].", dataFileState.currentFile(), dataPath());
-            final var updateFileState = dataFileState.withCurrentFile(newFile);
-            DATA_FILE_CACHE.put(dataPath(), updateFileState);
+            DATA_FILE_CACHE.put(dataPath(), dataFileState.withCurrentFile(newFile));
             return openDb(newFile); // open new db
         }
         return shared;
     }
 
+    /**
+     * Checks if the current data file is full and rotates to a new file if needed.
+     * <p>
+     * Optimized version for batch operations that maintains a pending KeyMap update
+     * buffer.
+     * When rotation occurs, flushes the pending updates to the KeyMap before
+     * rotating.
+     * </p>
+     *
+     * @param shared       the current data file handle
+     * @param keyMapUpdate buffer of key-to-file mappings pending KeyMap update
+     *                     (cleared after flush)
+     * @param keyHashMap   map of keys to their pre-calculated 128-bit hashes
+     * @return the same handle if not full, or a new handle to the rotated file
+     */
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared,
             final Map<String, String> keyMapUpdate, final Map<String, byte[]> keyHashMap) {
         if (shared.map.size() >= entries()) {
             final var dataFileState = getDataFileState();
-            final var currentSize = dataFileState.fileNames().size();
-            final String newFile = "data-" + (currentSize + 1);
+            final String newFile = "data-" + (dataFileState.fileNames().size() + 1);
             // add the new keys to map
             addAllToKeyMap(keyMapUpdate, keyHashMap);
             shared.close();
             dataFileState.fileNames().add(newFile);
             Logger.info("Rotated file [{}] at [{}].", dataFileState.currentFile(), dataPath());
-            final var updateFileState = dataFileState.withCurrentFile(newFile);
-            DATA_FILE_CACHE.put(dataPath(), updateFileState);
+            DATA_FILE_CACHE.put(dataPath(), dataFileState.withCurrentFile(newFile));
             keyMapUpdate.clear();
             return openDb(newFile); // open new db
         }
@@ -2435,11 +2908,24 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Add/Update a value
+     * Inserts or updates a single entity (upsert operation).
+     * <p>
+     * If the key exists, updates the value and returns {@link PutStatus#UPDATED}.
+     * If the key doesn't exist, inserts it and returns {@link PutStatus#INSERTED}.
+     * Handles file rotation automatically when the current file is full.
+     * </p>
+     * <p>
+     * For single-file DAOs without indexes, skips hash calculation and KeyMap
+     * operations.
+     * For multi-file or indexed DAOs, updates KeyMap and indexes accordingly.
+     * </p>
      *
-     * @param key   the key
-     * @param value the value
-     * @return true if updated else false
+     * @param key            the primary key
+     * @param value          the entity to store
+     * @param indexFileNames the index fields to update (use
+     *                       {@link #indexFileNames()})
+     * @return {@link PutStatus#INSERTED}, {@link PutStatus#UPDATED}, or
+     *         {@link PutStatus#FAILED}
      */
     default PutStatus put(final String key, final V value, final Set<String> indexFileNames) {
         if (key == null) {
@@ -2448,6 +2934,34 @@ public interface ChronicleDao<V> {
 
         // Pre-calculate hash ONCE before all operations
         final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+
+        if (!hasKeyMap()) {
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                var shared = openDb(); // no try with resource here for rotation
+                try {
+                    if (!shared.map.containsKey(key)) {
+                        shared = checkAndRotate(shared);
+                    }
+
+                    final var prevValue = shared.map.put(key, value);
+                    if (hasKeyMap()) {
+                        addToKeyMap(key, getDataFileState().currentFile(), keyHash);
+                    }
+                    // since initially hasKeyMap was false, it means there was no indexes to update
+                    // even if rotataion happened.
+                    if (prevValue != null) {
+                        Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                        return PutStatus.UPDATED;
+                    }
+
+                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                    return PutStatus.INSERTED;
+                } finally {
+                    shared.close();
+                }
+            });
+        }
+
         final var keyHashMap = Map.of(key, keyHash);
 
         // 1. Prepare Index (OUTSIDE LOCK)
@@ -2455,7 +2969,7 @@ public interface ChronicleDao<V> {
                 averageValue().getClass(), indexExclusions(), keyHashMap);
 
         // 2. PRE-LOCK: Look in MapDB using pre-calculated hash
-        final var initialFile = getDbFileFromHash(keyHash);
+        final var initialFile = getDbFile(keyHash);
 
         // 3. Lock short time
         return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
@@ -2463,7 +2977,7 @@ public interface ChronicleDao<V> {
             String capturedFile = null;
             // If key wasnt found and another thread beat current one in the insert
             if (initialFile == null) {
-                file = getDbFileFromHash(keyHash);
+                file = getDbFile(keyHash);
                 if (file == null) {
                     file = getDataFileState().currentFile();
                     capturedFile = file;
@@ -2503,22 +3017,54 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Refer to method above
+     * Inserts or updates a single entity using default indexes.
+     *
+     * @param key   the primary key
+     * @param value the entity to store
+     * @return {@link PutStatus#INSERTED}, {@link PutStatus#UPDATED}, or
+     *         {@link PutStatus#FAILED}
+     * @see #put(String, Object, Set)
      */
     default PutStatus put(final String key, final V value) {
         return put(key, value, indexFileNames());
     }
 
     /**
-     * Update a value without bothering about db creation, only use for updates
-     * 
-     * @param key   the key
-     * @param value the value
-     * @return true if updated else false
+     * Updates an existing entity without file rotation.
+     * <p>
+     * Unlike {@link #put}, this method requires the key to already exist and will
+     * fail if the key is not found. Does not perform file rotation checks.
+     * </p>
+     * <p>
+     * For single-file DAOs without indexes, skips hash calculation and KeyMap
+     * lookup.
+     * For multi-file or indexed DAOs, looks up the file location and updates
+     * indexes.
+     * </p>
+     *
+     * @param key            the primary key (must already exist)
+     * @param value          the new value
+     * @param indexFileNames the index fields to update
+     * @return {@link PutStatus#UPDATED} on success, {@link PutStatus#FAILED} if key
+     *         not found
      */
     default PutStatus update(final String key, final V value, final Set<String> indexFileNames) {
         if (key == null) {
             return PutStatus.FAILED;
+        }
+
+        if (!hasKeyMap()) {
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                try (final var shared = openDb()) {
+                    if (shared.map.containsKey(key)) {
+                        shared.map.put(key, value);
+                        Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                        return PutStatus.UPDATED;
+                    }
+                }
+
+                return PutStatus.FAILED;
+            });
         }
 
         // Pre-calculate hash ONCE before all operations
@@ -2530,7 +3076,7 @@ public interface ChronicleDao<V> {
                 averageValue().getClass(), indexExclusions(), keyHashMap);
 
         // 2. PRE-LOCK: Look in MapDB using pre-calculated hash
-        final var file = getDbFileFromHash(keyHash);
+        final var file = getDbFile(keyHash);
         if (file == null) {
             Logger.error("Key [{}] does not exist during update at [{}].", key, dataPath());
             return PutStatus.FAILED;
@@ -2554,22 +3100,37 @@ public interface ChronicleDao<V> {
             }
             return PutStatus.FAILED;
         });
-
     }
 
     /**
-     * Refer to method above
+     * Updates an existing entity using default indexes.
+     *
+     * @param key   the primary key (must already exist)
+     * @param value the new value
+     * @return {@link PutStatus#UPDATED} on success, {@link PutStatus#FAILED} if key
+     *         not found
+     * @see #update(String, Object, Set)
      */
     default PutStatus update(final String key, final V value) {
         return update(key, value, indexFileNames());
     }
 
     /**
-     * Add a value, will not return failed if it exists
+     * Inserts a new entity (fails if key already exists).
+     * <p>
+     * Unlike {@link #put}, this method requires the key to NOT exist and will
+     * fail if the key is found. Handles file rotation automatically when needed.
+     * </p>
+     * <p>
+     * For single-file DAOs without indexes, skips KeyMap operations.
+     * For multi-file or indexed DAOs, updates KeyMap and indexes.
+     * </p>
      *
-     * @param key   the key
-     * @param value the value
-     * @return true if updated else false
+     * @param key            the primary key (must NOT already exist)
+     * @param value          the entity to store
+     * @param indexFileNames the index fields to update
+     * @return {@link PutStatus#INSERTED} on success, {@link PutStatus#FAILED} if
+     *         key exists
      */
     default PutStatus insert(final String key, final V value, final Set<String> indexFileNames) {
         if (key == null) {
@@ -2578,6 +3139,26 @@ public interface ChronicleDao<V> {
 
         // Pre-calculate hash ONCE before all operations
         final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+        if (!hasKeyMap()) {
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                var shared = openDb();
+                try {
+                    if (!shared.map.containsKey(key)) {
+                        shared = checkAndRotate(shared);
+                        shared.map.put(key, value);
+                        if (hasKeyMap()) {
+                            addToKeyMap(key, getDataFileState().currentFile(), keyHash);
+                        }
+                        Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                        return PutStatus.INSERTED;
+                    }
+                    return PutStatus.FAILED;
+                } finally {
+                    shared.close();
+                }
+            });
+        }
+
         final var keyHashMap = Map.of(key, keyHash);
 
         // 1. Prepare Index (OUTSIDE LOCK)
@@ -2585,7 +3166,7 @@ public interface ChronicleDao<V> {
                 averageValue().getClass(), indexExclusions(), keyHashMap);
 
         return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            final var file = getDbFileFromHash(keyHash);
+            final var file = getDbFile(keyHash);
             if (file != null) {
                 Logger.error("Key [{}] already exists during insert at [{}].", key, dataPath());
                 return PutStatus.FAILED;
@@ -2609,16 +3190,34 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Refer to method above
+     * Inserts a new entity using default indexes.
+     *
+     * @param key   the primary key (must NOT already exist)
+     * @param value the entity to store
+     * @return {@link PutStatus#INSERTED} on success, {@link PutStatus#FAILED} if
+     *         key exists
+     * @see #insert(String, Object, Set)
      */
     default PutStatus insert(final String key, final V value) {
         return insert(key, value, indexFileNames());
     }
 
     /**
-     * Add/Update multiple values into the db, then update all indexes related
-     * 
-     * @param map the map to add
+     * Inserts or updates multiple entities in batch (upsert operation).
+     * <p>
+     * Separates existing keys (for update) from new keys (for insert) to optimize
+     * processing. Handles file rotation automatically for inserts.
+     * </p>
+     * <p>
+     * For single-file DAOs without indexes, skips hash calculation and index
+     * operations.
+     * For multi-file or indexed DAOs, updates KeyMap and indexes in parallel.
+     * </p>
+     *
+     * @param map the key-value pairs to store
+     * @return {@link PutStatus#INSERTED} if all were new, {@link PutStatus#UPDATED}
+     *         if any existed,
+     *         {@link PutStatus#FAILED} if map was empty or null
      */
     default PutStatus put(final Map<String, V> map) {
         if (map == null || map.isEmpty()) {
@@ -2630,14 +3229,93 @@ public interface ChronicleDao<V> {
         final Set<String> keysToInsert = new HashSet<>(map.keySet());
         final var keyMapUpdate = new ConcurrentHashMap<String, String>(putSize);
 
+        if (!hasKeyMap()) {
+            final var exists = existsList(keysToInsert);
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                var status = PutStatus.INSERTED;
+                var shared = openDb();
+                try {
+                    // Separate updates from inserts
+                    final var sharedForUpdate = shared; // capture for this lambda
+                    try {
+                        CHRONICLE_UTILS.parallelIterable(exists, Integer.MAX_VALUE, key -> {
+                            if (sharedForUpdate.map.containsKey(key)) {
+                                prevValues.put(key, sharedForUpdate.map.put(key, map.get(key)));
+                            }
+                        });
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+
+                    if (!prevValues.isEmpty()) {
+                        status = PutStatus.UPDATED;
+                        keysToInsert.removeAll(prevValues.keySet());
+                    }
+
+                    // Insert new keys with rotation handling
+                    if (!keysToInsert.isEmpty()) {
+                        final var batches = new ArrayList<>(keysToInsert);
+                        int startIndex = 0;
+
+                        while (startIndex < batches.size()) {
+                            final long remainingEntries = entries() - shared.map.size();
+                            final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
+
+                            // Process this batch (sublist)
+                            final var batch = batches.subList(startIndex, endIndex);
+                            final String currentFileSnap = getDataFileState().currentFile();
+                            final var currentShared = shared; // capture for this lambda
+                            try {
+                                CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
+                                    final V value = map.get(key);
+                                    currentShared.map.put(key, value);
+                                    keyMapUpdate.put(key, currentFileSnap);
+                                });
+                            } catch (final InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException(e);
+                            }
+
+                            startIndex = endIndex;
+
+                            // More to insert? Rotate and continue
+                            if (startIndex < batches.size()) {
+                                shared = checkAndRotate(shared);
+                                keyMapUpdate.clear();
+                            }
+                        }
+                    }
+
+                    // Only update KeyMap if rotation happened (hasKeyMap becomes true)
+                    // No indexes since it was !hasKeyMap()
+                    if (hasKeyMap() && !keyMapUpdate.isEmpty()) {
+                        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keyMapUpdate.keySet());
+                        addAllToKeyMap(keyMapUpdate, keyHashMap);
+                    }
+
+                    if (!prevValues.isEmpty()) {
+                        Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                    }
+                    if (!keysToInsert.isEmpty()) {
+                        Logger.info("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
+                    }
+
+                    return status;
+                } finally {
+                    shared.close();
+                }
+            });
+        }
+
         // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
-        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashes(keysToInsert);
+        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keysToInsert);
 
         // 1. Prepare index additions (OUTSIDE LOCK)
         final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), map,
                 averageValue().getClass(), indexExclusions(), keyHashMap);
 
-        try (final var grouped = getDbFilesFromHashes(map.keySet(), keyHashMap)) {
+        try (final var grouped = getDbFiles(keyHashMap.values())) {
             return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
                 var status = PutStatus.INSERTED;
 
@@ -2648,9 +3326,7 @@ public interface ChronicleDao<V> {
                         CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
                             if (shared.map.containsKey(key)) {
                                 prevValues.put(key, shared.map.put(key, map.get(key)));
-                                return true;
                             }
-                            return false;
                         });
                     } catch (final InterruptedException e) {
                         Thread.currentThread().interrupt();
@@ -2742,11 +3418,22 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Update multiple values into the db, then update all indexes related
-     * This is useful as it does not increase db size. Never run with non existent
-     * keys, it wont insert
+     * Updates multiple existing entities in batch.
+     * <p>
+     * Only updates keys that already exist. Unlike {@link #put(Map)}, this method
+     * never inserts new records and does not affect database size.
+     * </p>
+     * <p>
+     * For single-file DAOs without indexes, skips hash calculation and index
+     * operations.
+     * For multi-file or indexed DAOs, groups keys by file and updates indexes in
+     * parallel.
+     * </p>
      *
-     * @param map the map to add
+     * @param map the key-value pairs to update (all keys must exist)
+     * @return {@link PutStatus#UPDATED} if all succeeded, {@link PutStatus#PARTIAL}
+     *         if some were missing,
+     *         {@link PutStatus#FAILED} if all were missing or map was empty
      */
     default PutStatus update(final Map<String, V> map) {
         if (map == null || map.isEmpty()) {
@@ -2755,10 +3442,43 @@ public interface ChronicleDao<V> {
 
         final var mapSize = map.size();
         final var prevValues = new ConcurrentHashMap<String, V>(mapSize);
+        final var keys = map.keySet();
+
+        if (!hasKeyMap()) {
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                try (final var shared = openDb()) {
+                    CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
+                        if (shared.map.containsKey(key)) {
+                            prevValues.put(key, shared.map.put(key, map.get(key)));
+                        }
+                    });
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+
+                final var prevValueSize = prevValues.size();
+                if (prevValueSize == 0) {
+                    Logger.error("All [{}] values do not exist during update at [{}]", mapSize, dataPath());
+                    return PutStatus.FAILED;
+                }
+
+                var status = PutStatus.UPDATED;
+                if (prevValueSize != mapSize) {
+                    final var missingKeys = new HashSet<>(keys);
+                    missingKeys.removeAll(prevValues.keySet());
+                    Logger.error("{} keys missing during update at [{}]. Missing: {}.",
+                            missingKeys.size(), dataPath(), missingKeys);
+                    status = PutStatus.PARTIAL;
+                }
+
+                Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                return status;
+            });
+        }
 
         // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
-        final var keys = map.keySet();
-        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keys);
 
         // 1. PHASE 1: Preparation (OUTSIDE LOCK)
         // Identify exactly which files hold these keys before blocking other writers.
@@ -2766,7 +3486,7 @@ public interface ChronicleDao<V> {
         final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), map,
                 averageValue().getClass(), indexExclusions(), keyHashMap);
 
-        try (final var grouped = getDbFilesFromHashes(keys, keyHashMap)) {
+        try (final var grouped = getDbFiles(keyHashMap.values())) {
             // 2. PHASE 2: Data Update (INSIDE LOCK)
             return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
                 CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
@@ -2776,9 +3496,7 @@ public interface ChronicleDao<V> {
                             // STRICT UPDATE: Only put if it actually exists in this file
                             if (shared.map.containsKey(key)) {
                                 prevValues.put(key, shared.map.put(key, map.get(key)));
-                                return true;
                             }
-                            return false;
                         });
                     } catch (final InterruptedException e) {
                         Thread.currentThread().interrupt();
@@ -2816,20 +3534,100 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Add multiple values into the db, this will skip existing values
+     * Inserts multiple new entities in batch (skips existing keys).
+     * <p>
+     * Only inserts keys that don't already exist. Unlike {@link #put(Map)}, this
+     * method
+     * never updates existing records. Handles file rotation automatically.
+     * </p>
+     * <p>
+     * Race condition handling: Checks for existing keys outside the lock, then
+     * re-checks
+     * inside the lock to handle concurrent insertions.
+     * </p>
+     * <p>
+     * For single-file DAOs without indexes, skips hash calculation and index
+     * operations.
+     * For multi-file or indexed DAOs, updates KeyMap and indexes in parallel.
+     * </p>
      *
-     * @param map the map to add
+     * @param map the key-value pairs to insert (only new keys will be inserted)
+     * @return {@link PutStatus#INSERTED} on success, {@link PutStatus#FAILED} if
+     *         all keys exist
      */
     default PutStatus insert(final Map<String, V> map) {
         if (map == null || map.isEmpty()) {
             return PutStatus.FAILED;
         }
 
-        // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
-        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashes(map.keySet());
-
-        final var dataToInsert = new HashMap<>(map);
         final var keyMapUpdate = new ConcurrentHashMap<String, String>();
+
+        if (!hasKeyMap()) {
+            final var notExists = notExistsList(map.keySet());
+            if (notExists.isEmpty()) {
+                Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
+                return PutStatus.FAILED;
+            }
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                final var raceConditionKeys = existsList(notExists);
+
+                if (!raceConditionKeys.isEmpty()) {
+                    // Race detected! Another thread inserted these keys while we were preparing.
+                    notExists.removeAll(raceConditionKeys);
+                }
+
+                if (notExists.isEmpty()) {
+                    Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
+                    return PutStatus.FAILED;
+                }
+
+                var shared = openDb();
+                try {
+                    // Insert in batches
+                    int startIndex = 0;
+                    final var insertSize = notExists.size();
+
+                    while (startIndex < insertSize) {
+                        final long remainingEntries = entries() - shared.map.size();
+                        final int endIndex = (int) Math.min(startIndex + remainingEntries, insertSize);
+                        final var batch = notExists.subList(startIndex, endIndex);
+                        final var currentFileSnap = getDataFileState().currentFile();
+                        final var currentShared = shared;
+
+                        try {
+                            CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
+                                currentShared.map.put(key, map.get(key));
+                                keyMapUpdate.put(key, currentFileSnap);
+                            });
+                        } catch (final InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(e);
+                        }
+
+                        startIndex = endIndex;
+                        if (startIndex < insertSize) {
+                            shared = checkAndRotate(shared); // Simple rotation - creates KeyMap
+                            keyMapUpdate.clear(); // Keys now in KeyMap from rotation
+                        }
+                    }
+
+                    // Only update KeyMap if rotation happened
+                    if (hasKeyMap() && !keyMapUpdate.isEmpty()) {
+                        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keyMapUpdate.keySet());
+                        addAllToKeyMap(keyMapUpdate, keyHashMap);
+                    }
+
+                    Logger.info("Inserted [{}] records at [{}].", insertSize, dataPath());
+                    return PutStatus.INSERTED;
+                } finally {
+                    shared.close();
+                }
+            });
+        }
+
+        // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
+        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(map.keySet());
+        final var dataToInsert = new HashMap<>(map);
 
         // 1. OUTSIDE LOCK: Optimistic Preparation
         // Filter out existing keys to avoid preparing indexes for them (using
@@ -2859,6 +3657,7 @@ public interface ChronicleDao<V> {
                 // Race detected! Another thread inserted these keys while we were preparing.
                 dataToInsert.keySet().removeAll(raceConditionKeys);
                 if (dataToInsert.isEmpty()) {
+                    Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
                     return PutStatus.FAILED;
                 }
 
@@ -2912,6 +3711,24 @@ public interface ChronicleDao<V> {
         });
     }
 
+    /**
+     * Searches for records matching all filters within a set of keys.
+     * <p>
+     * Applies filters sequentially to each record. All filters must match for a
+     * record
+     * to be included. Processing stops once the limit is reached.
+     * </p>
+     * <p>
+     * For single-file DAOs, iterates directly through the data file.
+     * For multi-file DAOs, groups keys by file for efficient lookup.
+     * </p>
+     *
+     * @param keys    the candidate keys to search within
+     * @param filters the search criteria (all must match)
+     * @param limit   maximum number of matching records to return
+     * @return map of matching key-value pairs (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default Map<String, V> search(final Iterable<String> keys, final List<Search> filters, final int limit)
             throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext() || filters.isEmpty()) {
@@ -2947,7 +3764,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -2979,6 +3797,19 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Searches for records matching all filters and returns as CSV format.
+     * <p>
+     * Similar to {@link #search(Iterable, List, int)} but returns results as CSV.
+     * Uses memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys    the candidate keys to search within
+     * @param filters the search criteria (all must match)
+     * @param limit   maximum number of matching records to return
+     * @return {@link CsvObject} containing headers and matching rows (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default CsvObject searchCsv(final Iterable<String> keys, final List<Search> filters, final int limit)
             throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext() || filters.isEmpty()) {
@@ -3017,7 +3848,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3050,6 +3882,20 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Searches for records matching all filters and returns specified fields only.
+     * <p>
+     * Combines search filtering with field projection. Uses memory-efficient
+     * {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys    the candidate keys to search within
+     * @param filters the search criteria (all must match)
+     * @param fields  the field names to include in the result
+     * @param limit   maximum number of matching records to return
+     * @return map of key to field-value map for matching records (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default Map<String, Map<String, Object>> searchSubset(final Iterable<String> keys,
             final List<Search> filters, final String[] fields, final int limit) throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -3086,7 +3932,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3118,6 +3965,22 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Searches for records matching all filters and returns specified fields as CSV
+     * format.
+     * <p>
+     * Combines search filtering, field projection, and CSV formatting. Uses
+     * memory-efficient
+     * {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys    the candidate keys to search within
+     * @param filters the search criteria (all must match)
+     * @param fields  the field names to include
+     * @param limit   maximum number of matching records to return
+     * @return {@link CsvObject} containing headers and matching rows (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default CsvObject searchSubsetCsv(final Iterable<String> keys, final List<Search> filters, final String[] fields,
             final int limit) throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -3156,7 +4019,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3188,6 +4052,20 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Searches for keys matching all filters and adds them to the results
+     * collection.
+     * <p>
+     * Internal helper method that populates a provided collection with matching
+     * keys.
+     * Uses memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys    the candidate keys to search within
+     * @param filters the search criteria (all must match)
+     * @param results the collection to add matching keys to
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     private void searchKeys(final Iterable<String> keys, final List<Search> filters, final Collection<String> results)
             throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -3221,7 +4099,8 @@ public interface ChronicleDao<V> {
             return;
         }
 
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
                 final var keysForFile = entry.getValue(); // Iterable<String>
@@ -3248,6 +4127,21 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Searches for records matching all filters with key exclusion.
+     * <p>
+     * Combines search filtering with key exclusion. Excluded keys are skipped
+     * before applying filters.
+     * </p>
+     *
+     * @param keys         the candidate keys to search within
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of matching records to return
+     * @return map of matching key-value pairs (up to limit, excluding specified
+     *         keys)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default Map<String, V> search(final Iterable<String> keys, final List<Search> filters,
             final Set<String> excludedKeys, final int limit) throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -3287,7 +4181,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3323,6 +4218,20 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Searches for records matching all filters as CSV format with key exclusion.
+     * <p>
+     * Combines search filtering, CSV formatting, and key exclusion.
+     * Uses memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys         the candidate keys to search within
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of matching records to return
+     * @return {@link CsvObject} containing headers and matching rows (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default CsvObject searchCsv(final Iterable<String> keys, final List<Search> filters,
             final Set<String> excludedKeys, final int limit) throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -3365,7 +4274,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3402,6 +4312,22 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Searches for records matching all filters with field projection and key
+     * exclusion.
+     * <p>
+     * Combines search filtering, field projection, and key exclusion.
+     * Uses memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys         the candidate keys to search within
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of matching records to return
+     * @param fields       the field names to include in the result
+     * @return map of key to field-value map for matching records (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default Map<String, Map<String, Object>> searchSubset(final Iterable<String> keys,
             final List<Search> filters, final Set<String> excludedKeys, final int limit, final String[] fields)
             throws InterruptedException {
@@ -3443,7 +4369,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3479,6 +4406,23 @@ public interface ChronicleDao<V> {
         return map;
     }
 
+    /**
+     * Searches for records matching all filters as CSV format with field projection
+     * and key exclusion.
+     * <p>
+     * Combines search filtering, field projection, CSV formatting, and key
+     * exclusion.
+     * Uses memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys         the candidate keys to search within
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param fields       the field names to include
+     * @param limit        maximum number of matching records to return
+     * @return {@link CsvObject} containing headers and matching rows (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default CsvObject searchSubsetCsv(final Iterable<String> keys, final List<Search> filters,
             final Set<String> excludedKeys, final String[] fields, final int limit) throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -3520,7 +4464,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3556,6 +4501,19 @@ public interface ChronicleDao<V> {
         return new CsvObject(headers, new ArrayList<>(rowQueue));
     }
 
+    /**
+     * Counts records matching all filters within a set of keys.
+     * <p>
+     * More efficient than {@link #search(Iterable, List, int)} when only the count
+     * is needed.
+     * Uses memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param keys    the candidate keys to search within
+     * @param filters the search criteria (all must match)
+     * @return the count of matching records
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default long searchCount(final Iterable<String> keys, final List<Search> filters)
             throws InterruptedException {
         if (keys == null || !keys.iterator().hasNext()) {
@@ -3594,7 +4552,8 @@ public interface ChronicleDao<V> {
         }
 
         final AtomicInteger counter = new AtomicInteger(0);
-        try (final var grouped = getDbFiles(keys)) {
+        final var hashes = CHRONICLE_UTILS.preCalculateKeyHashes(keys);
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
                 final var keysForFile = entry.getValue(); // Iterable<String>
@@ -3624,11 +4583,19 @@ public interface ChronicleDao<V> {
         return count.sum();
     }
 
-    // ========== HASH-BASED SEARCH METHODS (no re-hashing) ==========
-
     /**
-     * Search by byte[] hashes with filters - uses direct KeyMap lookup without
-     * re-hashing.
+     * Searches using pre-calculated 128-bit hashes with filters.
+     * <p>
+     * Optimized for cases where hashes were already computed (e.g., from an index
+     * lookup).
+     * Avoids the overhead of re-calculating hashes from keys.
+     * </p>
+     *
+     * @param hashes  pre-calculated 128-bit hashes
+     * @param filters the search criteria (all must match)
+     * @param limit   maximum number of matching records to return
+     * @return map of matching key-value pairs (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default Map<String, V> searchFromHashes(final Iterable<byte[]> hashes, final List<Search> filters, final int limit)
             throws InterruptedException {
@@ -3644,7 +4611,7 @@ public interface ChronicleDao<V> {
                 .toList();
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFilesFromHashes(hashes)) {
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3676,8 +4643,18 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search subset by byte[] hashes with filters - uses direct KeyMap lookup
-     * without re-hashing.
+     * Searches using pre-calculated hashes with filters and field projection.
+     * <p>
+     * Combines hash-based lookup, search filtering, and field projection.
+     * Optimized for cases where hashes were already computed.
+     * </p>
+     *
+     * @param hashes  pre-calculated 128-bit hashes
+     * @param filters the search criteria (all must match)
+     * @param fields  the field names to include in the result
+     * @param limit   maximum number of matching records to return
+     * @return map of key to field-value map for matching records (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default Map<String, Map<String, Object>> searchSubsetFromHashes(final Iterable<byte[]> hashes,
             final List<Search> filters, final String[] fields, final int limit)
@@ -3695,7 +4672,7 @@ public interface ChronicleDao<V> {
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFilesFromHashes(hashes)) {
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3727,8 +4704,17 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search CSV by byte[] hashes with filters - uses direct KeyMap lookup without
-     * re-hashing.
+     * Searches using pre-calculated hashes with filters and returns as CSV format.
+     * <p>
+     * Combines hash-based lookup, search filtering, and CSV formatting.
+     * Optimized for cases where hashes were already computed.
+     * </p>
+     *
+     * @param hashes  pre-calculated 128-bit hashes
+     * @param filters the search criteria (all must match)
+     * @param limit   maximum number of matching records to return
+     * @return {@link CsvObject} containing headers and matching rows (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default CsvObject searchCsvFromHashes(final Iterable<byte[]> hashes, final List<Search> filters, final int limit)
             throws InterruptedException {
@@ -3746,7 +4732,7 @@ public interface ChronicleDao<V> {
         final AtomicReference<String[]> headers = new AtomicReference<>(null);
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFilesFromHashes(hashes)) {
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3779,8 +4765,19 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search subset CSV by byte[] hashes with filters - uses direct KeyMap lookup
-     * without re-hashing.
+     * Searches using pre-calculated hashes with filters, field projection, and CSV
+     * format.
+     * <p>
+     * Combines hash-based lookup, search filtering, field projection, and CSV
+     * formatting.
+     * </p>
+     *
+     * @param hashes  pre-calculated 128-bit hashes
+     * @param filters the search criteria (all must match)
+     * @param fields  the field names to include
+     * @param limit   maximum number of matching records to return
+     * @return {@link CsvObject} containing headers and matching rows (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default CsvObject searchSubsetCsvFromHashes(final Iterable<byte[]> hashes, final List<Search> filters,
             final String[] fields, final int limit) throws InterruptedException {
@@ -3798,7 +4795,7 @@ public interface ChronicleDao<V> {
         final var csvHeaders = CHRONICLE_UTILS.getCsvHeaders(fields);
 
         final AtomicInteger count = new AtomicInteger();
-        try (final var grouped = getDbFilesFromHashes(hashes)) {
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -3830,7 +4827,16 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search keys by byte[] hashes with filters - returns String keys.
+     * Searches for keys matching filters using pre-calculated hashes.
+     * <p>
+     * Returns only keys (not values) for memory efficiency.
+     * Uses memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param hashes  pre-calculated 128-bit hashes
+     * @param filters the search criteria (all must match)
+     * @return set of matching keys
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default Set<String> searchKeysFromHashes(final Iterable<byte[]> hashes, final List<Search> filters)
             throws InterruptedException {
@@ -3845,7 +4851,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes)) {
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
@@ -3874,7 +4880,17 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search keys list by byte[] hashes with filters - returns String keys.
+     * Searches for keys matching filters using pre-calculated hashes, returning as
+     * list.
+     * <p>
+     * Similar to {@link #searchKeysFromHashes(Iterable, List)} but returns a
+     * {@link List}.
+     * </p>
+     *
+     * @param hashes  pre-calculated 128-bit hashes
+     * @param filters the search criteria (all must match)
+     * @return list of matching keys (order is not guaranteed)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default List<String> searchKeysListFromHashes(final Iterable<byte[]> hashes, final List<Search> filters)
             throws InterruptedException {
@@ -3889,7 +4905,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes)) {
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
@@ -3918,7 +4934,16 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search count by byte[] hashes with filters.
+     * Counts records matching filters using pre-calculated hashes.
+     * <p>
+     * More efficient than searching when only the count is needed.
+     * Uses memory-efficient {@code getUsing()} pattern.
+     * </p>
+     *
+     * @param hashes  pre-calculated 128-bit hashes
+     * @param filters the search criteria (all must match)
+     * @return the count of matching records
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default long searchCountFromHashes(final Iterable<byte[]> hashes, final List<Search> filters)
             throws InterruptedException {
@@ -3933,7 +4958,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes)) {
+        try (final var grouped = getDbFiles(hashes)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 final var file = entry.getKey();
                 try (final var shared = openDb(file)) {
@@ -3961,10 +4986,20 @@ public interface ChronicleDao<V> {
         return count.sum();
     }
 
-    // ========== HASH-BASED SEARCH METHODS WITH EXCLUDED KEYS ==========
-
     /**
-     * Search by byte[] hashes with filters and excluded keys.
+     * Searches using pre-calculated hashes with filters and key exclusion.
+     * <p>
+     * Combines hash-based lookup, search filtering, and key exclusion.
+     * Excluded keys are filtered out during file grouping for efficiency.
+     * </p>
+     *
+     * @param hashes       pre-calculated 128-bit hashes
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of matching records to return
+     * @return map of matching key-value pairs (up to limit, excluding specified
+     *         keys)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default Map<String, V> searchFromHashes(final Iterable<byte[]> hashes, final List<Search> filters,
             final Set<String> excludedKeys, final int limit) throws InterruptedException {
@@ -3980,7 +5015,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
+        try (final var grouped = getDbFiles(hashes, Integer.MAX_VALUE, excludedKeys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (counter.get() >= limit)
                     break;
@@ -4012,7 +5047,19 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search CSV by byte[] hashes with filters and excluded keys.
+     * Searches using pre-calculated hashes with filters and key exclusion,
+     * returning as CSV.
+     * <p>
+     * Combines hash-based lookup, search filtering, key exclusion, and CSV
+     * formatting.
+     * </p>
+     *
+     * @param hashes       pre-calculated 128-bit hashes
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of matching records to return
+     * @return {@link CsvObject} containing headers and matching rows (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default CsvObject searchCsvFromHashes(final Iterable<byte[]> hashes, final List<Search> filters,
             final Set<String> excludedKeys, final int limit) throws InterruptedException {
@@ -4031,7 +5078,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
+        try (final var grouped = getDbFiles(hashes, Integer.MAX_VALUE, excludedKeys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -4064,7 +5111,20 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search subset by byte[] hashes with filters and excluded keys.
+     * Searches using pre-calculated hashes with filters, field projection, and key
+     * exclusion.
+     * <p>
+     * Combines hash-based lookup, search filtering, field projection, and key
+     * exclusion.
+     * </p>
+     *
+     * @param hashes       pre-calculated 128-bit hashes
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param fields       the field names to include in the result
+     * @param limit        maximum number of matching records to return
+     * @return map of key to field-value map for matching records (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default Map<String, Map<String, Object>> searchSubsetFromHashes(final Iterable<byte[]> hashes,
             final List<Search> filters, final Set<String> excludedKeys, final String[] fields, final int limit)
@@ -4083,7 +5143,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
+        try (final var grouped = getDbFiles(hashes, Integer.MAX_VALUE, excludedKeys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -4115,7 +5175,21 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Search subset CSV by byte[] hashes with filters and excluded keys.
+     * Searches using pre-calculated hashes with filters, field projection, key
+     * exclusion, and CSV format.
+     * <p>
+     * Combines all search optimizations: hash-based lookup, filtering, field
+     * projection,
+     * key exclusion, and CSV formatting.
+     * </p>
+     *
+     * @param hashes       pre-calculated 128-bit hashes
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param fields       the field names to include
+     * @param limit        maximum number of matching records to return
+     * @return {@link CsvObject} containing headers and matching rows (up to limit)
+     * @throws InterruptedException if the parallel processing is interrupted
      */
     default CsvObject searchSubsetCsvFromHashes(final Iterable<byte[]> hashes, final List<Search> filters,
             final Set<String> excludedKeys, final String[] fields, final int limit) throws InterruptedException {
@@ -4134,7 +5208,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        try (final var grouped = getDbFilesFromHashes(hashes, Integer.MAX_VALUE, excludedKeys)) {
+        try (final var grouped = getDbFiles(hashes, Integer.MAX_VALUE, excludedKeys)) {
             for (final var entry : grouped.fileGroups().entrySet()) {
                 if (count.get() >= limit)
                     break;
@@ -4165,9 +5239,22 @@ public interface ChronicleDao<V> {
         return new CsvObject(csvHeaders, new ArrayList<>(rowQueue));
     }
 
-    // ========== END HASH-BASED SEARCH METHODS ==========
-
-    private void search(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
+    /**
+     * Searches within a single data file and adds matching records to the result
+     * map.
+     * <p>
+     * Internal helper for full table scan operations. Uses
+     * {@code safeForEachEntryWhile}
+     * for safe iteration with early termination.
+     * </p>
+     *
+     * @param shared  the open data file handle
+     * @param filters the search criteria (all must match)
+     * @param limit   maximum number of records to find
+     * @param result  the map to add matching key-value pairs to
+     * @param counter shared counter for limit enforcement across parallel calls
+     */
+    private void search(final SharedChronicleMap<String, V> shared, final List<Search> filters, final int limit,
             final Map<String, V> result, final AtomicInteger counter) {
         Logger.debug("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
@@ -4175,7 +5262,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(null);
 
@@ -4191,7 +5278,20 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
+    /**
+     * Searches within a single data file and adds matching records as CSV rows.
+     * <p>
+     * Internal helper for full table scan CSV operations.
+     * </p>
+     *
+     * @param shared   the open data file handle
+     * @param filters  the search criteria (all must match)
+     * @param limit    maximum number of records to find
+     * @param rowQueue the queue to add CSV rows to
+     * @param counter  shared counter for limit enforcement
+     * @param headers  atomic reference for CSV headers (set from first match)
+     */
+    private void searchCsv(final SharedChronicleMap<String, V> shared, final List<Search> filters, final int limit,
             final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
             final AtomicReference<String[]> headers) {
         Logger.debug("Searching DB at [{}] for {} filters.", dataPath(), filters.size());
@@ -4201,7 +5301,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
             for (final var search : preparedFilters) {
@@ -4216,7 +5316,20 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
+    /**
+     * Searches within a single data file with field projection.
+     * <p>
+     * Internal helper for full table scan with field projection.
+     * </p>
+     *
+     * @param shared  the open data file handle
+     * @param filters the search criteria (all must match)
+     * @param limit   maximum number of records to find
+     * @param result  the map to add matching field-value maps to
+     * @param counter shared counter for limit enforcement
+     * @param fields  the field names to include in the result
+     */
+    private void searchSubset(final SharedChronicleMap<String, V> shared, final List<Search> filters, final int limit,
             final Map<String, Map<String, Object>> result, final AtomicInteger counter,
             final String[] fields) {
         Logger.debug("Subset searching DB at [{}] for {} filters.", dataPath(), filters.size());
@@ -4226,7 +5339,7 @@ public interface ChronicleDao<V> {
                 .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
             for (final var search : preparedFilters) {
@@ -4240,7 +5353,21 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters, final int limit,
+    /**
+     * Searches within a single data file with field projection and CSV output.
+     * <p>
+     * Internal helper for full table scan with field projection and CSV formatting.
+     * </p>
+     *
+     * @param shared   the open data file handle
+     * @param filters  the search criteria (all must match)
+     * @param limit    maximum number of records to find
+     * @param rowQueue the queue to add CSV rows to
+     * @param counter  shared counter for limit enforcement
+     * @param fields   the field names to include
+     */
+    private void searchSubsetCsv(final SharedChronicleMap<String, V> shared, final List<Search> filters,
+            final int limit,
             final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter, final String[] fields) {
         Logger.debug("Subset CSV searching DB at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
@@ -4249,7 +5376,7 @@ public interface ChronicleDao<V> {
                 .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
 
@@ -4264,7 +5391,18 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
+    /**
+     * Searches within a single data file and collects matching keys only.
+     * <p>
+     * Internal helper for key-only full table scan. More memory-efficient
+     * when values are not needed.
+     * </p>
+     *
+     * @param shared  the open data file handle
+     * @param filters the search criteria (all must match)
+     * @param results the collection to add matching keys to
+     */
+    private void searchKeys(final SharedChronicleMap<String, V> shared, final List<Search> filters,
             final Collection<String> results) {
         Logger.debug("Searching DB keys at [{}] for {} filters.", dataPath(), filters.size());
         final var averageValueClass = averageValue().getClass();
@@ -4272,21 +5410,33 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntry(shared, entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
             for (final var search : preparedFilters) {
                 if (!CHRONICLE_UTILS.search(search, key, value)) {
-                    return true;
+                    return; // Skip to next entry (like continue)
                 }
             }
-
             results.add(key);
-            return true;
         });
     }
 
-    private void search(final ChronicleMap<String, V> db, final List<Search> filters, final Set<String> excludedKeys,
+    /**
+     * Searches within a single data file with key exclusion.
+     * <p>
+     * Internal helper for full table scan with key exclusion.
+     * </p>
+     *
+     * @param shared       the open data file handle
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of records to find
+     * @param result       the map to add matching key-value pairs to
+     * @param counter      shared counter for limit enforcement
+     */
+    private void search(final SharedChronicleMap<String, V> shared, final List<Search> filters,
+            final Set<String> excludedKeys,
             final int limit, final Map<String, V> result, final AtomicInteger counter) {
         Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
@@ -4295,7 +5445,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
             final String key = entry.key().get();
             if (excludedKeys.contains(key)) {
                 return true;
@@ -4313,7 +5463,22 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchCsv(final ChronicleMap<String, V> db, final List<Search> filters, final Set<String> excludedKeys,
+    /**
+     * Searches within a single data file with key exclusion and CSV output.
+     * <p>
+     * Internal helper for full table scan with key exclusion and CSV formatting.
+     * </p>
+     *
+     * @param shared       the open data file handle
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of records to find
+     * @param rowQueue     the queue to add CSV rows to
+     * @param counter      shared counter for limit enforcement
+     * @param headers      atomic reference for CSV headers
+     */
+    private void searchCsv(final SharedChronicleMap<String, V> shared, final List<Search> filters,
+            final Set<String> excludedKeys,
             final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
             final AtomicReference<String[]> headers) {
         Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
@@ -4324,7 +5489,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
             final String key = entry.key().get();
             if (excludedKeys.contains(key)) {
                 return true;
@@ -4343,7 +5508,21 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchSubset(final ChronicleMap<String, V> db, final List<Search> filters,
+    /**
+     * Searches within a single data file with key exclusion and field projection.
+     * <p>
+     * Internal helper for full table scan with key exclusion and field projection.
+     * </p>
+     *
+     * @param shared       the open data file handle
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of records to find
+     * @param result       the map to add matching field-value maps to
+     * @param counter      shared counter for limit enforcement
+     * @param fields       the field names to include
+     */
+    private void searchSubset(final SharedChronicleMap<String, V> shared, final List<Search> filters,
             final Set<String> excludedKeys, final int limit, final Map<String, Map<String, Object>> result,
             final AtomicInteger counter, final String[] fields) {
         Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
@@ -4354,7 +5533,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
             final String key = entry.key().get();
             if (excludedKeys.contains(key)) {
                 return true;
@@ -4372,7 +5551,23 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchSubsetCsv(final ChronicleMap<String, V> db, final List<Search> filters,
+    /**
+     * Searches within a single data file with key exclusion, field projection, and
+     * CSV output.
+     * <p>
+     * Internal helper combining key exclusion, field projection, and CSV
+     * formatting.
+     * </p>
+     *
+     * @param shared       the open data file handle
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param limit        maximum number of records to find
+     * @param rowQueue     the queue to add CSV rows to
+     * @param counter      shared counter for limit enforcement
+     * @param fields       the field names to include
+     */
+    private void searchSubsetCsv(final SharedChronicleMap<String, V> shared, final List<Search> filters,
             final Set<String> excludedKeys, final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue,
             final AtomicInteger counter, final String[] fields) {
         Logger.debug("Subset CSV searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
@@ -4383,7 +5578,7 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
             final String key = entry.key().get();
             if (excludedKeys.contains(key)) {
                 return true;
@@ -4401,7 +5596,18 @@ public interface ChronicleDao<V> {
         });
     }
 
-    private void searchKeys(final ChronicleMap<String, V> db, final List<Search> filters,
+    /**
+     * Searches within a single data file with key exclusion, collecting keys only.
+     * <p>
+     * Internal helper for key-only full table scan with key exclusion.
+     * </p>
+     *
+     * @param shared       the open data file handle
+     * @param filters      the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @param results      the collection to add matching keys to
+     */
+    private void searchKeys(final SharedChronicleMap<String, V> shared, final List<Search> filters,
             final Set<String> excludedKeys, final Collection<String> results) {
         Logger.debug("Searching DB keys at [{}] using [{}] filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
@@ -4410,25 +5616,34 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntry(shared, entry -> {
             final String key = entry.key().get();
             if (excludedKeys.contains(key)) {
-                return true;
+                return;
             }
 
             final V value = entry.value().getUsing(using());
             for (final var search : preparedFilters) {
                 if (!CHRONICLE_UTILS.search(search, key, value)) {
-                    return true;
+                    return;
                 }
             }
 
             results.add(key);
-            return true;
         });
     }
 
-    private int searchCount(final ChronicleMap<String, V> db, final List<Search> filters) {
+    /**
+     * Counts matching records within a single data file.
+     * <p>
+     * Internal helper for count operations without returning data.
+     * </p>
+     *
+     * @param shared  the open data file handle
+     * @param filters the search criteria (all must match)
+     * @return the count of matching records
+     */
+    private int searchCount(final SharedChronicleMap<String, V> shared, final List<Search> filters) {
         Logger.debug("Counting DB at [{}] for {} filters.", dataPath(), filters.size());
         final var count = new AtomicInteger();
         final var averageValueClass = averageValue().getClass();
@@ -4436,21 +5651,31 @@ public interface ChronicleDao<V> {
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
 
-        db.forEachEntryWhile(entry -> {
+        CHRONICLE_UTILS.safeForEachEntry(shared, entry -> {
             final String key = entry.key().get();
             final V value = entry.value().getUsing(using());
             for (final var search : preparedFilters) {
                 if (!CHRONICLE_UTILS.search(search, key, value)) {
-                    return true;
+                    return;
                 }
             }
             count.incrementAndGet();
-            return true;
         });
 
         return count.get();
     }
 
+    /**
+     * Filters an in-memory map using search criteria.
+     * <p>
+     * Useful for post-processing results that are already loaded in memory.
+     * Processes entries in parallel for efficiency.
+     * </p>
+     *
+     * @param db      the in-memory key-value map to filter
+     * @param filters the search criteria (all must match)
+     * @return filtered key-value pairs
+     */
     private Map<String, V> search(final Map<String, V> db, final List<Search> filters) {
         if (filters.isEmpty() || db.isEmpty()) {
             return Collections.emptyMap();
@@ -4489,12 +5714,18 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Searches the objects using an index, without needed to loop over every record
-     * Only useful for @code SearchType.EQUAL and @code SearchType.NOT_EQUAL
-     * 
-     * @param search the Search object
-     * @param db
-     * @param index
+     * Performs an indexed search using a pre-opened index.
+     * <p>
+     * Uses the B+ tree index structure for efficient lookups without scanning all
+     * records.
+     * Supports various search types: EQUAL, NOT_EQUAL, LESS, GREATER, LIKE,
+     * STARTS_WITH,
+     * ENDS_WITH, IN, NOT_IN, BETWEEN, etc.
+     * </p>
+     *
+     * @param search the search criteria including field, type, and term
+     * @param index  the opened index NavigableSet
+     * @return {@link SearchResult} containing matching 128-bit hashes
      */
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index) {
         Logger.debug("Index searching at [{}] for {}.", dataPath(), search.field());
@@ -4535,6 +5766,18 @@ public interface ChronicleDao<V> {
         };
     }
 
+    /**
+     * Performs an indexed search with hash exclusion.
+     * <p>
+     * Similar to {@link #indexedSearch(Search, NavigableSet)} but filters out
+     * results matching the excluded hashes.
+     * </p>
+     *
+     * @param search         the search criteria
+     * @param index          the opened index NavigableSet
+     * @param excludedHashes hashes to exclude from results
+     * @return {@link SearchResult} containing matching hashes (excluding specified)
+     */
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index,
             final Set<byte[]> excludedHashes) {
         Logger.debug("Index searching at [{}] with [{}] excluded keys for {}.", dataPath(), excludedHashes.size(),
@@ -4579,10 +5822,26 @@ public interface ChronicleDao<V> {
         };
     }
 
+    /**
+     * Checks if an iterable result is empty.
+     *
+     * @param result the iterable to check
+     * @return {@code true} if null or has no elements
+     */
     private <T> boolean isResultEmpty(final Iterable<T> result) {
         return result == null || !result.iterator().hasNext();
     }
 
+    /**
+     * Performs an indexed search and returns full entities.
+     * <p>
+     * Opens the index, performs the search, then retrieves the actual records
+     * using the resulting hashes.
+     * </p>
+     *
+     * @param search the search criteria (field must be indexed)
+     * @return map of matching key-value pairs
+     */
     default Map<String, V> indexedSearch(final Search search) {
         final String indexPath = getIndexPath(search.field());
         final int limit = search.limit() > 0 ? search.limit() : HARD_LIMIT;
@@ -4595,6 +5854,16 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs an indexed search and returns only matching keys.
+     * <p>
+     * More memory-efficient than {@link #indexedSearch(Search)} when values are not
+     * needed.
+     * </p>
+     *
+     * @param search the search criteria (field must be indexed)
+     * @return set of matching keys
+     */
     default Set<String> indexedSearchKeys(final Search search) {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
@@ -4606,6 +5875,15 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs an indexed search and returns matching keys as a list.
+     * <p>
+     * Similar to {@link #indexedSearchKeys(Search)} but returns a {@link List}.
+     * </p>
+     *
+     * @param search the search criteria (field must be indexed)
+     * @return list of matching keys (order is not guaranteed)
+     */
     default List<String> indexedSearchKeysList(final Search search) {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
@@ -4617,6 +5895,17 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs an indexed search with key exclusion and returns full entities.
+     * <p>
+     * Pre-calculates excluded key hashes for efficient filtering during index
+     * search.
+     * </p>
+     *
+     * @param search       the search criteria (field must be indexed)
+     * @param excludedKeys keys to exclude from results
+     * @return map of matching key-value pairs (excluding specified keys)
+     */
     default Map<String, V> indexedSearch(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
         final int limit = search.limit() > 0 ? search.limit() : HARD_LIMIT;
@@ -4630,6 +5919,17 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs an indexed search with key exclusion, returning only keys.
+     * <p>
+     * Combines indexed search efficiency with key exclusion and memory-efficient
+     * key-only results.
+     * </p>
+     *
+     * @param search       the search criteria (field must be indexed)
+     * @param excludedKeys keys to exclude from results
+     * @return set of matching keys (excluding specified keys)
+     */
     default Set<String> indexedSearchKeys(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
@@ -4642,6 +5942,18 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs an indexed search with key exclusion, returning keys as a list.
+     * <p>
+     * Similar to {@link #indexedSearchKeys(Search, Set)} but returns a
+     * {@link List}.
+     * </p>
+     *
+     * @param search       the search criteria (field must be indexed)
+     * @param excludedKeys keys to exclude from results
+     * @return list of matching keys (excluding specified keys, order not
+     *         guaranteed)
+     */
     default List<String> indexedSearchKeysList(final Search search, final Set<String> excludedKeys) {
         final String indexPath = getIndexPath(search.field());
         try (final var sharedIndexSet = MAP_DB.openIndex(indexPath)) {
@@ -4655,26 +5967,13 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Full scan IN search - more efficient than batched IN searches when matching
-     * against a very large set of values (e.g., millions of transaction IDs).
+     * Searches within a set of pre-filtered keys using a single filter.
      *
-     * Instead of N individual index lookups, this does 1 full index scan with
-     * O(1) HashSet lookups per entry.
-     *
-     * Use when: matchValues.size() > 10000 (e.g., archiving 8M transactions)
-     *
-     * @deprecated Use
-     *             {@code indexedSearchKeysList(new Search(field, SearchType.IN_FULL_SCAN, matchValues))}
-     *             instead
+     * @param matchingKeys the keys to search within (from a previous operation)
+     * @param search       the search criterion to apply
+     * @return matching key-value pairs
+     * @throws InterruptedException if the parallel processing is interrupted
      */
-    @Deprecated
-    default List<String> indexedSearchKeysListFullScan(final String field, final Set<String> matchValues) {
-        if (matchValues == null || matchValues.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return indexedSearchKeysList(new Search(field, SearchType.IN_FULL_SCAN, new ArrayList<>(matchValues)));
-    }
-
     default Map<String, V> searchMatching(final Collection<String> matchingKeys, final Search search)
             throws InterruptedException {
         if (matchingKeys == null || matchingKeys.isEmpty()) {
@@ -4684,6 +5983,13 @@ public interface ChronicleDao<V> {
         return search(matchingKeys, List.of(search), matchingKeys.size());
     }
 
+    /**
+     * Filters an in-memory map using a single search criterion.
+     *
+     * @param db     the in-memory key-value map to filter
+     * @param search the search criterion to apply
+     * @return filtered key-value pairs
+     */
     default Map<String, V> search(final Map<String, V> db, final Search search) {
         if (db == null || db.isEmpty()) {
             return Collections.emptyMap();
@@ -4691,6 +5997,17 @@ public interface ChronicleDao<V> {
         return search(db, List.of(search));
     }
 
+    /**
+     * Full table scan search using a single criterion.
+     * <p>
+     * Scans all data files in parallel. Use indexed search methods when
+     * searching on indexed fields for better performance.
+     * </p>
+     *
+     * @param search the search criterion (limit can be set via
+     *               {@link Search#limit()})
+     * @return matching key-value pairs (up to limit or {@link #HARD_LIMIT})
+     */
     default Map<String, V> search(final Search search) {
         final int limit = search.limit() == -1 ? HARD_LIMIT : search.limit();
         final Map<String, V> result = new ConcurrentHashMap<>(limit);
@@ -4701,33 +6018,59 @@ public interface ChronicleDao<V> {
                 return;
             }
             try (final var shared = openDb(file)) {
-                search(shared.map, List.of(search), limit, result, counter);
+                search(shared, List.of(search), limit, result, counter);
             }
         });
 
         return result;
     }
 
+    /**
+     * Full table scan returning only keys matching all criteria.
+     * <p>
+     * More memory-efficient than {@link #search(Search)} when you only need keys.
+     * Scans all data files in parallel.
+     * </p>
+     *
+     * @param searches the search criteria (all must match)
+     * @return set of matching keys
+     */
     default Set<String> searchKeys(final List<Search> searches) {
         final var results = ConcurrentHashMap.<String>newKeySet();
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
-                searchKeys(shared.map, searches, results);
+                searchKeys(shared, searches, results);
             }
         });
         return results;
     }
 
+    /**
+     * Full table scan returning only keys matching all criteria as a list.
+     *
+     * @param searches the search criteria (all must match)
+     * @return list of matching keys (order is not guaranteed)
+     */
     default List<String> searchKeysList(final List<Search> searches) {
         final var result = new ConcurrentLinkedQueue<String>();
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
-                searchKeys(shared.map, searches, result);
+                searchKeys(shared, searches, result);
             }
         });
         return new ArrayList<>(result);
     }
 
+    /**
+     * Full table scan search with key exclusion.
+     * <p>
+     * Similar to {@link #search(Search)} but skips keys in the exclusion set.
+     * </p>
+     *
+     * @param search       the search criterion
+     * @param excludedKeys keys to skip during search
+     * @return matching key-value pairs (excluding specified keys)
+     */
     default Map<String, V> search(final Search search, final Set<String> excludedKeys) {
         final int limit = search.limit() == -1 ? HARD_LIMIT : search.limit();
         final Map<String, V> result = new ConcurrentHashMap<>(limit);
@@ -4738,33 +6081,65 @@ public interface ChronicleDao<V> {
                 return;
             }
             try (final var shared = openDb(file)) {
-                search(shared.map, List.of(search), excludedKeys, limit, result, counter);
+                search(shared, List.of(search), excludedKeys, limit, result, counter);
             }
         });
 
         return result;
     }
 
+    /**
+     * Full table scan returning only keys matching all criteria with exclusion.
+     * <p>
+     * Combines full table key search with key exclusion.
+     * </p>
+     *
+     * @param searches     the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @return set of matching keys (excluding specified keys)
+     */
     default Set<String> searchKeys(final List<Search> searches, final Set<String> excludedKeys) {
         final var results = ConcurrentHashMap.<String>newKeySet();
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
-                searchKeys(shared.map, searches, excludedKeys, results);
+                searchKeys(shared, searches, excludedKeys, results);
             }
         });
         return results;
     }
 
+    /**
+     * Full table scan returning keys as a list with exclusion.
+     * <p>
+     * Similar to {@link #searchKeys(List, Set)} but returns a {@link List}.
+     * </p>
+     *
+     * @param searches     the search criteria (all must match)
+     * @param excludedKeys keys to skip during search
+     * @return list of matching keys (excluding specified keys, order not
+     *         guaranteed)
+     */
     default List<String> searchKeysList(final List<Search> searches, final Set<String> excludedKeys) {
         final var result = new ConcurrentLinkedQueue<String>();
         CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
             try (final var shared = openDb(file)) {
-                searchKeys(shared.map, searches, excludedKeys, result);
+                searchKeys(shared, searches, excludedKeys, result);
             }
         });
         return new ArrayList<>(result);
     }
 
+    /**
+     * Searches for keys matching all filters within a candidate set.
+     * <p>
+     * Filters the provided keys based on search criteria.
+     * </p>
+     *
+     * @param keys    the candidate keys to search within
+     * @param filters the search criteria (all must match)
+     * @return set of matching keys
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default Set<String> searchKeys(final Iterable<String> keys, final List<Search> filters)
             throws InterruptedException {
         final var results = ConcurrentHashMap.<String>newKeySet();
@@ -4772,6 +6147,18 @@ public interface ChronicleDao<V> {
         return new HashSet<>(results);
     }
 
+    /**
+     * Searches for keys matching all filters within a candidate set, returning as
+     * list.
+     * <p>
+     * Similar to {@link #searchKeys(Iterable, List)} but returns a {@link List}.
+     * </p>
+     *
+     * @param keys    the candidate keys to search within
+     * @param filters the search criteria (all must match)
+     * @return list of matching keys (order is not guaranteed)
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default List<String> searchKeysList(final Iterable<String> keys, final List<Search> filters)
             throws InterruptedException {
         final var results = new ConcurrentLinkedQueue<String>();
@@ -4779,6 +6166,24 @@ public interface ChronicleDao<V> {
         return new ArrayList<>(results);
     }
 
+    /**
+     * Performs a multi-criteria search with automatic index optimization and field
+     * projection.
+     * <p>
+     * Intelligently separates indexed and non-indexed search criteria:
+     * <ol>
+     * <li>Identifies the first indexed search criterion</li>
+     * <li>Executes indexed search to get candidate keys</li>
+     * <li>Applies remaining filters to candidates</li>
+     * <li>Returns only the specified fields</li>
+     * </ol>
+     * </p>
+     *
+     * @param searches the search criteria (all must match)
+     * @param fields   the field names to include in the result
+     * @return map of key to field-value map for matching records
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default Map<String, Map<String, Object>> multiSearchSubset(final List<Search> searches, final String[] fields)
             throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
@@ -4841,7 +6246,7 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        searchSubset(shared.map, searches, limit, result, counter, fields);
+                        searchSubset(shared, searches, limit, result, counter, fields);
                     }
                 });
 
@@ -4856,6 +6261,19 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with index optimization, field projection,
+     * and CSV output.
+     * <p>
+     * Similar to {@link #multiSearchSubset(List, String[])} but returns results as
+     * CSV format.
+     * </p>
+     *
+     * @param searches the search criteria (all must match)
+     * @param fields   the field names to include
+     * @return {@link CsvObject} containing headers and matching rows
+     * @throws InterruptedException if the parallel processing is interrupted
+     */
     default CsvObject multiSearchSubsetCsv(final List<Search> searches, final String[] fields)
             throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
@@ -4918,7 +6336,7 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        searchSubsetCsv(shared.map, searches, limit, rowQueue, counter, fields);
+                        searchSubsetCsv(shared, searches, limit, rowQueue, counter, fields);
                     }
                 });
 
@@ -4934,6 +6352,32 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with automatic index optimization.
+     * <p>
+     * Intelligently separates indexed and non-indexed search criteria, using the
+     * first
+     * indexed field to narrow results before applying remaining filters. For
+     * single-criteria
+     * searches, delegates directly to the indexed search path when available.
+     * </p>
+     * <p>
+     * Algorithm:
+     * <ol>
+     * <li>Separates searches into first-indexed and remaining non-indexed
+     * criteria</li>
+     * <li>Computes the minimum limit across all search criteria</li>
+     * <li>If an indexed search exists, performs B+ tree lookup first</li>
+     * <li>Applies remaining filters to the indexed result set (or full scan if no
+     * index)</li>
+     * </ol>
+     * </p>
+     *
+     * @param searches list of search criteria (all must match - AND semantics)
+     * @return map of primary keys to matching values; empty map if searches is
+     *         null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     */
     default Map<String, V> multiSearch(final List<Search> searches) throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
             return Collections.emptyMap();
@@ -4995,7 +6439,7 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        search(shared.map, searches, limit, result, counter);
+                        search(shared, searches, limit, result, counter);
                     }
                 });
 
@@ -5010,6 +6454,21 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with automatic index optimization, returning
+     * CSV format.
+     * <p>
+     * Similar to {@link #multiSearch(List)} but returns results as a
+     * {@link CsvObject}
+     * containing headers and rows suitable for export or display.
+     * </p>
+     *
+     * @param searches list of search criteria (all must match - AND semantics)
+     * @return CSV object with headers and matching rows; empty CSV if searches is
+     *         null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     * @see #multiSearch(List)
+     */
     default CsvObject multiSearchCsv(final List<Search> searches) throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
             return CsvObject.empty();
@@ -5072,7 +6531,7 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        searchCsv(shared.map, searches, limit, rowQueue, counter, headers);
+                        searchCsv(shared, searches, limit, rowQueue, counter, headers);
                     }
                 });
 
@@ -5087,6 +6546,21 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with automatic index optimization, returning
+     * only keys.
+     * <p>
+     * Similar to {@link #multiSearch(List)} but returns only the primary keys of
+     * matching
+     * records, which is more efficient when values are not needed.
+     * </p>
+     *
+     * @param searches list of search criteria (all must match - AND semantics)
+     * @return set of primary keys for matching records; empty set if searches is
+     *         null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     * @see #multiSearch(List)
+     */
     default Set<String> multiSearchKeys(final List<Search> searches) throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
             return Collections.emptySet();
@@ -5142,6 +6616,22 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with automatic index optimization, returning
+     * keys as a list.
+     * <p>
+     * Similar to {@link #multiSearchKeys(List)} but returns results as a
+     * {@link List}
+     * instead of a {@link Set}, preserving potential ordering from indexed
+     * searches.
+     * </p>
+     *
+     * @param searches list of search criteria (all must match - AND semantics)
+     * @return list of primary keys for matching records; empty list if searches is
+     *         null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     * @see #multiSearchKeys(List)
+     */
     default List<String> multiSearchKeysList(final List<Search> searches) throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
             return Collections.emptyList();
@@ -5197,6 +6687,24 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with automatic index optimization, excluding
+     * specified keys.
+     * <p>
+     * Similar to {@link #multiSearch(List)} but filters out any records matching
+     * the excluded keys.
+     * The exclusion is applied both during indexed searches (via hash exclusion)
+     * and during
+     * manual scanning.
+     * </p>
+     *
+     * @param searches     list of search criteria (all must match - AND semantics)
+     * @param excludedKeys set of primary keys to exclude from results
+     * @return map of primary keys to matching values; empty map if searches is
+     *         null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     * @see #multiSearch(List)
+     */
     default Map<String, V> multiSearch(final List<Search> searches, final Set<String> excludedKeys)
             throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
@@ -5234,7 +6742,11 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            final Set<byte[]> excludedHashes = excludedKeys.stream()
+                    .map(CHRONICLE_UTILS::to128BitHash)
+                    .collect(Collectors.toSet());
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
+
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return Collections.emptyMap();
@@ -5259,7 +6771,7 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        search(shared.map, searches, excludedKeys, limit, result, counter);
+                        search(shared, searches, excludedKeys, limit, result, counter);
                     }
                 });
 
@@ -5274,6 +6786,21 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with index optimization and key exclusion,
+     * returning CSV format.
+     * <p>
+     * Combines the functionality of {@link #multiSearchCsv(List)} with key
+     * exclusion support.
+     * </p>
+     *
+     * @param searches     list of search criteria (all must match - AND semantics)
+     * @param excludedKeys set of primary keys to exclude from results
+     * @return CSV object with headers and matching rows; empty CSV if searches is
+     *         null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     * @see #multiSearch(List, Set)
+     */
     default CsvObject multiSearchCsv(final List<Search> searches, final Set<String> excludedKeys)
             throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
@@ -5311,7 +6838,10 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            final Set<byte[]> excludedHashes = excludedKeys.stream()
+                    .map(CHRONICLE_UTILS::to128BitHash)
+                    .collect(Collectors.toSet());
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return CsvObject.empty();
@@ -5337,7 +6867,7 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        searchCsv(shared.map, searches, excludedKeys, limit, rowQueue, counter, headers);
+                        searchCsv(shared, searches, excludedKeys, limit, rowQueue, counter, headers);
                     }
                 });
 
@@ -5352,6 +6882,23 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with index optimization, key exclusion, and
+     * field projection.
+     * <p>
+     * Combines the functionality of {@link #multiSearchSubset(List, String[])} with
+     * key exclusion support.
+     * Returns only the specified fields from each matching record.
+     * </p>
+     *
+     * @param searches     list of search criteria (all must match - AND semantics)
+     * @param excludedKeys set of primary keys to exclude from results
+     * @param fields       field names to include in the result maps
+     * @return map of primary keys to field value maps; empty map if searches is
+     *         null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     * @see #multiSearch(List, Set)
+     */
     default Map<String, Map<String, Object>> multiSearchSubset(final List<Search> searches,
             final Set<String> excludedKeys, final String[] fields) throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
@@ -5389,7 +6936,10 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            final Set<byte[]> excludedHashes = excludedKeys.stream()
+                    .map(CHRONICLE_UTILS::to128BitHash)
+                    .collect(Collectors.toSet());
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return Collections.emptyMap();
@@ -5414,7 +6964,7 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        searchSubset(shared.map, searches, excludedKeys, limit, result, counter, fields);
+                        searchSubset(shared, searches, excludedKeys, limit, result, counter, fields);
                     }
                 });
 
@@ -5429,6 +6979,23 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search with index optimization, key exclusion,
+     * field projection, and CSV output.
+     * <p>
+     * Combines the functionality of {@link #multiSearchSubsetCsv(List, String[])}
+     * with key exclusion support.
+     * Returns only the specified fields from each matching record in CSV format.
+     * </p>
+     *
+     * @param searches     list of search criteria (all must match - AND semantics)
+     * @param excludedKeys set of primary keys to exclude from results
+     * @param fields       field names to include in the CSV columns
+     * @return CSV object with headers and matching rows; empty CSV if searches is
+     *         null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     * @see #multiSearchSubset(List, Set, String[])
+     */
     default CsvObject multiSearchSubsetCsv(final List<Search> searches, final Set<String> excludedKeys,
             final String[] fields) throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
@@ -5466,7 +7033,10 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            final Set<byte[]> excludedHashes = excludedKeys.stream()
+                    .map(CHRONICLE_UTILS::to128BitHash)
+                    .collect(Collectors.toSet());
+            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return CsvObject.empty();
@@ -5491,7 +7061,7 @@ public interface ChronicleDao<V> {
                         return;
                     }
                     try (final var shared = openDb(file)) {
-                        searchSubsetCsv(shared.map, searches, excludedKeys, limit, rowQueue, counter, fields);
+                        searchSubsetCsv(shared, searches, excludedKeys, limit, rowQueue, counter, fields);
                     }
                 });
 
@@ -5508,6 +7078,18 @@ public interface ChronicleDao<V> {
         }
     }
 
+    /**
+     * Performs a multi-criteria search over a pre-filtered set of keys.
+     * <p>
+     * Applies the search criteria only to records matching the given keys,
+     * which is efficient when keys have already been narrowed by a prior operation.
+     * </p>
+     *
+     * @param matchingKeys collection of primary keys to search within
+     * @param searches     list of search criteria (all must match - AND semantics)
+     * @return map of primary keys to matching values
+     * @throws InterruptedException if parallel processing is interrupted
+     */
     default Map<String, V> multiSearch(final Collection<String> matchingKeys, final List<Search> searches)
             throws InterruptedException {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
@@ -5515,6 +7097,19 @@ public interface ChronicleDao<V> {
         return search(matchingKeys, searches, limit);
     }
 
+    /**
+     * Performs a multi-criteria search over a pre-filtered set of keys, returning
+     * CSV format.
+     * <p>
+     * Similar to {@link #multiSearch(Collection, List)} but returns results as a
+     * {@link CsvObject}.
+     * </p>
+     *
+     * @param matchingKeys collection of primary keys to search within
+     * @param searches     list of search criteria (all must match - AND semantics)
+     * @return CSV object with headers and matching rows
+     * @throws InterruptedException if parallel processing is interrupted
+     */
     default CsvObject multiSearchCsv(final Collection<String> matchingKeys, final List<Search> searches)
             throws InterruptedException {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
@@ -5522,6 +7117,21 @@ public interface ChronicleDao<V> {
         return searchCsv(matchingKeys, searches, limit);
     }
 
+    /**
+     * Performs a multi-criteria search over a pre-filtered set of keys with field
+     * projection.
+     * <p>
+     * Similar to {@link #multiSearch(Collection, List)} but returns only the
+     * specified fields
+     * from each matching record.
+     * </p>
+     *
+     * @param matchingKeys collection of primary keys to search within
+     * @param searches     list of search criteria (all must match - AND semantics)
+     * @param fields       field names to include in the result maps
+     * @return map of primary keys to field value maps
+     * @throws InterruptedException if parallel processing is interrupted
+     */
     default Map<String, Map<String, Object>> multiSearchSubset(final Collection<String> matchingKeys,
             final List<Search> searches, final String[] fields) throws InterruptedException {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
@@ -5529,6 +7139,21 @@ public interface ChronicleDao<V> {
         return searchSubset(matchingKeys, searches, fields, limit);
     }
 
+    /**
+     * Performs a multi-criteria search over a pre-filtered set of keys with field
+     * projection, returning CSV.
+     * <p>
+     * Similar to {@link #multiSearchSubset(Collection, List, String[])} but returns
+     * results
+     * as a {@link CsvObject}.
+     * </p>
+     *
+     * @param matchingKeys collection of primary keys to search within
+     * @param searches     list of search criteria (all must match - AND semantics)
+     * @param fields       field names to include in the CSV columns
+     * @return CSV object with headers and matching rows
+     * @throws InterruptedException if parallel processing is interrupted
+     */
     default CsvObject multiSearchSubsetCsv(final Collection<String> matchingKeys, final List<Search> searches,
             final String[] fields) throws InterruptedException {
         final int limit = searches.stream().mapToInt(Search::limit).filter(l -> l > 0).min().orElse(HARD_LIMIT);
@@ -5536,6 +7161,21 @@ public interface ChronicleDao<V> {
         return searchSubsetCsv(matchingKeys, searches, fields, limit);
     }
 
+    /**
+     * Counts records matching multiple search criteria with automatic index
+     * optimization.
+     * <p>
+     * Similar to {@link #multiSearch(List)} but returns only the count of matching
+     * records,
+     * which is more efficient when the actual values are not needed. Uses B+ tree
+     * index
+     * when available for fast counting.
+     * </p>
+     *
+     * @param searches list of search criteria (all must match - AND semantics)
+     * @return count of matching records; 0 if searches is null/empty
+     * @throws InterruptedException if parallel processing is interrupted
+     */
     default long multiSearchCount(final List<Search> searches) throws InterruptedException {
         if (searches == null || searches.isEmpty()) {
             return 0;
@@ -5584,7 +7224,7 @@ public interface ChronicleDao<V> {
                 final var totalCount = new java.util.concurrent.atomic.LongAdder();
                 CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     try (final var shared = openDb(file)) {
-                        totalCount.add(searchCount(shared.map, searches));
+                        totalCount.add(searchCount(shared, searches));
                     }
                 });
                 return totalCount.intValue();
@@ -5599,17 +7239,43 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Current size of the data
+     * Returns the total number of records in the database.
+     * <p>
+     * For single-file DAOs without a keymap, counts directly from the Chronicle
+     * Map.
+     * For multi-file DAOs, counts from the keymap which tracks all records across
+     * files.
+     * </p>
      *
-     * @return int size
+     * @return total record count
      */
     default int size() {
         Logger.debug("Getting DB size at [{}].", dataPath());
+        if (!hasKeyMap()) {
+            try (final var shared = openDb()) {
+                return shared.map.size();
+            }
+        }
+
         try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
             return sharedKeyMap.map.size();
         }
     }
 
+    /**
+     * Truncates the database, removing all data.
+     * <p>
+     * Creates a backup before deletion, then removes all data files, indexes, and
+     * the keymap.
+     * Also clears the data file cache for this DAO.
+     * </p>
+     * <p>
+     * <strong>Warning:</strong> This operation is destructive but creates a backup
+     * first.
+     * </p>
+     *
+     * @throws IOException if backup or deletion fails
+     */
     default void truncate() throws IOException {
         Logger.info("Dropping database at [{}].", dataPath());
         backup();
@@ -5627,6 +7293,15 @@ public interface ChronicleDao<V> {
      */
     default boolean exists(final String key) {
         Logger.debug("Checking [{}] existence at [{}].", key, dataPath());
+        if (!hasKeyMap()) {
+            try (final var shared = openDb()) {
+                if (shared.map.isEmpty()) {
+                    return false;
+                }
+                return shared.map.containsKey(key);
+            }
+        }
+
         return existsFromHash(CHRONICLE_UTILS.to128BitHash(key));
     }
 
@@ -5651,7 +7326,19 @@ public interface ChronicleDao<V> {
      */
     default Map<String, Boolean> exists(final Collection<String> keys) {
         Logger.debug("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
-        return existsFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+        if (!hasKeyMap()) {
+            final var existsMap = new ConcurrentHashMap<String, Boolean>();
+            try (final var shared = openDb()) {
+                if (shared.map.isEmpty()) {
+                    return existsMap;
+                }
+                keys.parallelStream().forEach(key -> existsMap.put(key, shared.map.containsKey(key)));
+            }
+
+            return existsMap;
+        }
+
+        return existsFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashMap(keys));
     }
 
     /**
@@ -5679,7 +7366,24 @@ public interface ChronicleDao<V> {
      */
     default List<String> existsList(final Collection<String> keys) {
         Logger.debug("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
-        return existsListFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+
+        if (!hasKeyMap()) {
+            final var existsList = new ConcurrentLinkedQueue<String>();
+            try (final var shared = openDb()) {
+                if (shared.map.isEmpty()) {
+                    return new ArrayList<>();
+                }
+                keys.parallelStream().forEach(key -> {
+                    if (shared.map.containsKey(key)) {
+                        existsList.add(key);
+                    }
+                });
+            }
+
+            return new ArrayList<>(existsList);
+        }
+
+        return existsListFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashMap(keys));
     }
 
     /**
@@ -5706,7 +7410,23 @@ public interface ChronicleDao<V> {
      */
     default Set<String> notExists(final Collection<String> keys) {
         Logger.debug("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
-        return notExistsFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+        if (!hasKeyMap()) {
+            final Set<String> notExistsSet = ConcurrentHashMap.newKeySet();
+            try (final var shared = openDb()) {
+                if (shared.map.isEmpty()) {
+                    return new HashSet<>(keys);
+                }
+                keys.parallelStream().forEach(key -> {
+                    if (!shared.map.containsKey(key)) {
+                        notExistsSet.add(key);
+                    }
+                });
+            }
+
+            return notExistsSet;
+        }
+
+        return notExistsFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashMap(keys));
     }
 
     /**
@@ -5733,7 +7453,24 @@ public interface ChronicleDao<V> {
      */
     default List<String> notExistsList(final Collection<String> keys) {
         Logger.debug("Checking [{}] keys non-existence at [{}].", keys.size(), dataPath());
-        return notExistsListFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashes(keys));
+
+        if (!hasKeyMap()) {
+            final var notExistsList = new ConcurrentLinkedQueue<String>();
+            try (final var shared = openDb()) {
+                if (shared.map.isEmpty()) {
+                    return new ArrayList<>(keys);
+                }
+                keys.parallelStream().forEach(key -> {
+                    if (!shared.map.containsKey(key)) {
+                        notExistsList.add(key);
+                    }
+                });
+            }
+
+            return new ArrayList<>(notExistsList);
+        }
+
+        return notExistsListFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashMap(keys));
     }
 
     /**

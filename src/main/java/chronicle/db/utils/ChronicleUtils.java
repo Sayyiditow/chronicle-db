@@ -30,12 +30,12 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.NavigableSet;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -611,42 +611,47 @@ public final class ChronicleUtils {
         return false;
     }
 
-    /**
-     * Pre-calculates 128-bit hashes for a collection of keys.
-     * This should be called BEFORE acquiring locks to reduce lock hold time.
-     *
-     * @param keys The collection of primary keys to hash
-     * @return Map of primary key -> 16-byte hash
-     */
-    public Map<String, byte[]> preCalculateKeyHashes(final Iterable<String> keys) {
+    public Map<String, byte[]> preCalculateKeyHashMap(final Iterable<String> keys) {
         if (keys == null || !keys.iterator().hasNext())
             return Collections.emptyMap();
-        final var map = new ConcurrentHashMap<String, byte[]>(1000);
+
+        final var map = new ConcurrentHashMap<String, byte[]>();
         try {
             parallelIterable(keys, Integer.MAX_VALUE, key -> {
                 map.put(key, to128BitHash(key));
             });
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException("InterruptedException while calculating key hashes.");
+            throw new RuntimeException("InterruptedException while calculating list key hashes.");
         }
+
         return map;
     }
 
-    /**
-     * Pre-calculates 128-bit hashes for keys, excluding specified keys.
-     * Filters and hashes in one pass for efficiency.
-     *
-     * @param keys         The collection of primary keys to hash
-     * @param excludedKeys Keys to skip (not hashed)
-     * @return Map of primary key -> 16-byte hash (excluding excluded keys)
-     */
-    public Map<String, byte[]> preCalculateKeyHashes(final Iterable<String> keys, final Set<String> excludedKeys) {
+    public List<byte[]> preCalculateKeyHashes(final Iterable<String> keys) {
+        if (keys == null || !keys.iterator().hasNext())
+            return Collections.emptyList();
+
+        final var queue = new ConcurrentLinkedQueue<byte[]>();
+        try {
+            parallelIterable(keys, Integer.MAX_VALUE, key -> {
+                queue.add(to128BitHash(key));
+            });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("InterruptedException while calculating list key hashes.");
+        }
+
+        return new ArrayList<>(queue);
+    }
+
+    public Map<String, byte[]> preCalculateKeyHashMap(final Iterable<String> keys, final Set<String> excludedKeys) {
         if (keys == null || !keys.iterator().hasNext())
             return Collections.emptyMap();
         if (excludedKeys == null || excludedKeys.isEmpty())
-            return preCalculateKeyHashes(keys);
-        final var map = new ConcurrentHashMap<String, byte[]>(1000);
+            return preCalculateKeyHashMap(keys);
+
+        final var map = new ConcurrentHashMap<String, byte[]>();
         try {
             parallelIterable(keys, Integer.MAX_VALUE, key -> {
                 if (!excludedKeys.contains(key)) {
@@ -657,7 +662,29 @@ public final class ChronicleUtils {
             Thread.currentThread().interrupt();
             throw new RuntimeException("InterruptedException while calculating key hashes.");
         }
+
         return map;
+    }
+
+    public List<byte[]> preCalculateKeyHashes(final Iterable<String> keys, final Set<String> excludedKeys) {
+        if (keys == null || !keys.iterator().hasNext())
+            return Collections.emptyList();
+        if (excludedKeys == null || excludedKeys.isEmpty())
+            return preCalculateKeyHashes(keys);
+
+        final var queue = new ConcurrentLinkedQueue<byte[]>();
+        try {
+            parallelIterable(keys, Integer.MAX_VALUE, key -> {
+                if (!excludedKeys.contains(key)) {
+                    queue.add(to128BitHash(key));
+                }
+            });
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("InterruptedException while calculating key hashes.");
+        }
+
+        return new ArrayList<>(queue);
     }
 
     /**
@@ -811,23 +838,6 @@ public final class ChronicleUtils {
         }
     }
 
-    private <V> void processRemoveChunk(final List<Map.Entry<String, V>> chunk, final List<FieldData> fieldGetters,
-            final Map<String, byte[]> keyHashMap, final NavigableSet<byte[]> index) {
-        final List<byte[]> batchToRemove = new ArrayList<>(chunk.size());
-        final StringBuilder sb = new StringBuilder();
-        for (final var e : chunk) {
-            final var key = e.getKey();
-            final V value = e.getValue();
-            sb.setLength(0);
-            for (final FieldData fd : fieldGetters) {
-                appendValue(sb, fd.varHandle.get(value));
-            }
-            batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyHashMap.get(key)));
-        }
-        // MUST use sequential, parallel writes are an issue.
-        batchToRemove.forEach(index::remove);
-    }
-
     /**
      * Removes entries from secondary indexes.
      *
@@ -867,16 +877,26 @@ public final class ChronicleUtils {
             }
 
             // Step 2: Remove from each index (no chunking - process all at once)
-            final List<Map.Entry<String, V>> recordList = new ArrayList<>(values.entrySet());
-            final int totalRecords = recordList.size();
-
+            final int totalRecords = values.size();
             indexFieldMap.forEach((indexName, fieldGetters) -> {
                 final String indexPath = dataPath + ChronicleDao.INDEX_DIR + indexName;
                 final var sharedIndexSet = openIndexes.get(indexPath);
                 if (sharedIndexSet == null)
                     return;
 
-                processRemoveChunk(recordList, fieldGetters, keyHashMap, sharedIndexSet.index);
+                final List<byte[]> batchToRemove = new ArrayList<>(totalRecords);
+                final StringBuilder sb = new StringBuilder();
+                for (final var e : values.entrySet()) {
+                    final var key = e.getKey();
+                    final V value = e.getValue();
+                    sb.setLength(0);
+                    for (final FieldData fd : fieldGetters) {
+                        appendValue(sb, fd.varHandle.get(value));
+                    }
+                    batchToRemove.add(MAP_DB.createIndexKey(sb.toString(), keyHashMap.get(key)));
+                }
+                // MUST use sequential, parallel writes are an issue.
+                batchToRemove.forEach(sharedIndexSet.index::remove);
                 Logger.debug("Deleted [{}] indexes at [{}]", totalRecords, indexPath);
             });
         } finally {
@@ -1407,7 +1427,6 @@ public final class ChronicleUtils {
                 defaults.add(new DefaultTransfer(field, defValue));
             }
         }
-        // ------------------------------------------------
 
         currentValues.forEachEntry(entry -> {
             try {
@@ -1920,6 +1939,24 @@ public final class ChronicleUtils {
             final Consumer<MapEntry<String, V>> action) {
         try {
             sharedChronicleMap.map.forEachEntry(action);
+        } catch (final InterProcessDeadLockException e) {
+            Logger.error("Deadlock detected on [{}]. Marked for recovery on close.", sharedChronicleMap.getFilePath());
+            sharedChronicleMap.markForRecovery();
+            throw e; // Let caller know operation failed
+        }
+    }
+
+    /**
+     * Safely iterates over map entries with early termination support, marking
+     * for recovery if deadlock is detected.
+     * Recovery happens automatically when all references are closed.
+     *
+     * @return true if iteration completed, false if terminated early by predicate
+     */
+    public <V> boolean safeForEachEntryWhile(final SharedChronicleMap<String, V> sharedChronicleMap,
+            final Predicate<MapEntry<String, V>> predicate) {
+        try {
+            return sharedChronicleMap.map.forEachEntryWhile(predicate);
         } catch (final InterProcessDeadLockException e) {
             Logger.error("Deadlock detected on [{}]. Marked for recovery on close.", sharedChronicleMap.getFilePath());
             sharedChronicleMap.markForRecovery();
