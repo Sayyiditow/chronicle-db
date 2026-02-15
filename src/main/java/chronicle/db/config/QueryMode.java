@@ -37,6 +37,7 @@ public enum QueryMode {
     SEARCH_INDEXED,
     SEARCH_INDEXED_KEYS,
     SEARCH_INDEXED_KEYS_LIST,
+    SEARCH_COUNT,
     GET_FILE,
     GET_FILES,
     PUT,
