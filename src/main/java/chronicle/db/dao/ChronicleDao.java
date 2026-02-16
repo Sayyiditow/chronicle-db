@@ -1293,9 +1293,9 @@ public interface ChronicleDao<V> {
      * @return {@link CsvObject} containing headers and rows
      */
     default CsvObject fetchCsv(final int limit) {
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
 
         for (final String file : getDataFileState().fileNames()) {
             if (rowQueue.size() >= limit) {
@@ -1305,7 +1305,9 @@ public interface ChronicleDao<V> {
                 CHRONICLE_UTILS.safeForEachEntryWhile(shared, entry -> {
                     final var key = entry.key().get();
                     final var value = entry.value().getUsing(using());
-                    headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                    if (headers.get().length == 0) {
+                        headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                    }
                     rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
                     return rowQueue.size() < limit;
                 });
@@ -1355,7 +1357,7 @@ public interface ChronicleDao<V> {
      */
     default CsvObject fetchSubsetCsv(final String[] fields, final int limit) {
         final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         for (final String file : getDataFileState().fileNames()) {
@@ -2030,13 +2032,15 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying multiple keys for CSV at [{}].", dataPath());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
+        final var headers = new AtomicReference<>(new String[0]);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
             processKeysUsing(keys, (key, value) -> {
-                headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                if (headers.get().length == 0) {
+                    headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                }
                 rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
             });
 
@@ -2044,7 +2048,9 @@ public interface ChronicleDao<V> {
         }
 
         processKeysByFileUsing(keys, (key, value) -> {
-            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            if (headers.get().length == 0) {
+                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            }
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
 
@@ -2102,7 +2108,7 @@ public interface ChronicleDao<V> {
 
         Logger.debug("Querying subset CSV multiple keys at [{}].", dataPath());
         final String[] headers = CHRONICLE_UTILS.getCsvHeaders(fields);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
         if (getDataFileState().fileNames().size() <= 1) {
@@ -2164,13 +2170,15 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying multiple keys at [{}] with limit [{}].", dataPath(), limit);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
 
         if (getDataFileState().fileNames().size() <= 1) {
             processKeysUsing(keys, limit, (key, value) -> {
-                headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                if (headers.get().length == 0) {
+                    headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                }
                 rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
             });
 
@@ -2178,7 +2186,9 @@ public interface ChronicleDao<V> {
         }
 
         processKeysByFileUsing(keys, limit, (key, value) -> {
-            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            if (headers.get().length == 0) {
+                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            }
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
 
@@ -2239,7 +2249,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying subset CSV multiple keys at [{}] with limit [{}].", dataPath(), limit);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -2325,12 +2335,14 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying CSV by hashes at [{}] with limit [{}].", dataPath(), limit);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
 
         processKeysByFileUsingFromHashes(hashes, limit, (key, value) -> {
-            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            if (headers.get().length == 0) {
+                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            }
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
 
@@ -2354,7 +2366,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying subset CSV by hashes at [{}] with limit [{}].", dataPath(), limit);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -2476,12 +2488,14 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying CSV by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
 
         processKeysByFileUsingFromHashes(hashes, limit, excludedKeys, (key, value) -> {
-            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            if (headers.get().length == 0) {
+                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            }
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
 
@@ -2535,7 +2549,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying subset CSV by hashes at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -2593,13 +2607,15 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
 
         if (getDataFileState().fileNames().size() <= 1) {
             processKeysUsing(keys, limit, excludedKeys, (key, value) -> {
-                headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                if (headers.get().length == 0) {
+                    headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                }
                 rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
             });
 
@@ -2607,7 +2623,9 @@ public interface ChronicleDao<V> {
         }
 
         processKeysByFileUsing(keys, limit, excludedKeys, (key, value) -> {
-            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            if (headers.get().length == 0) {
+                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            }
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
         });
 
@@ -2669,7 +2687,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying subset CSV multiple keys at [{}] with limit [{}] and excluded keys.", dataPath(), limit);
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
 
@@ -3817,13 +3835,13 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Querying CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(), filters.size());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
@@ -3839,7 +3857,9 @@ public interface ChronicleDao<V> {
                                 }
                             }
 
-                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                            if (headers.get().length == 0) {
+                                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                            }
                             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
                             return true;
                         });
@@ -3869,7 +3889,9 @@ public interface ChronicleDao<V> {
                             }
                         }
 
-                        headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                        if (headers.get().length == 0) {
+                            headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                        }
                         rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
                         return true;
                     });
@@ -3989,7 +4011,7 @@ public interface ChronicleDao<V> {
 
         Logger.debug("Querying subset CSV filtered keys at [{}] with [{}] remaining filters.", dataPath(),
                 filters.size());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -4240,13 +4262,13 @@ public interface ChronicleDao<V> {
 
         Logger.debug("Querying filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.", dataPath(),
                 filters.size(), excludedKeys.size());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
 
         if (getDataFileState().fileNames().size() <= 1) {
             try (final var shared = openDb()) {
@@ -4265,7 +4287,9 @@ public interface ChronicleDao<V> {
                                 }
                             }
 
-                            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                            if (headers.get().length == 0) {
+                                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                            }
                             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
                             return true;
                         });
@@ -4297,7 +4321,9 @@ public interface ChronicleDao<V> {
                                         }
                                     }
 
-                                    headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                    if (headers.get().length == 0) {
+                                        headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                    }
                                     rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
                                     return true;
                                 }
@@ -4431,7 +4457,7 @@ public interface ChronicleDao<V> {
 
         Logger.debug("Querying subset CSV filtered keys at [{}] with [{}] remaining filters and [{}] excluded keys.",
                 dataPath(), filters.size(), excludedKeys.size());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var headers = CHRONICLE_UTILS.getCsvHeaders(fields);
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -4723,13 +4749,13 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Searching CSV by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
                 .toList();
         final var classData = CHRONICLE_UTILS.getClassData(averageValueClass);
-        final AtomicReference<String[]> headers = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
 
         final AtomicInteger count = new AtomicInteger();
         try (final var grouped = getDbFiles(hashes)) {
@@ -4751,7 +4777,9 @@ public interface ChronicleDao<V> {
                                     }
                                 }
 
-                                headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                if (headers.get().length == 0) {
+                                    headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                }
                                 rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
                                 return true;
                             });
@@ -4786,7 +4814,7 @@ public interface ChronicleDao<V> {
         }
 
         Logger.debug("Searching subset CSV by hashes at [{}] with [{}] filters.", dataPath(), filters.size());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
                 .map(s -> CHRONICLE_UTILS.prepareSearch(s, averageValueClass))
@@ -5069,9 +5097,9 @@ public interface ChronicleDao<V> {
 
         Logger.debug("Searching CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
                 filters.size());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
-        final AtomicReference<String[]> csvHeaders = new AtomicReference<>(null);
+        final var headers = new AtomicReference<>(new String[0]);
         final AtomicInteger count = new AtomicInteger();
         final var averageValueClass = averageValue().getClass();
         final var preparedFilters = filters.stream()
@@ -5097,7 +5125,9 @@ public interface ChronicleDao<V> {
                                     }
                                 }
 
-                                csvHeaders.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                if (headers.get().length == 0) {
+                                    headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+                                }
                                 rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
                                 return true;
                             });
@@ -5107,7 +5137,7 @@ public interface ChronicleDao<V> {
             throw new RuntimeException(e);
         }
 
-        return new CsvObject(csvHeaders.get(), new ArrayList<>(rowQueue));
+        return new CsvObject(headers.get(), new ArrayList<>(rowQueue));
     }
 
     /**
@@ -5199,7 +5229,7 @@ public interface ChronicleDao<V> {
 
         Logger.debug("Searching subset CSV by hashes at [{}] with [{}] filters and excluded keys.", dataPath(),
                 filters.size());
-        final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+        final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
         final var classData = CHRONICLE_UTILS.getClassData(averageValue().getClass());
         final var csvHeaders = CHRONICLE_UTILS.getCsvHeaders(fields);
         final AtomicInteger count = new AtomicInteger();
@@ -5310,7 +5340,9 @@ public interface ChronicleDao<V> {
                 }
             }
 
-            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            if (headers.get().length == 0) {
+                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            }
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
             return counter.incrementAndGet() < limit;
         });
@@ -5478,9 +5510,8 @@ public interface ChronicleDao<V> {
      * @param headers      atomic reference for CSV headers
      */
     private void searchCsv(final SharedChronicleMap<String, V> shared, final List<Search> filters,
-            final Set<String> excludedKeys,
-            final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue, final AtomicInteger counter,
-            final AtomicReference<String[]> headers) {
+            final Set<String> excludedKeys, final int limit, final ConcurrentLinkedQueue<Object[]> rowQueue,
+            final AtomicInteger counter, final AtomicReference<String[]> headers) {
         Logger.debug("Searching DB at [{}] using [{}] filters and [{}] excluded keys. Limit [{}]",
                 dataPath(), filters.size(), excludedKeys.size(), limit);
         final var averageValueClass = averageValue().getClass();
@@ -5502,7 +5533,9 @@ public interface ChronicleDao<V> {
                 }
             }
 
-            headers.compareAndSet(null, CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            if (headers.get().length == 0) {
+                headers.set(CHRONICLE_UTILS.getHeadersFromObject(classData, value));
+            }
             rowQueue.add(CHRONICLE_UTILS.getRowFromObject(classData, key, value));
             return counter.incrementAndGet() < limit;
         });
@@ -6329,7 +6362,7 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+                final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
                 final var counter = new AtomicInteger();
                 CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
@@ -6523,8 +6556,8 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
-                final AtomicReference<String[]> headers = new AtomicReference<>(null);
+                final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
+                final var headers = new AtomicReference<>(new String[0]);
                 final var counter = new AtomicInteger();
                 CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
@@ -6859,8 +6892,8 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
-                final AtomicReference<String[]> headers = new AtomicReference<>(null);
+                final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
+                final var headers = new AtomicReference<>(new String[0]);
                 final var counter = new AtomicInteger(0);
                 CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
@@ -7054,7 +7087,7 @@ public interface ChronicleDao<V> {
         // Step 3: Manual search
         try {
             if (searchResult == null) {
-                final ConcurrentLinkedQueue<Object[]> rowQueue = new ConcurrentLinkedQueue<>();
+                final var rowQueue = new ConcurrentLinkedQueue<Object[]>();
                 final var counter = new AtomicInteger(0);
                 CHRONICLE_UTILS.processInParallel(getDataFileState().fileNames(), file -> {
                     if (counter.get() >= limit) {
