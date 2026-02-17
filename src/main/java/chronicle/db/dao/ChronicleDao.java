@@ -7436,6 +7436,49 @@ public interface ChronicleDao<V> {
     }
 
     /**
+     * Returns only the keys that exist in the database.
+     *
+     * @param keys the keys to check
+     * @return set of keys that exist
+     */
+    default Set<String> existsSet(final Collection<String> keys) {
+        Logger.debug("Checking [{}] keys existence at [{}].", keys.size(), dataPath());
+        if (!hasKeyMap()) {
+            final Set<String> existsSet = ConcurrentHashMap.newKeySet();
+            try (final var shared = openDb()) {
+                if (shared.map.isEmpty()) {
+                    return new HashSet<>();
+                }
+                keys.parallelStream().forEach(key -> {
+                    if (shared.map.containsKey(key)) {
+                        existsSet.add(key);
+                    }
+                });
+            }
+
+            return existsSet;
+        }
+
+        return existsSetFromHashes(keys, CHRONICLE_UTILS.preCalculateKeyHashMap(keys));
+    }
+
+    /**
+     * Returns only the keys that exist, using pre-calculated hashes.
+     * Avoids re-hashing when hashes are already available.
+     *
+     * @param keys       the keys to check
+     * @param keyHashMap pre-calculated map of primary key to 16-byte hash
+     * @return set of keys that exist
+     */
+    default Set<String> existsSetFromHashes(final Collection<String> keys, final Map<String, byte[]> keyHashMap) {
+        try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath())) {
+            return keys.parallelStream()
+                    .filter(k -> sharedKeyMap.map.containsKey(keyHashMap.get(k)))
+                    .collect(Collectors.toSet());
+        }
+    }
+
+    /**
      * Returns only the keys that do not exist in the database.
      *
      * @param keys the keys to check
