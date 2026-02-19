@@ -586,10 +586,10 @@ public final class MapDb {
     }
 
     private byte[] createUpperBoundKey(final byte[] fieldBytes) {
-        final byte[] key = new byte[fieldBytes.length + 2];
+        final byte[] key = new byte[fieldBytes.length + 17]; // separator + 16 bytes of 0xFF
         System.arraycopy(fieldBytes, 0, key, 0, fieldBytes.length);
         key[fieldBytes.length] = indexSep;
-        key[fieldBytes.length + 1] = upperByte;
+        Arrays.fill(key, fieldBytes.length + 1, key.length, upperByte);
         return key;
     }
 
@@ -624,27 +624,25 @@ public final class MapDb {
 
     public SearchResult getAfterIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] upperKey = createUpperBoundKey(getSanitizedByte(searchTerm));
-        final byte[] lowerKey = new byte[] { upperByte, upperByte };
-        return getSearchResult(index.subSet(lowerKey, false, upperKey, false), limit);
+        final byte[] lowerKey = createUpperBoundKey(getSanitizedByte(searchTerm));
+        return getSearchResult(index.tailSet(lowerKey, false), limit);
     }
 
     public SearchResult getAfterIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit, final Set<byte[]> excludedKeyHashes) {
-        final byte[] upperKey = createUpperBoundKey(getSanitizedByte(searchTerm));
-        final byte[] lowerKey = new byte[] { upperByte, upperByte };
-        return getSearchResult(index.subSet(lowerKey, false, upperKey, false), limit, excludedKeyHashes);
+        final byte[] lowerKey = createUpperBoundKey(getSanitizedByte(searchTerm));
+        return getSearchResult(index.tailSet(lowerKey, false), limit, excludedKeyHashes);
     }
 
     public SearchResult getLessThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit) {
-        final byte[] upperKey = createLowerBoundKey(createLowerBoundKey(getSanitizedByte(searchTerm)));
+        final byte[] upperKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.headSet(upperKey, false), limit);
     }
 
     public SearchResult getLessThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
             final int limit, final Set<byte[]> excludedKeyHashes) {
-        final byte[] upperKey = createLowerBoundKey(createLowerBoundKey(getSanitizedByte(searchTerm)));
+        final byte[] upperKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.headSet(upperKey, false), limit, excludedKeyHashes);
     }
 
@@ -674,13 +672,13 @@ public final class MapDb {
 
     public SearchResult getGreaterThanOrEqualIndexSearch(final NavigableSet<byte[]> index,
             final String searchTerm, final int limit) {
-        final byte[] lowerKey = createLowerBoundKey(createLowerBoundKey(getSanitizedByte(searchTerm)));
+        final byte[] lowerKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.tailSet(lowerKey, true), limit);
     }
 
     public SearchResult getGreaterThanOrEqualIndexSearch(final NavigableSet<byte[]> index,
             final String searchTerm, final int limit, final Set<byte[]> excludedKeyHashes) {
-        final byte[] lowerKey = createLowerBoundKey(createLowerBoundKey(getSanitizedByte(searchTerm)));
+        final byte[] lowerKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.tailSet(lowerKey, true), limit, excludedKeyHashes);
     }
 
@@ -1037,7 +1035,8 @@ public final class MapDb {
      * (e.g., millions of terms) and index size is comparable.
      *
      * Trade-off: N index lookups vs 1 full scan + N HashSet lookups (O(1) each)
-     * Use when: searchTerms.size() > 10000 AND index.size() < searchTerms.size() * 10
+     * Use when: searchTerms.size() > 10000 AND index.size() < searchTerms.size() *
+     * 10
      */
     public SearchResult getInIndexSearchFullScan(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
@@ -1079,7 +1078,8 @@ public final class MapDb {
     }
 
     /**
-     * Full scan IN search with excluded keys - iterates through entire index and checks HashSet.
+     * Full scan IN search with excluded keys - iterates through entire index and
+     * checks HashSet.
      */
     public SearchResult getInIndexSearchFullScan(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit, final Set<byte[]> excludedKeyHashes) {
