@@ -16,8 +16,8 @@ chronicle-db provides:
 
 ```
 ┌─────────────────┐     Socket      ┌─────────────────┐
-│  Your App       │ ◄────────────► │  chronicle-db   │
-│  (keil-server)  │   Kryo Proto   │  Server         │
+│    Your App     │ ◄────────────► │  chronicle-db   │
+│                 │   Kryo Proto   │     Server      │
 └─────────────────┘                 └────────┬────────┘
                                              │
                          ┌───────────────────┼───────────────────┐
