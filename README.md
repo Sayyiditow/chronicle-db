@@ -218,7 +218,7 @@ public class UserDao implements ChronicleDao<User> {
     // Full data path including entity name
     @Override
     public String dataPath() {
-        return dataPath + "/" + name();  // e.g., ".data/tenant1/User"
+        return dataPath + "/" + name();  // e.g., ".data/dbDir/User"
     }
 
     // Thread-local reusable instance for reads
@@ -266,7 +266,7 @@ ClientSocketService dbService = new ClientSocketService(
 Map<String, Object> query = new HashMap<>();
 query.put("mode", QueryMode.GET);
 query.put("fqn", "my.app.dao.UserDao");
-query.put("dbDir", "tenant1");
+query.put("dbDir", "XYZ");
 query.put("filePath", "");
 query.put("key", "user-uuid-123");
 

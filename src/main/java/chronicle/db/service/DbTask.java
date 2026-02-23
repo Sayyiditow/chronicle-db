@@ -10,8 +10,7 @@ public interface DbTask {
     /**
      * Executes the task logic.
      * 
-     * @param params Parameters passed from the client (e.g., tenantId, source, date
-     *               range).
+     * @param params Parameters passed from the client required by the task.
      * @return Any result object that Kryo can serialize back to the client.
      */
     Object execute(Map<String, Object> params, ReplicationQueue replicationQueue) throws Throwable;
