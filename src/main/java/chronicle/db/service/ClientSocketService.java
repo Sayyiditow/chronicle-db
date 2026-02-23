@@ -180,28 +180,112 @@ public class ClientSocketService {
         connections.offer(socketToReturn); // Now guaranteed to succeed
     }
 
-    public static Map<String, Object> prepareQueryMap(final QueryMode queryMode, final String fqn,
-            final String filePath) {
-        if (fqn == null || fqn.isBlank() || filePath == null || filePath.isBlank()) {
-            throw new IllegalArgumentException("fqn or filePath cannot be empty/null.");
+    public static String getClassNameFromFilePath(final String filePath) {
+        return filePath.substring(filePath.lastIndexOf('/') + 1);
+    }
+
+    public static Map<String, Object> prepareTruncateMap(final String fqn, final String dbDir) {
+        if (fqn == null || fqn.isBlank() || dbDir == null || dbDir.isBlank()) {
+            throw new IllegalArgumentException("fqn or dbDir cannot be empty/null.");
+        }
+        final var map = new HashMap<String, Object>();
+        map.put("fqn", fqn);
+        map.put("mode", QueryMode.TRUNCATE);
+        map.put("isArchived", false);
+        map.put("dbDir", dbDir);
+        return map;
+    }
+
+    public static Map<String, Object> prepareArchivePeriodQueryMap(final String dbDir, final String filePath) {
+        if (dbDir == null || dbDir.isBlank()) {
+            throw new IllegalArgumentException("Database Directory (dbDir) cannot be null or empty.");
+        }
+        final var map = new HashMap<String, Object>();
+        map.put("dbDir", dbDir);
+        map.put("filePath", filePath);
+        map.put("mode", QueryMode.GET_ARCHIVE_PERIODS);
+        map.put("isArchived", false);
+
+        return map;
+    }
+
+    public static Map<String, Object> prepareQueryMap(final String fqn, final QueryMode queryMode,
+            final String dbDir, final String filePath) {
+        if (fqn == null || fqn.isBlank() || dbDir == null || dbDir.isBlank()) {
+            throw new IllegalArgumentException("fqn or dbDir cannot be empty/null.");
         }
         final var map = new HashMap<String, Object>();
         map.put("fqn", fqn);
         map.put("mode", queryMode);
         map.put("isArchived", false);
+        map.put("dbDir", dbDir);
         map.put("filePath", filePath);
         return map;
     }
 
     public static Map<String, Object> prepareSequenceReplicationMap() {
         final var map = new HashMap<String, Object>();
-        map.put("mode", QueryMode.REPLICATE_SEQUENCES);
+        map.put("mode", QueryMode.UPDATE_SEQUENCES);
         return map;
     }
 
-    public static Map<String, Object> prepareDbCountMap() {
+    public static Map<String, Object> prepareDbCountMap(final Map<String, List<String>> fqnMap) {
         final var map = new HashMap<String, Object>();
         map.put("mode", QueryMode.DB_COUNT);
+        map.put("fqnMap", fqnMap);
+        return map;
+    }
+
+    public static Map<String, Object> prepareSequenceNextMap(final String sequenceName) {
+        final var map = new HashMap<String, Object>();
+        map.put("mode", QueryMode.SEQUENCE_NEXT);
+        map.put("sequenceName", sequenceName);
+        return map;
+    }
+
+    public static Map<String, Object> prepareSequenceNextMap(final String sequenceName, final int seqLen) {
+        final var map = new HashMap<String, Object>();
+        map.put("mode", QueryMode.SEQUENCE_NEXT);
+        map.put("sequenceName", sequenceName);
+        map.put("seqLen", seqLen);
+        return map;
+    }
+
+    public static Map<String, Object> prepareSequenceNextBatchMap(final String sequenceName, final int count) {
+        final var map = new HashMap<String, Object>();
+        map.put("mode", QueryMode.SEQUENCE_NEXT_BATCH);
+        map.put("sequenceName", sequenceName);
+        map.put("count", count);
+        return map;
+    }
+
+    public static Map<String, Object> prepareSequenceNextBatchMap(final String sequenceName, final int count,
+            final int seqLen) {
+        final var map = new HashMap<String, Object>();
+        map.put("mode", QueryMode.SEQUENCE_NEXT_BATCH);
+        map.put("sequenceName", sequenceName);
+        map.put("count", count);
+        map.put("seqLen", seqLen);
+        return map;
+    }
+
+    public static Map<String, Object> prepareSequenceCurrentMap(final String sequenceName) {
+        final var map = new HashMap<String, Object>();
+        map.put("mode", QueryMode.SEQUENCE_CURRENT);
+        map.put("sequenceName", sequenceName);
+        return map;
+    }
+
+    public static Map<String, Object> prepareSequenceResetMap(final String sequenceName) {
+        final var map = new HashMap<String, Object>();
+        map.put("mode", QueryMode.SEQUENCE_RESET);
+        map.put("sequenceName", sequenceName);
+        return map;
+    }
+
+    public static Map<String, Object> prepareDbDirsMap() {
+        final var map = new HashMap<String, Object>();
+        map.put("mode", QueryMode.DB_DIRS);
         return map;
     }
 
@@ -212,6 +296,14 @@ public class ClientSocketService {
         final var map = new HashMap<String, Object>();
         map.put("mode", QueryMode.MOVE_FILES);
         map.put("paths", paths);
+        return map;
+    }
+
+    public static Map<String, Object> prepareTaskMap(final String taskClass, final Map<String, Object> params) {
+        final var map = new HashMap<String, Object>();
+        map.put("mode", QueryMode.EXECUTE_TASK);
+        map.put("taskClass", taskClass);
+        map.put("params", params);
         return map;
     }
 
@@ -230,8 +322,8 @@ public class ClientSocketService {
         queryMap.put("fqn", fqn);
     }
 
-    public static void updateTenantId(final Map<String, Object> queryMap, final String tenantId) {
-        queryMap.put("tenantId", tenantId);
+    public static void updateDbDir(final Map<String, Object> queryMap, final String dbDir) {
+        queryMap.put("dbDir", dbDir);
     }
 
     public static void addKey(final Map<String, Object> queryMap, final String key) {
@@ -296,30 +388,8 @@ public class ClientSocketService {
         queryMap.put("limit", limit);
     }
 
-    public static void addUid(final Map<String, Object> queryMap, final String uid) {
-        queryMap.put("uid", uid);
-    }
-
-    public static void addUidFields(final Map<String, Object> queryMap, final List<String> uidFields) {
-        queryMap.put("uidFields", uidFields);
-    }
-
-    public static void addCurrentDateTimeFields(final Map<String, Object> queryMap,
-            final List<String> currentDateTimeFields) {
-        queryMap.put("currentDateTimeFields", currentDateTimeFields);
-    }
-
     public static void addObjects(final Map<String, Object> queryMap, final Map<String, ?> objects) {
         queryMap.put("objects", objects);
-    }
-
-    public static void addSequenceFields(final Map<String, Object> queryMap,
-            final List<Map<String, Object>> sequenceFields) {
-        queryMap.put("sequenceFields", sequenceFields);
-    }
-
-    public static void addSkipSequenceNotExistsListsCheck(final Map<String, Object> queryMap) {
-        queryMap.put("sequenceFieldsSkipNotExistsListCheck", true);
     }
 
     public static void addSequences(final Map<String, Object> queryMap, final Map<String, Long> sequences) {

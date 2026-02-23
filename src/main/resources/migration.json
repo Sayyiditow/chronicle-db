@@ -1,0 +1,216 @@
+[
+    {
+        "sourceObject": "Company",
+        "destObject": "Company2",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "CompanyPhone",
+        "destObject": "CompanyPhone2",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {
+            "companyStatus": "APPROVED"
+        }
+    },
+    {
+        "sourceObject": "CompanyAddress2",
+        "destObject": "CompanyAddress",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {
+            "companyStatus": "APPROVED"
+        }
+    },
+    {
+        "sourceObject": "CompanyEmail2",
+        "destObject": "CompanyEmail",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {
+            "companyStatus": "APPROVED"
+        }
+    },
+    {
+        "sourceObject": "PersonIncharge2",
+        "destObject": "PersonIncharge",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {
+            "companyStatus": "APPROVED"
+        }
+    },
+    {
+        "sourceObject": "Transaction",
+        "destObject": "Transaction2",
+        "pathPrefix": ["Invoice/", "CreditNote/", "DebitNote/", "Refundable/"],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "TransactionLine",
+        "destObject": "TransactionLine2",
+        "pathPrefix": ["Invoice/", "CreditNote/", "DebitNote/", "Refundable/"],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "User2",
+        "destObject": "User",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "Source",
+        "destObject": "Source2",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "AclGroup2",
+        "destObject": "AclGroup",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "Template",
+        "destObject": "Template2",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "TransactionCode2",
+        "destObject": "TransactionCode",
+        "pathPrefix": [""],
+        "move": {
+            "einvoiceGenaration": "einvoiceGeneration"
+        },
+        "def": {}
+    },
+    {
+        "sourceObject": "TransactionCode2",
+        "destObject": "TransactionCode",
+        "pathPrefix": [""],
+        "def": {}
+    },
+    {
+        "sourceObject": "InvoiceSpecificDetail2",
+        "destObject": "InvoiceSpecificDetail",
+        "pathPrefix": ["Invoice/", "CreditNote/", "DebitNote/", "Refundable/"],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "ApiConfiguration",
+        "destObject": "ApiConfiguration2",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "IRBMSubmission",
+        "destObject": "IRBMSubmission2",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "Entity2",
+        "destObject": "Entity",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "ReminderHistory",
+        "destObject": "ReminderHistory2",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "UnsuccessfulEmailNotification",
+        "destObject": "EmailNotification",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "ReminderEmailHistory",
+        "destObject": "ReminderEmailHistory2",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "IrbmStatusHistory",
+        "destObject": "IrbmStatusHistory2",
+        "pathPrefix": ["Invoice/", "CreditNote/", "DebitNote/", "Refundable/"],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "CustomField2",
+        "destObject": "CustomField",
+        "pathPrefix": [""],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "AclGroup2",
+        "destObject": "AclGroup",
+        "pathPrefix": [""],
+        "move": {
+            "permissions": "uiPermissions"
+        },
+        "def": {}
+    },
+    {
+        "sourceObject": "PaymentDetail",
+        "destObject": "PaymentDetail2",
+        "pathPrefix": ["Invoice/", "CreditNote/", "DebitNote/", "Refundable/"],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "TransactionRecipient2",
+        "destObject": "TransactionRecipient",
+        "pathPrefix": ["Invoice/", "CreditNote/", "DebitNote/", "Refundable/"],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "TransactionEntity",
+        "destObject": "TransactionEntity2",
+        "pathPrefix": ["Invoice/", "CreditNote/", "DebitNote/", "Refundable/"],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "PdfSftpConfig2",
+        "destObject": "PdfSftpConfig",
+        "pathPrefix": [],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "ReminderTreeNodeAction",
+        "destObject": "ReminderTreeNodeAction2",
+        "pathPrefix": [],
+        "move": {},
+        "def": {}
+    },
+    {
+        "sourceObject": "ReminderVerification",
+        "destObject": "ReminderVerification2",
+        "pathPrefix": [],
+        "move": {},
+        "def": {}
+    }
+]

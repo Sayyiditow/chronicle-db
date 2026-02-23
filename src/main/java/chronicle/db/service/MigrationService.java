@@ -16,6 +16,7 @@ import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.Server;
 import chronicle.db.dao.ChronicleDao;
+import chronicle.db.utils.JsonUtils;
 import chronicle.db.utils.SafeRunnable;
 
 /**
@@ -34,16 +35,14 @@ import chronicle.db.utils.SafeRunnable;
  * }
  * ]
  */
-public class MigrationService {
+public final class MigrationService {
     private MigrationService() {
     }
 
-    public static final MigrationService MIGRATION_SERVICE = new MigrationService();
-
     @SuppressWarnings("unchecked")
-    public void migrateObjects() throws IOException {
+    public static void migrateObjects() throws IOException {
         final var migrationFilePath = Server.getResourceDir() + "/migration.json";
-        final var config = CHRONICLE_UTILS.fromJsonFileToObj(migrationFilePath,
+        final var config = JsonUtils.fromJsonFileToObj(migrationFilePath,
                 new TypeLiteral<List<Map<String, Object>>>() {
                 });
         final var statusPathStr = Server.getResourceDir() + "/.migrationStatus.json";
@@ -51,7 +50,7 @@ public class MigrationService {
         if (!Files.exists(statusPath)) {
             Files.writeString(statusPath, "{}");
         }
-        final var moveStatus = CHRONICLE_UTILS.fromJsonFileToObj(statusPathStr,
+        final var moveStatus = JsonUtils.fromJsonFileToObj(statusPathStr,
                 new TypeLiteral<Map<String, Boolean>>() {
                 });
         boolean migrationStarted = false;
@@ -114,7 +113,7 @@ public class MigrationService {
         }
 
         if (migrationStarted) {
-            CHRONICLE_UTILS.toJsonFileFromObj(statusPathStr, moveStatus);
+            JsonUtils.toJsonFileFromObj(statusPathStr, moveStatus);
         }
     }
 }

@@ -1,5 +1,6 @@
 package chronicle.db;
 
+import static chronicle.db.service.ChronicleDaoService.CHRONICLE_DAO_SERVICE;
 import static chronicle.db.service.ChronicleDb.CHRONICLE_DB;
 import static chronicle.db.service.MapDb.MAP_DB;
 import static chronicle.db.service.SequenceService.SEQUENCE_SERVICE;
@@ -16,28 +17,43 @@ import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.tinylog.Logger;
 
 import chronicle.db.config.KryoSerializer;
 import chronicle.db.config.QueryMode;
+import chronicle.db.entity.PutStatus;
 import chronicle.db.service.ClientSocketService;
 import chronicle.db.service.DeadlockService;
+import chronicle.db.service.DeleteService;
 import chronicle.db.service.FailOver;
+import chronicle.db.service.GetService;
 import chronicle.db.service.MigrationService;
+import chronicle.db.service.PutService;
 import chronicle.db.service.ReplicationQueue;
+import chronicle.db.service.TaskLoader;
+import chronicle.db.service.VacuumService;
+import chronicle.db.utils.JsonUtils;
+import chronicle.db.utils.SafeSupplier;
 
+@SuppressWarnings("unchecked")
 public class Server {
     public static final class DataSocket {
         public final Socket socket;
@@ -54,15 +70,15 @@ public class Server {
     public static final record StandbyServer(String url, int port, ClientSocketService dbService) {
     }
 
-    public static final String DB_DATE_FORMAT = "yyyyMMddHHmmss";
-    public static final DateTimeFormatter DB_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern(DB_DATE_FORMAT);
     public static final AtomicBoolean SHUTDOWN_REQUESTED = new AtomicBoolean(false);
-    public static String LOGS_DIR = "logs";
 
+    private static final String dbDateFormat = "yyyyMMddHHmmss";
+    private static final DateTimeFormatter dbDateTimeFormatter = DateTimeFormatter.ofPattern(dbDateFormat);
+    private static String LOGS_DIR = "logs";
+    private static String processId = LOGS_DIR + "/procid";
     private static final String appDir = "app";
     private static final Set<Thread> activeThreads = ConcurrentHashMap.newKeySet();
     private static final List<StandbyServer> standbyServers = new ArrayList<>();
-    private static String processIdFile = LOGS_DIR + "/procid";
     private static String resourceDir = "src/main/resources/";
     private static boolean isHosted = false;
     private static boolean isPrimary = false;
@@ -70,21 +86,59 @@ public class Server {
     private static String dbArchPath;
     private static int port;
     private static int queueSize = 512;
-    private static String fixedBatchTime;
-    private static String dailyBatchTime;
-    private static String dailyTransactionSummaryTime;
-    private static String dailyEmtpyTrxLineCleanupTime;
-    private static String dailyQueueCleanupTime;
-    private static String[] dailySequenceResetNames;
-    private static String monthlyTrxArchivalTime;
     private static boolean upgrading = false;
     public static boolean replicationEnabled = false;
     private static ReplicationQueue replicationQueue = null;
-    private static final Server DB_SERVER = new Server();
+    private static final int batchSizeMedium = Integer.getInteger("chronicle.db.batchSizeMedium", 20_000);
+    private static final int batchSizeLarge = Integer.getInteger("chronicle.db.batchSizeLarge", 50_000);
+    private static final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
-    private Properties loadProperties() {
+    static {
+        final var properties = loadProperties();
+
+        if (!properties.isEmpty()) {
+            port = Integer.parseInt(properties.getProperty("port"));
+            dbPath = properties.getProperty("dbPath");
+            dbArchPath = properties.getProperty("dbArchPath");
+            queueSize = Integer.parseInt(properties.getProperty("queueSize", "512"));
+            final var env = properties.getProperty("env");
+            final var primary = properties.getProperty("primary");
+            isHosted = !env.equals("dev");
+            isPrimary = primary.equals("true");
+
+            if (isHosted) {
+                LOGS_DIR = "../logs";
+                processId = LOGS_DIR + "/procid";
+                resourceDir = "../resources/";
+
+                final var standbyUrls = properties.getProperty("standbyDbUrls");
+                if (isPrimary && standbyUrls != null && !standbyUrls.isEmpty()) {
+                    replicationEnabled = Boolean.parseBoolean(properties.getProperty("replication", "false"));
+                    final var standbyUrlslArr = standbyUrls.split(",");
+                    final var standbyPortsArr = properties.getProperty("standbyDbPorts").split(",");
+                    final var standBySize = standbyUrlslArr.length;
+                    final String[] tailerNames = new String[standBySize + 1];
+                    for (int i = 0; i < standBySize; i++) {
+                        final var url = standbyUrlslArr[i];
+                        final var rawPort = standbyPortsArr[i];
+                        final var standbyPort = Integer.parseInt(rawPort);
+                        tailerNames[i] = ReplicationQueue.generateTailerName(url, rawPort);
+                        if (replicationEnabled) {
+                            standbyServers
+                                    .add(new StandbyServer(url, standbyPort,
+                                            new ClientSocketService(url, standbyPort, 1, 0)));
+                        }
+                    }
+                    tailerNames[standBySize] = ReplicationQueue.getPrimaryTailerName();
+                    replicationQueue = new ReplicationQueue(tailerNames);
+                }
+            }
+        }
+    }
+
+    private static Properties loadProperties() {
         final Properties props = new Properties();
-        try (InputStream is = getClass().getClassLoader().getResourceAsStream("server.properties")) {
+        try (InputStream is = Server.class.getClassLoader().getResourceAsStream("server.properties")) {
             if (is == null) {
                 Logger.error("Could not find server.properties");
                 System.exit(1);
@@ -98,56 +152,6 @@ public class Server {
     }
 
     private Server() {
-        final var properties = loadProperties();
-
-        if (!properties.isEmpty()) {
-            port = Integer.parseInt(properties.getProperty("port"));
-            dbPath = properties.getProperty("dbPath");
-            dbArchPath = properties.getProperty("dbArchPath");
-            queueSize = Integer.parseInt(properties.getProperty("queueSize", "512"));
-            fixedBatchTime = properties.getProperty("fixedBatchTime", "-1");
-            dailyBatchTime = properties.getProperty("dailyBatchTime", "-1");
-            dailyTransactionSummaryTime = properties.getProperty("dailyTransactionSummaryTime", "-1");
-            monthlyTrxArchivalTime = properties.getProperty("monthlyTrxArchivalTime", "-1");
-            dailyEmtpyTrxLineCleanupTime = properties.getProperty("dailyEmtpyTrxLineCleanupTime", "-1");
-            dailyQueueCleanupTime = properties.getProperty("dailyQueueCleanupTime", "-1");
-            final var env = properties.getProperty("env");
-            final var primary = properties.getProperty("primary");
-            isHosted = !env.equals("dev");
-            isPrimary = primary.equals("true");
-
-            final var sequenceResetNames = properties.getProperty("dailySequenceResetNames");
-            if (sequenceResetNames != null && !sequenceResetNames.isEmpty()) {
-                dailySequenceResetNames = sequenceResetNames.split(",");
-            }
-
-            if (isHosted) {
-                LOGS_DIR = "../logs";
-                processIdFile = LOGS_DIR + "/procid";
-                resourceDir = "../resources/";
-
-                final var standbyUrls = properties.getProperty("standbyDbUrls");
-                if (isPrimary && standbyUrls != null && !standbyUrls.isEmpty()) {
-                    replicationEnabled = Boolean.parseBoolean(properties.getProperty("replication", "false"));
-                    final var standbyUrlslArr = standbyUrls.split(",");
-                    final var standbyPortsArr = properties.getProperty("standbyDbPorts").split(",");
-                    final var standBySize = standbyUrlslArr.length;
-                    final String[] tailerNames = new String[standBySize + 1];
-                    for (int i = 0; i < standBySize; i++) {
-                        final var url = standbyUrlslArr[i];
-                        final var rawPort = standbyPortsArr[i];
-                        final var port = Integer.parseInt(rawPort);
-                        tailerNames[i] = ReplicationQueue.generateTailerName(url, rawPort);
-                        if (replicationEnabled) {
-                            standbyServers
-                                    .add(new StandbyServer(url, port, new ClientSocketService(url, port, 1, 0)));
-                        }
-                    }
-                    tailerNames[standBySize] = ReplicationQueue.getPrimaryTailerName();
-                    replicationQueue = new ReplicationQueue(tailerNames);
-                }
-            }
-        }
     }
 
     public static int getQueueSize() {
@@ -176,6 +180,50 @@ public class Server {
         return appDir;
     }
 
+    public static int getBatchSizeMedium() {
+        return batchSizeMedium;
+    }
+
+    public static int getBatchSizeLarge() {
+        return batchSizeLarge;
+    }
+
+    public static String getDbDateFormat() {
+        return dbDateFormat;
+    }
+
+    public static DateTimeFormatter getDbDateTimeFormatter() {
+        return dbDateTimeFormatter;
+    }
+
+    private static void scheduleQueueCleanup() {
+        if (replicationQueue == null) {
+            return;
+        }
+
+        // Run daily at 3:00 AM
+        final var now = LocalDateTime.now();
+        var nextRun = now.toLocalDate().atTime(LocalTime.of(3, 0));
+        if (now.isAfter(nextRun)) {
+            nextRun = nextRun.plusDays(1);
+        }
+
+        final long initialDelayMinutes = Duration.between(now, nextRun).toMinutes();
+        final long oneDayMinutes = TimeUnit.DAYS.toMinutes(1);
+
+        scheduler.scheduleAtFixedRate(() -> {
+            try {
+                Logger.info("Starting daily queue cleanup...");
+                replicationQueue.cleanupQueue();
+                Logger.info("Queue cleanup completed.");
+            } catch (final IOException e) {
+                Logger.error(e, "Queue cleanup failed.");
+            }
+        }, initialDelayMinutes, oneDayMinutes, TimeUnit.MINUTES);
+
+        Logger.info("Queue cleanup scheduled daily at 03:00. Next run in [{}] minutes.", initialDelayMinutes);
+    }
+
     private static void closeSocketResources(final DataSocket dataSocket) {
         try {
             if (dataSocket != null) {
@@ -201,15 +249,20 @@ public class Server {
             try {
                 processedCount = replicationQueue.processPending(tailerName, data -> {
                     try {
-                        if (!(boolean) dbService.execute(data)) {
-                            Logger.warn("Replication for tailer [{}] failed - will retry. Action: {}", tailerName,
-                                    KryoSerializer.deserialize(data));
-                            Thread.sleep(2000);
-                            return false;
-                        }
-                        return true;
+                        dbService.execute(data);
+                        return true; // Standby received and processed the command
                     } catch (final InterruptedException e) {
                         Thread.currentThread().interrupt();
+                        return false;
+                    } catch (final Exception e) {
+                        // Connection/network failure - retry
+                        Logger.warn("Replication for tailer [{}] failed - will retry. Error: {}", tailerName,
+                                e.getMessage());
+                        try {
+                            Thread.sleep(2000);
+                        } catch (final InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
                         return false;
                     }
                 });
@@ -234,24 +287,25 @@ public class Server {
     private static void sendAllPendingPrimaryWrites() throws InterruptedException {
         final var tailerName = ReplicationQueue.getPrimaryTailerName();
 
-        // final int processedCount = replicationQueue.processPending(tailerName, data
-        // -> {
-        // try {
-        // final var params = (Map<String, Object>) KryoSerializer.deserialize(data);
-        // return handleReplicationRequest(params, (QueryMode) params.get("mode"));
-        // } catch (final Throwable e) {
-        // Logger.error("Failed to write pending primary writes.");
-        // return false;
-        // }
-        // });
+        final int processedCount = replicationQueue.processPending(tailerName, data -> {
+            try {
+                final var params = (Map<String, Object>) KryoSerializer.deserialize(data);
+                executeRequest(params, null); // null = don't re-queue
+                return true;
+            } catch (final Throwable e) {
+                Logger.error("Failed to write pending primary writes.");
+                Logger.error(e);
+                return false;
+            }
+        });
 
-        // if (processedCount > 0) {
-        // Logger.info("Processed [{}] pending writes for primary tailer.",
-        // processedCount);
-        // }
+        if (processedCount > 0) {
+            Logger.info("Processed [{}] pending writes for primary tailer.", processedCount);
+        }
     }
 
-    private static boolean isSafeToFailover(final String tailerName, final ClientSocketService dbService,
+    private static boolean isSafeToFailover(final Map<String, List<String>> fqnMap, final String tailerName,
+            final ClientSocketService dbService,
             final ConcurrentMap<String, ConcurrentMap<String, Integer>> currentDbCounts)
             throws InterruptedException {
         Logger.info("Failover test in progress for [{}].", tailerName);
@@ -269,21 +323,18 @@ public class Server {
             }
 
             // check counts
-            final var countMap = ClientSocketService.prepareDbCountMap();
+            final var countMap = ClientSocketService.prepareDbCountMap(fqnMap);
             final var standbyCounts = (ConcurrentMap<String, ConcurrentMap<String, Integer>>) dbService
                     .execute(countMap);
-            final var toSync = FailOver.printDbCountsSideBySide(currentDbCounts, standbyCounts);
+            final var toSync = FailOver.printDbCountsSideBySide(fqnMap, currentDbCounts, standbyCounts);
             if (!toSync.isEmpty()) {
-                Logger.info("❌ Count mismatch, syncing remainig data for [{}].", tailerName);
+                Logger.info("❌ Count mismatch, syncing remaining data for [{}].", tailerName);
 
                 var safe = true;
                 for (final var entry : toSync.entrySet()) {
-                    final var dbDir = entry.getKey();
-                    final var filePaths = entry.getValue();
-
-                    for (final var filePath : filePaths) {
-                        final Path path = Path.of(dbPath + "/" + dbDir + "/" + filePath);
-                        safe &= FailOver.syncData(path, dbService.getDbUrl());
+                    final var keys = entry.getValue();
+                    for (final var key : keys) {
+                        safe &= FailOver.syncData(Path.of(key), dbService.getDbUrl());
                     }
                 }
                 return safe;
@@ -306,7 +357,7 @@ public class Server {
         }
     }
 
-    private static boolean isAllSafeToFailOver(final Map<String, String> fqnMap)
+    private static boolean isAllSafeToFailOver(final Map<String, List<String>> fqnMap)
             throws InterruptedException, IOException {
         if (replicationQueue != null) {
             upgrading = true;
@@ -314,18 +365,18 @@ public class Server {
             // 1. Ensure Primary is up to date with its own WAL
             final String primaryTailer = ReplicationQueue.getPrimaryTailerName();
             if (!replicationQueue.isEmpty(primaryTailer)) {
-                Logger.info("❌ Primary Tailer has pending writes. Retry in a while.");
+                Logger.info("❌ Primary tailer has pending writes. Retry in a while.");
                 upgrading = false;
                 return false;
             }
-            Logger.info("✅ Primary Tailer is at end, no more pending writes. Checking standby DBs.");
+            Logger.info("✅ Primary tailer is at end, no more pending writes. Checking standby DBs.");
 
             boolean safe = true;
             final var thisDbCounts = FailOver.getDbCounts(fqnMap);
             for (final var server : standbyServers) {
                 final String tailerName = ReplicationQueue.generateTailerName(server.url(),
                         String.valueOf(server.port()));
-                final var standByDbSafe = isSafeToFailover(tailerName, server.dbService(), thisDbCounts);
+                final var standByDbSafe = isSafeToFailover(fqnMap, tailerName, server.dbService(), thisDbCounts);
                 if (standByDbSafe) {
                     Logger.info("DB at [{}] is up to date and safe to fail over to.", tailerName);
                 }
@@ -340,6 +391,330 @@ public class Server {
         return true;
     }
 
+    private static Object executeRequest(final Map<String, Object> params) throws Throwable {
+        return executeRequest(params, replicationQueue);
+    }
+
+    private static Object executeRequest(final Map<String, Object> params, final ReplicationQueue queue)
+            throws Throwable {
+        final var queryMode = (QueryMode) params.get("mode");
+        return switch (queryMode) {
+            // get
+            case GET -> GetService.get(params);
+            case GET_JSON -> JsonUtils.toJsonFromObj(GetService.get(params));
+            case GET_SUBSET -> GetService.getSubset(params);
+            case GET_SUBSET_JSON -> JsonUtils.toJsonFromObj(GetService.getSubset(params));
+            case GET_ALL -> GetService.getAll(params);
+            case GET_ALL_JSON -> JsonUtils.toJsonFromObj(GetService.getAll(params));
+            case GET_ALL_CSV -> GetService.getAllCsv(params);
+            case GET_ALL_CSV_JSON -> JsonUtils.toJsonFromObj(GetService.getAllCsv(params));
+            case GET_ALL_SUBSET -> GetService.getAllSubset(params);
+            case GET_ALL_SUBSET_JSON -> JsonUtils.toJsonFromObj(GetService.getAllSubset(params));
+            case GET_ALL_SUBSET_CSV -> GetService.getAllSubsetCsv(params);
+            case GET_ALL_SUBSET_CSV_JSON -> JsonUtils.toJsonFromObj(GetService.getAllSubsetCsv(params));
+            case GET_ARCHIVE_PERIODS -> CHRONICLE_DAO_SERVICE.getAvailableArchivePeriods(params.get("dbDir").toString(),
+                    params.get("filePath").toString());
+            case FETCH -> GetService.fetch(params);
+            case FETCH_KEYS -> GetService.fetchKeys(params);
+            case FETCH_KEYS_LIST -> GetService.fetchKeysList(params);
+            case FETCH_JSON -> JsonUtils.toJsonFromObj(GetService.fetch(params));
+            case FETCH_CSV -> GetService.fetchCsv(params);
+            case FETCH_CSV_JSON -> JsonUtils.toJsonFromObj(GetService.fetchCsv(params));
+            case FETCH_SUBSET -> GetService.fetchSubset(params);
+            case FETCH_SUBSET_JSON -> JsonUtils.toJsonFromObj(GetService.fetchSubset(params));
+            case FETCH_SUBSET_CSV -> GetService.fetchSubsetCsv(params);
+            case FETCH_SUBSET_CSV_JSON -> JsonUtils.toJsonFromObj(GetService.fetchSubsetCsv(params));
+            case SEARCH -> GetService.search(params);
+            case SEARCH_KEYS -> GetService.searchKeys(params);
+            case SEARCH_KEYS_LIST -> GetService.searchKeysList(params);
+            case SEARCH_JSON -> JsonUtils.toJsonFromObj(GetService.search(params));
+            case SEARCH_CSV -> GetService.searchCsv(params);
+            case SEARCH_CSV_JSON -> JsonUtils.toJsonFromObj(GetService.searchCsv(params));
+            case SEARCH_SUBSET -> GetService.searchSubset(params);
+            case SEARCH_SUBSET_JSON -> JsonUtils.toJsonFromObj(GetService.searchSubset(params));
+            case SEARCH_SUBSET_CSV -> GetService.searchSubsetCsv(params);
+            case SEARCH_SUBSET_CSV_JSON -> JsonUtils.toJsonFromObj(GetService.searchSubsetCsv(params));
+            case SEARCH_NON_INDEXED -> GetService.searchOneNonIndexed(params);
+            case SEARCH_NON_INDEXED_KEYS -> GetService.searchOneNonIndexedKeys(params);
+            case SEARCH_NON_INDEXED_KEYS_LIST -> GetService.searchOneNonIndexedKeysList(params);
+            case SEARCH_INDEXED -> GetService.searchOneIndexed(params);
+            case SEARCH_INDEXED_KEYS -> GetService.searchOneIndexedKeys(params);
+            case SEARCH_INDEXED_KEYS_LIST -> GetService.searchOneIndexedKeysList(params);
+            case SEARCH_COUNT -> GetService.searchCount(params);
+            case GET_FILE -> GetService.getFile(params);
+            case GET_FILES -> GetService.getFiles(params);
+            case EXISTS -> GetService.exists(params);
+            case EXISTS_MAP -> GetService.existsMap(params);
+            case EXISTS_SET -> GetService.existsSet(params);
+            case EXISTS_LIST -> GetService.existsList(params);
+            case NOT_EXISTS -> GetService.notExists(params);
+            case NOT_EXISTS_LIST -> GetService.notExistsList(params);
+            case DB_DIRS -> GetService.getAllDbDirs();
+            case ENTRIES -> GetService.entries(params);
+            // sequence
+            case SEQUENCE_NEXT -> {
+                final var sequenceName = params.get("sequenceName").toString();
+                final var seqLen = params.get("seqLen");
+                if (seqLen != null) {
+                    yield SEQUENCE_SERVICE.getSequence(sequenceName, (int) seqLen);
+                }
+                yield SEQUENCE_SERVICE.getSequence(sequenceName);
+            }
+            case SEQUENCE_NEXT_BATCH -> {
+                final var sequenceName = params.get("sequenceName").toString();
+                final var count = (int) params.get("count");
+                final var seqLen = params.get("seqLen");
+                if (seqLen != null) {
+                    yield SEQUENCE_SERVICE.getSequences(sequenceName, count, (int) seqLen);
+                }
+                yield SEQUENCE_SERVICE.getSequences(sequenceName, count);
+            }
+            case SEQUENCE_CURRENT -> {
+                final var sequenceName = params.get("sequenceName").toString();
+                final var sequenceDb = SEQUENCE_SERVICE.getSequenceDb();
+                yield sequenceDb.getOrDefault(sequenceName, 0L);
+            }
+            case SEQUENCE_RESET -> {
+                final var sequenceName = params.get("sequenceName").toString();
+                SEQUENCE_SERVICE.resetSequence(sequenceName);
+                yield true;
+            }
+            // put
+            case PUT -> {
+                final var keyObj = params.get("key");
+                if (keyObj == null) {
+                    Logger.warn("PUT request missing 'key' parameter.");
+                    yield PutStatus.FAILED;
+                }
+
+                final var key = keyObj.toString();
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final var value = params.get("value");
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.put(key, value), "PUT - " + key,
+                        PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case PUT_JSON -> {
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final var keyObj = params.get("key");
+                if (keyObj == null) {
+                    Logger.warn("PUT_JSON request missing 'key' parameter.");
+                    yield PutStatus.FAILED;
+                }
+
+                final var key = keyObj.toString();
+                final var value = JsonUtils.fromJsonToObj(params.get("value").toString(), dao.jsonType());
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.put(key, value), "PUT_JSON - " + key,
+                        PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case INSERT -> {
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final var keyObj = params.get("key");
+                if (keyObj == null) {
+                    Logger.warn("INSERT request missing 'key' parameter.");
+                    yield PutStatus.FAILED;
+                }
+
+                final var key = keyObj.toString();
+                final var value = params.get("value");
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.insert(key, value), "INSERT - " + key,
+                        PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case UPDATE -> {
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final var keyObj = params.get("key");
+                if (keyObj == null) {
+                    Logger.warn("UPDATE request missing 'key' parameter.");
+                    yield PutStatus.FAILED;
+                }
+
+                final var key = keyObj.toString();
+                final var value = params.get("value");
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.update(key, value), "UPDATE - " + key,
+                        PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case UPDATE_JSON -> {
+                final var keyObj = params.get("key");
+                if (keyObj == null) {
+                    Logger.warn("UPDATE_JSON request missing 'key' parameter.");
+                    yield PutStatus.FAILED;
+                }
+
+                final var key = keyObj.toString();
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final var value = dao.get(key);
+
+                if (value == null) {
+                    yield PutStatus.FAILED;
+                }
+                final var updatedValue = JsonUtils.fromJsonToObjMerge(params.get("value").toString(), dao.jsonType(),
+                        value);
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.update(key, updatedValue),
+                        "UPDATE_JSON - " + key, PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case PUT_MULTIPLE -> {
+                final var objects = (Map<String, Object>) params.get("objects");
+                if (objects == null || objects.isEmpty()) {
+                    yield PutStatus.FAILED;
+                }
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.put(objects),
+                        "PUT_MULTIPLE - " + params.get("objectEnum"), PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case PUT_MULTIPLE_JSON -> {
+                final var objects = (Map<String, Object>) params.get("objects");
+                if (objects == null || objects.isEmpty()) {
+                    yield PutStatus.FAILED;
+                }
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final Map<String, Object> preparedObjects = new HashMap<>();
+
+                for (final var entry : objects.entrySet()) {
+                    final var key = entry.getKey();
+                    final var existingValue = dao.get(key);
+
+                    if (existingValue != null) {
+                        // Merge for updates - preserves fields not in the incoming JSON
+                        final var mergedValue = JsonUtils.fromJsonToObjMerge(entry.getValue().toString(),
+                                dao.jsonType(), existingValue);
+                        preparedObjects.put(key, mergedValue);
+                    } else {
+                        // Direct parse for inserts
+                        final var newValue = JsonUtils.fromJsonToObj(entry.getValue().toString(), dao.jsonType());
+                        preparedObjects.put(key, newValue);
+                    }
+                }
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.put(preparedObjects),
+                        "PUT_MULTIPLE_JSON - " + params.get("objectEnum"), PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case UPDATE_MULTIPLE -> {
+                final var objects = (Map<String, Object>) params.get("objects");
+                if (objects == null || objects.isEmpty()) {
+                    yield PutStatus.FAILED;
+                }
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.update(objects),
+                        "UPDATE_MULTIPLE - " + params.get("objectEnum"), PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case UPDATE_MULTIPLE_JSON -> {
+                final var objects = (Map<String, Object>) params.get("objects");
+                if (objects == null || objects.isEmpty()) {
+                    yield PutStatus.FAILED;
+                }
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final Map<String, Object> updatedObjects = new HashMap<>();
+
+                for (final var entry : objects.entrySet()) {
+                    final var key = entry.getKey();
+                    final var existingValue = dao.get(key);
+                    if (existingValue != null) {
+                        final var mergedValue = JsonUtils.fromJsonToObjMerge(entry.getValue().toString(),
+                                dao.jsonType(), existingValue);
+                        updatedObjects.put(key, mergedValue);
+                    }
+                }
+
+                if (updatedObjects.isEmpty()) {
+                    yield PutStatus.FAILED;
+                }
+
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.update(updatedObjects),
+                        "UPDATE_MULTIPLE_JSON - " + params.get("objectEnum"), PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case INSERT_ALL -> {
+                final var objects = (Map<String, Object>) params.get("objects");
+                if (objects == null || objects.isEmpty()) {
+                    yield PutStatus.FAILED;
+                }
+                final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+                final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.insert(objects),
+                        "INSERT_ALL - " + params.get("objectEnum"), PutStatus.FAILED);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case UPDATE_FILE -> {
+                final var safeSupplier = new SafeSupplier<Boolean>(() -> PutService.updateFile(params),
+                        "UPDATE_FILE - " + params.get("fileName"), false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case MOVE_FILES -> {
+                final var safeSupplier = new SafeSupplier<Boolean>(() -> PutService.moveFiles(params), "MOVE_FILES",
+                        false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            // delete
+            case DELETE -> {
+                final var keyObj = params.get("key");
+                if (keyObj == null && params.get("search") == null) {
+                    Logger.warn("DELETE request missing 'key' and 'search' parameters.");
+                    yield false;
+                }
+                final var key = Objects.toString(keyObj, "NO KEY");
+                final var safeSupplier = new SafeSupplier<Boolean>(() -> DeleteService.delete(params),
+                        "DELETE - " + key, false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case DELETE_MULTIPLE -> {
+                final var safeSupplier = new SafeSupplier<Boolean>(() -> DeleteService.deleteMultiple(params),
+                        "DELETE_MULTIPLE", false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case REFRESH_INDEXES -> {
+                final var safeSupplier = new SafeSupplier<Boolean>(() -> PutService.refreshIndexes(params),
+                        "REFRESH_INDEXES - " + params.get("objectEnum"), false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case REFRESH_KEY_MAP -> {
+                final var safeSupplier = new SafeSupplier<Boolean>(() -> PutService.refreshKeyMap(params),
+                        "REFRESH_KEY_MAP - " + params.get("objectEnum"), false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case TRUNCATE -> {
+                final var safeSupplier = new SafeSupplier<Boolean>(() -> DeleteService.truncate(params),
+                        "TRUNCATE - " + params.get("objectEnum"), false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case VACUUM_CANDIDATES ->
+                VacuumService.printVacuumCandidates((Map<String, List<String>>) params.get("fqnMap"));
+            case VACUUM -> {
+                final var safeSupplier = new SafeSupplier<Boolean>(() -> DeleteService.vacuum(params),
+                        "VACUUM - " + params.get("objectEnum"), false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            case RESIZE -> {
+                final var safeSupplier = new SafeSupplier<Boolean>(
+                        () -> DeleteService.resize(params.get("fqn").toString(), params.get("dbDir").toString(),
+                                params.get("filePath").toString(), params.get("fileName").toString(),
+                                Long.valueOf(params.get("newSize").toString())),
+                        "RESIZE - " + params.get("filePath"), false);
+                yield ReplicationQueue.call(queue, params, safeSupplier);
+            }
+            // misc
+            case DB_COUNT -> FailOver.getDbCounts((Map<String, List<String>>) params.get("fqnMap"));
+            case FAIL_OVER -> isAllSafeToFailOver((Map<String, List<String>>) params.get("fqnMap"));
+            case UPDATE_SEQUENCES -> PutService.updateSequences(params);
+            case BACKUP -> PutService.backup(params);
+            case EXECUTE_TASK -> {
+                final var taskClass = params.get("taskClass").toString();
+                final var task = TaskLoader.loadTask(taskClass);
+                final var taskParams = (Map<String, Object>) params.get("params");
+                yield task.execute(taskParams, queue);
+            }
+            case REFRESH_TASKS -> {
+                TaskLoader.refresh();
+                yield true;
+            }
+            default -> null;
+        };
+    }
+
     private static void respond(final Map<String, Object> responseMap, final DataSocket dataSocket) throws IOException {
         // Serialize and send response
         final byte[] responseData = KryoSerializer.serialize(responseMap);
@@ -347,27 +722,6 @@ public class Server {
         dataSocket.dos.write(responseData); // Send serialized response
         dataSocket.dos.flush();
     }
-
-    // private static boolean handleReplicationRequest(final Map<String, Object>
-    // params, final QueryMode queryMode)
-    // throws Throwable {
-    // switch (queryMode) {
-    // case REPLICATE_PUT -> PUT_SERVICE.put(params);
-    // case REPLICATE_INSERT -> PUT_SERVICE.insert(params);
-    // case REPLICATE_UPDATE -> PUT_SERVICE.update(params);
-    // case REPLICATE_PUT_MULTIPLE -> PUT_SERVICE.putMultiple(params);
-    // case REPLICATE_UPDATE_MULTIPLE -> PUT_SERVICE.updateMultiple(params);
-    // case REPLICATE_INSERT_ALL -> PUT_SERVICE.insertMultiple(params);
-    // case REPLICATE_UPDATE_FILE -> PUT_SERVICE.updateFile(params);
-    // case REPLICATE_DELETE -> DELETE_SERVICE.delete(params);
-    // case REPLICATE_DELETE_MULTIPLE -> DELETE_SERVICE.deleteMultiple(params);
-    // case REPLICATE_SEQUENCES -> PUT_SERVICE.replicateSequences(params);
-    // case REPLICATE_MOVE_FILES -> PUT_SERVICE.moveFiles(params);
-    // default -> throw new IllegalArgumentException("Unknown replication mode: " +
-    // queryMode);
-    // }
-    // return true;
-    // }
 
     private static void handleClient(final DataSocket dataSocket) throws Throwable {
         final int length = dataSocket.dis.readInt(); // Read length
@@ -394,395 +748,18 @@ public class Server {
             return;
         }
 
-        final var queryMode = (QueryMode) modeObj;
-        // this name is fixed and should never change.
-        // final var response = switch (queryMode) {
-        // // get
-        // case GET -> GET_SERVICE.get(params);
-        // case GET_JSON -> JsonUtils.toJsonFromObj(GET_SERVICE.get(params));
-        // case GET_SUBSET -> GET_SERVICE.getSubset(params);
-        // case GET_SUBSET_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.getSubset(params));
-        // case GET_ALL -> GET_SERVICE.getAll(params);
-        // case GET_ALL_JSON -> JsonUtils.toJsonFromObj(GET_SERVICE.getAll(params));
-        // case GET_ALL_CSV -> GET_SERVICE.getAllCsv(params);
-        // case GET_ALL_CSV_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.getAllCsv(params));
-        // case GET_ALL_SUBSET -> GET_SERVICE.getAllSubset(params);
-        // case GET_ALL_SUBSET_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.getAllSubset(params));
-        // case GET_ALL_SUBSET_CSV -> GET_SERVICE.getAllSubsetCsv(params);
-        // case GET_ALL_SUBSET_CSV_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.getAllSubsetCsv(params));
-        // case GET_ARCHIVE_PERIODS ->
-        // CHRONICLE_DAO_SERVICE.getAvailableArchivePeriods(params.get("dbDir").toString(),
-        // (ObjectEnum) params.get("objectEnum"));
-        // case FETCH -> GET_SERVICE.fetch(params);
-        // case FETCH_KEYS -> GET_SERVICE.fetchKeys(params);
-        // case FETCH_KEYS_LIST -> GET_SERVICE.fetchKeysList(params);
-        // case FETCH_JSON -> JsonUtils.toJsonFromObj(GET_SERVICE.fetch(params));
-        // case FETCH_CSV -> GET_SERVICE.fetchCsv(params);
-        // case FETCH_CSV_JSON -> JsonUtils.toJsonFromObj(GET_SERVICE.fetchCsv(params));
-        // case FETCH_SUBSET -> GET_SERVICE.fetchSubset(params);
-        // case FETCH_SUBSET_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.fetchSubset(params));
-        // case FETCH_SUBSET_CSV -> GET_SERVICE.fetchSubsetCsv(params);
-        // case FETCH_SUBSET_CSV_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.fetchSubsetCsv(params));
-        // case SEARCH -> GET_SERVICE.search(params);
-        // case SEARCH_KEYS -> GET_SERVICE.searchKeys(params);
-        // case SEARCH_KEYS_LIST -> GET_SERVICE.searchKeysList(params);
-        // case SEARCH_JSON -> JsonUtils.toJsonFromObj(GET_SERVICE.search(params));
-        // case SEARCH_CSV -> GET_SERVICE.searchCsv(params);
-        // case SEARCH_CSV_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.searchCsv(params));
-        // case SEARCH_SUBSET -> GET_SERVICE.searchSubset(params);
-        // case SEARCH_SUBSET_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.searchSubset(params));
-        // case SEARCH_SUBSET_CSV -> GET_SERVICE.searchSubsetCsv(params);
-        // case SEARCH_SUBSET_CSV_JSON ->
-        // JsonUtils.toJsonFromObj(GET_SERVICE.searchSubsetCsv(params));
-        // case SEARCH_NON_INDEXED -> GET_SERVICE.searchOneNonIndexed(params);
-        // case SEARCH_NON_INDEXED_KEYS -> GET_SERVICE.searchOneNonIndexedKeys(params);
-        // case SEARCH_NON_INDEXED_KEYS_LIST ->
-        // GET_SERVICE.searchOneNonIndexedKeysList(params);
-        // case SEARCH_INDEXED -> GET_SERVICE.searchOneIndexed(params);
-        // case SEARCH_INDEXED_KEYS -> GET_SERVICE.searchOneIndexedKeys(params);
-        // case SEARCH_INDEXED_KEYS_LIST ->
-        // GET_SERVICE.searchOneIndexedKeysList(params);
-        // case GET_FILE -> GET_SERVICE.getFile(params);
-        // case GET_FILES -> GET_SERVICE.getFiles(params);
-        // case EXISTS -> GET_SERVICE.exists(params);
-        // case EXISTS_MULTIPLE -> GET_SERVICE.existsMultiple(params);
-        // case EXISTS_LIST -> GET_SERVICE.existsList(params);
-        // case NOT_EXISTS -> GET_SERVICE.notExists(params);
-        // case NOT_EXISTS_LIST -> GET_SERVICE.notExistsList(params);
-        // // put
-        // case PUT -> {
-        // final var keyObj = params.get("key");
-        // if (keyObj == null) {
-        // Logger.warn("PUT request missing 'key' parameter.");
-        // yield PutStatus.FAILED;
-        // }
-
-        // final var key = keyObj.toString();
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var value = PUT_SERVICE.preparePutValue(params);
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.put(key,
-        // value), "PUT - " + key,
-        // PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_PUT, key, value,
-        // safeSupplier);
-        // }
-        // case PUT_JSON -> {
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var keyObj = params.get("key");
-        // if (keyObj == null) {
-        // Logger.warn("PUT_JSON request missing 'key' parameter.");
-        // yield PutStatus.FAILED;
-        // }
-
-        // final var key = keyObj.toString();
-        // final var value = PUT_SERVICE.preparePutJsonValue(params, dao.jsonType());
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.put(key,
-        // value), "PUT_JSON - " + key,
-        // PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_PUT, key, value,
-        // safeSupplier);
-        // }
-        // case INSERT -> {
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var keyObj = params.get("key");
-        // if (keyObj == null) {
-        // Logger.warn("INSERT request missing 'key' parameter.");
-        // yield PutStatus.FAILED;
-        // }
-
-        // final var key = keyObj.toString();
-        // final var value = PUT_SERVICE.preparePutValue(params);
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.insert(key,
-        // value), "INSERT - " + key,
-        // PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_INSERT, key, value,
-        // safeSupplier);
-        // }
-        // case UPDATE -> {
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var keyObj = params.get("key");
-        // if (keyObj == null) {
-        // Logger.warn("UPDATE request missing 'key' parameter.");
-        // yield PutStatus.FAILED;
-        // }
-
-        // final var key = keyObj.toString();
-        // final var value = params.get("value");
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.update(key,
-        // value), "UPDATE - " + key,
-        // PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_UPDATE, key, value,
-        // safeSupplier);
-        // }
-        // case UPDATE_JSON -> {
-        // final var keyObj = params.get("key");
-        // if (keyObj == null) {
-        // Logger.warn("UPDATE_JSON request missing 'key' parameter.");
-        // yield PutStatus.FAILED;
-        // }
-
-        // final var key = keyObj.toString();
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var value = dao.get(key);
-
-        // if (value == null) {
-        // yield PutStatus.FAILED;
-        // }
-        // final var updatedValue = PUT_SERVICE.prepareUpdateJsonValue(params,
-        // dao.jsonType(), value);
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.update(key,
-        // updatedValue),
-        // "UPDATE_JSON - " + key, PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_UPDATE, key,
-        // updatedValue, safeSupplier);
-        // }
-        // case PUT_MULTIPLE -> {
-        // final var objects = (Map<String, Object>) params.get("objects");
-
-        // if (objects == null || objects.isEmpty()) {
-        // yield PutStatus.FAILED;
-        // }
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var updatedObjects = PUT_SERVICE.preparePutMultipleObjects(dao, params,
-        // objects);
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() ->
-        // dao.put(updatedObjects),
-        // "PUT_MULTIPLE - " + params.get("objectEnum"), PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_PUT_MULTIPLE,
-        // updatedObjects, safeSupplier);
-        // }
-        // case PUT_MULTIPLE_JSON -> {
-        // final var objects = (Map<String, Object>) params.get("objects");
-        // if (objects == null || objects.isEmpty()) {
-        // yield PutStatus.FAILED;
-        // }
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var updatedObjects = PUT_SERVICE.preparePutMultipleJsonObjects(dao,
-        // params, objects);
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() ->
-        // dao.put(updatedObjects),
-        // "PUT_MULTIPLE_JSON - " + params.get("objectEnum"), PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_PUT_MULTIPLE,
-        // updatedObjects, safeSupplier);
-        // }
-        // case UPDATE_MULTIPLE -> {
-        // final var objects = (Map<String, Object>) params.get("objects");
-        // if (objects == null || objects.isEmpty()) {
-        // yield PutStatus.FAILED;
-        // }
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() ->
-        // PUT_SERVICE.updateMultiple(params),
-        // "UPDATE_MULTIPLE - " + params.get("objectEnum"), PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_UPDATE_MULTIPLE,
-        // objects, safeSupplier);
-        // }
-        // case UPDATE_MULTIPLE_JSON -> {
-        // final var objects = (Map<String, Object>) params.get("objects");
-        // if (objects == null || objects.isEmpty()) {
-        // yield PutStatus.FAILED;
-        // }
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var updatedObjects = PUT_SERVICE.prepareUpdateMultipleJsonObjects(dao,
-        // params, objects);
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() ->
-        // dao.update(updatedObjects),
-        // "UPDATE_MULTIPLE_JSON - " + params.get("objectEnum"), PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_UPDATE_MULTIPLE,
-        // updatedObjects, safeSupplier);
-        // }
-        // case INSERT_ALL -> {
-        // final var objects = (Map<String, Object>) params.get("objects");
-        // if (objects == null || objects.isEmpty()) {
-        // yield PutStatus.FAILED;
-        // }
-        // final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
-        // final var updatedObjects = PUT_SERVICE.prepareInsertAllObjects(params,
-        // objects);
-        // final var safeSupplier = new SafeSupplier<PutStatus>(() ->
-        // dao.insert(updatedObjects),
-        // "INSERT_ALL - " + params.get("objectEnum"), PutStatus.FAILED);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_INSERT_ALL,
-        // updatedObjects, safeSupplier);
-        // }
-        // case UPDATE_FILE -> {
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // PUT_SERVICE.updateFile(params),
-        // "UPDATE_FILE - " + params.get("fileName"), false);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_UPDATE_FILE,
-        // safeSupplier);
-        // }
-        // case MOVE_FILES -> {
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // PUT_SERVICE.moveFiles(params), "MOVE_FILES",
-        // false);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_MOVE_FILES,
-        // safeSupplier);
-        // }
-        // // delete
-        // case DELETE -> {
-        // final var keyObj = params.get("key");
-        // if (keyObj == null && params.get("search") == null) {
-        // Logger.warn("DELETE request missing 'key' and 'search' parameters.");
-        // yield false;
-        // }
-        // final var key = Objects.toString(keyObj, "NO KEY");
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // DELETE_SERVICE.delete(params),
-        // "DELETE - " + key, false);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_DELETE,
-        // safeSupplier);
-        // }
-        // case DELETE_MULTIPLE -> {
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // DELETE_SERVICE.deleteMultiple(params),
-        // "DELETE_MULTIPLE", false);
-        // yield ReplicationQueue.prepareAndCall(replicationQueue, params,
-        // QueryMode.REPLICATE_DELETE_MULTIPLE,
-        // safeSupplier);
-        // }
-        // // replicate
-        // case REPLICATE_PUT, REPLICATE_INSERT, REPLICATE_UPDATE,
-        // REPLICATE_PUT_MULTIPLE, REPLICATE_UPDATE_MULTIPLE,
-        // REPLICATE_INSERT_ALL, REPLICATE_UPDATE_FILE, REPLICATE_DELETE,
-        // REPLICATE_DELETE_MULTIPLE,
-        // REPLICATE_SEQUENCES, REPLICATE_MOVE_FILES ->
-        // handleReplicationRequest(params, queryMode);
-        // // misc
-        // case RUN_TASK -> {
-        // String taskClassName = params.get("taskClass").toString();
-        // try {
-        // // Instantiate the task from the classpath
-        // DbTask task = (DbTask)
-        // Class.forName(taskClassName).getDeclaredConstructor().newInstance();
-        // yield task.execute(params);
-        // } catch (Throwable e) {
-        // Logger.error("Failed to execute task [{}]: {}", taskClassName,
-        // e.getMessage());
-        // yield null;
-        // }
-        // }
-        // case MONITORING_COUNT ->
-        // MONITORING_COUNT_SERVICE.getTrxCount(params.get("tenantId").toString(),
-        // params.get("invoiceDateSearch").toString(),
-        // params.get("supplier").toString(),
-        // params.get("source").toString());
-        // case TENANT_LIST -> GET_SERVICE.getAllTenants();
-        // case ENTRIES -> GET_SERVICE.entries(params);
-        // case REFRESH_INDEXES -> {
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // PUT_SERVICE.refreshIndexes(params),
-        // "REFRESH_INDEXES - " + params.get("objectEnum"), false);
-        // yield ReplicationQueue.call(replicationQueue, params, safeSupplier);
-        // }
-        // case REFRESH_KEY_MAP -> {
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // PUT_SERVICE.refreshKeyMap(params),
-        // "REFRESH_KEY_MAP - " + params.get("objectEnum"), false);
-        // yield ReplicationQueue.call(replicationQueue, params, safeSupplier);
-        // }
-        // case TRUNCATE -> {
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // DELETE_SERVICE.truncate(params),
-        // "TRUNCATE - " + params.get("objectEnum"), false);
-        // yield ReplicationQueue.call(replicationQueue, params, safeSupplier);
-        // }
-        // case VACUUM_CANDIDATES -> DB_BATCH_SERVICE.printVacuumCandidates();
-        // case VACUUM -> {
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // DELETE_SERVICE.vacuum(params),
-        // "VACUUM - " + params.get("objectEnum"), false);
-        // yield ReplicationQueue.call(replicationQueue, params, safeSupplier);
-        // }
-        // case RESIZE -> {
-        // final var safeSupplier = new SafeSupplier<Boolean>(() ->
-        // ChronicleResizeService.CHRONICLE_RESIZE_SERVICE
-        // .resize(params.get("dbDir").toString(),
-        // ObjectEnum.valueOf(params.get("objectEnum").toString()),
-        // params.get("fileName").toString(),
-        // Long.valueOf(params.get("newSize").toString())),
-        // "RESIZE - " + params.get("objectEnum"), false);
-        // yield ReplicationQueue.call(replicationQueue, params, safeSupplier);
-        // }
-        // case DASHBOARD_COUNT ->
-        // DB_BATCH_SERVICE.updateTransactionSummary(params.get("tenantId").toString(),
-        // params.get("startDate").toString(), params.get("endDate").toString(),
-        // Objects.toString(params.get("archivePeriod"), ""), replicationQueue);
-        // case EMPTY_TRX_CLEANUP ->
-        // DB_BATCH_SERVICE.cleanupEmptyLineInvoices(params.get("tenantId").toString(),
-        // replicationQueue);
-        // case UPDATE_INVOICE_DATES ->
-        // DB_BATCH_SERVICE.updateInvoiceDates(params.get("tenantId").toString(),
-        // params.get("source").toString(), params.get("status").toString(),
-        // params.get("startDate").toString(), params.get("endDate").toString(),
-        // params.get("updatedDate").toString(), replicationQueue);
-        // case MISSING_SUBMISSION_UIDS ->
-        // DB_BATCH_SERVICE.fixMissingSubmissionUids(params.get("tenantId").toString(),
-        // replicationQueue);
-        // case REVERT_ORIGINAL_REF ->
-        // DB_BATCH_SERVICE.revertOriginalRefUuid(params.get("tenantId").toString(),
-        // params.get("status").toString(), replicationQueue);
-        // case CONSOLIDATE_TRX_BY_IDS ->
-        // DB_BATCH_SERVICE.consolidateInvoicesById(params.get("tenantId").toString(),
-        // (Map<InvoiceTypeEnum, Set<String>>) params.get("trxIds"), replicationQueue);
-        // case CONSOLIDATE_MONTHLY_TRX ->
-        // DB_BATCH_SERVICE.consolidateMonthlyTrx(params.get("tenantId").toString(),
-        // params.get("source").toString(), replicationQueue);
-        // case MOVE_INVOICES_TO_NEW ->
-        // DB_BATCH_SERVICE.moveInvoicesBackToNewStage(params.get("tenantId").toString(),
-        // params.get("status").toString(), replicationQueue);
-        // case UPDATE_PREFERRED_CONTACTS ->
-        // DB_BATCH_SERVICE.updatePreferredContacts(params.get("tenantId").toString(),
-        // replicationQueue);
-        // case BACKUP_MAIN_SUPPLIER ->
-        // DB_BATCH_SERVICE.backupMainSuppliers(params.get("tenantId").toString());
-        // case COMPANY_COUNT ->
-        // MONITORING_COUNT_SERVICE.getCompanyCount(params.get("tenantId").toString());
-        // case ARCHIVE_TRX ->
-        // DB_BATCH_SERVICE.archiveTransactions(params.get("yearMonth").toString(),
-        // Boolean.parseBoolean(params.get("vacuum").toString()), replicationQueue);
-        // case ARCHIVE_SUBMISSIONS ->
-        // DB_BATCH_SERVICE.archiveOldSubmissions(params.get("tenantId").toString(),
-        // replicationQueue);
-        // case VALIDATE_INVOICE_TOTALS ->
-        // DB_BATCH_SERVICE.validateInvoiceTotals(params.get("tenantId").toString());
-        // case DB_COUNT -> FailOver.getDbCounts();
-        // case FAIL_OVER -> isAllSafeToFailOver((Map<String,
-        // String>)params.get("fqnMap"));
-        // case BACKUP -> PUT_SERVICE.backup(params);
-        // default -> null;
-        // };
+        final var response = executeRequest(params);
 
         // Prepare response map
         final Map<String, Object> responseMap = new HashMap<>();
         responseMap.put("status", "200");
-        responseMap.put("response", null);
+        responseMap.put("response", response);
         respond(responseMap, dataSocket);
     }
 
     public static void main(final String[] args) throws Throwable {
         // Write procId to disk
-        CHRONICLE_UTILS.logProcessId(processIdFile);
+        CHRONICLE_UTILS.logProcessId(processId);
 
         // Process any leftover writes from previous run synchronously
         if (replicationQueue != null) {
@@ -809,16 +786,21 @@ public class Server {
             }
         }
 
+        // Schedule daily queue cleanup
+        scheduleQueueCleanup();
+
         // tasks that run only once on DB start
-        DeadlockService.DEADLOCK_SERVICE.recoverDeadLocks();
-        MigrationService.MIGRATION_SERVICE.migrateObjects();
+        DeadlockService.recoverDeadLocks();
+        MigrationService.migrateObjects();
+        TaskLoader.refresh();
+
+        final var infoLogPath = Path.of(LOGS_DIR, "info.log");
 
         // Add shutdown hook to close all queues
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
-                final var mesg = CHRONICLE_UTILS.getCurrentDate()
-                        + " INFO: Shutdown requested. Signal sent to db services. \n";
-                Files.writeString(Path.of(LOGS_DIR + "/info.log"), mesg, StandardOpenOption.APPEND);
+                final var mesg = "---------INFO: Shutdown requested. Signal sent to db services.---------\n";
+                Files.writeString(infoLogPath, mesg);
             } catch (final IOException e) {
             }
 
@@ -829,6 +811,9 @@ public class Server {
             if (replicationQueue != null) {
                 replicationQueue.close();
             }
+
+            // shutdown scheduler
+            scheduler.shutdownNow();
 
             // Interrupt all tracked threads
             for (final Thread thread : activeThreads) {
@@ -850,8 +835,8 @@ public class Server {
             MAP_DB.closeAllMaps();
 
             try {
-                final var mesg = CHRONICLE_UTILS.getCurrentDate() + " INFO: Shutdown complete. \n";
-                Files.writeString(Path.of(LOGS_DIR + "/info.log"), mesg, StandardOpenOption.APPEND);
+                final var mesg = "---------INFO: Shutdown complete.---------\n";
+                Files.writeString(infoLogPath, mesg);
             } catch (final IOException e) {
             }
         }));

@@ -263,8 +263,8 @@ public final class MapDb {
 
                 return new SharedKeyMap(map, filePath);
             } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
-                    | DBException.WrongFormat e) {
-                CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
+                    | DBException.WrongFormat | InternalError e) {
+                CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reinit
                 Logger.info("Reinitializing KeyMap at [{}]", filePath);
                 throw new RuntimeException(e);
             } catch (final Exception e) {
@@ -349,7 +349,7 @@ public final class MapDb {
 
                 return new SharedIndexSet(db, tree, filePath);
             } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
-                    | DBException.WrongFormat e) {
+                    | DBException.WrongFormat | InternalError e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
                 Logger.error("Reinitializing Index at [{}]", filePath);
                 throw new RuntimeException(e);
@@ -585,11 +585,15 @@ public final class MapDb {
         return key;
     }
 
+    private static final byte[] MAX_16_BYTES = new byte[] {
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+    };
+
     private byte[] createUpperBoundKey(final byte[] fieldBytes) {
-        final byte[] key = new byte[fieldBytes.length + 17]; // separator + 16 bytes of 0xFF
+        final byte[] key = new byte[fieldBytes.length + 17];
         System.arraycopy(fieldBytes, 0, key, 0, fieldBytes.length);
-        key[fieldBytes.length] = indexSep;
-        Arrays.fill(key, fieldBytes.length + 1, key.length, upperByte);
+        key[fieldBytes.length] = indexSep; // 0x1F
+        System.arraycopy(MAX_16_BYTES, 0, key, fieldBytes.length + 1, 16);
         return key;
     }
 
@@ -891,7 +895,7 @@ public final class MapDb {
     public SearchResult getInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
             final int limit) {
         // For small term sets, use sequential (parallel overhead not worth it)
-        if (searchTerms.size() <= 100) {
+        if (searchTerms.size() <= 10) {
             return getInIndexSearchSequential(index, searchTerms, limit);
         }
 

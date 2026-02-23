@@ -14,5 +14,5 @@ public interface DbTask {
      *               range).
      * @return Any result object that Kryo can serialize back to the client.
      */
-    Object execute(Map<String, Object> params) throws Throwable;
+    Object execute(Map<String, Object> params, ReplicationQueue replicationQueue) throws Throwable;
 }

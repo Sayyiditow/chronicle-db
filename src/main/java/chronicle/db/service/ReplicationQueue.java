@@ -26,7 +26,6 @@ import org.tinylog.Logger;
 
 import chronicle.db.Server;
 import chronicle.db.config.KryoSerializer;
-import chronicle.db.config.QueryMode;
 import chronicle.db.utils.SafeRunnable;
 import chronicle.db.utils.SafeSupplier;
 import net.openhft.chronicle.queue.ChronicleQueue;
@@ -83,15 +82,9 @@ public class ReplicationQueue {
 
     /**
      * Appends data to the replication queue.
-     * Implements a retry-with-wait mechanism for buffer overflow scenarios.
-     *
-     * Chronicle Queue guarantees a message can be written only if it's ≤ 25% of
-     * block size.
-     * Messages larger than this will be dropped immediately to avoid futile retry
-     * attempts.
      *
      * @param data The serialized byte array to persist.
-     * @return true if the append was successful, false otherwise.
+     * @return The index of the appended message, or -1 if the append failed.
      */
     private long append(final byte[] data) {
         return CHRONICLE_UTILS.doWithLock(queueLock, () -> {
@@ -166,7 +159,7 @@ public class ReplicationQueue {
                     Logger.info("Deleting queue file [{}].", fileName);
                     Files.deleteIfExists(file.toPath());
                 } else {
-                    Logger.debug("File [{}] left intact, within tailer cycle.", fileName);
+                    Logger.info("File [{}] left intact, within tailer cycle.", fileName);
                 }
             }
         }, "Queue Cleanup"));
@@ -349,32 +342,6 @@ public class ReplicationQueue {
     }
 
     /**
-     * Populates the query parameter map with basic replication fields.
-     */
-    private static void prepareReplicationParams(final Map<String, Object> queryParams, final QueryMode mode,
-            final Object key, final Object value) {
-        queryParams.put("mode", mode);
-        queryParams.put("key", key);
-        queryParams.put("value", value);
-    }
-
-    /**
-     * Populates the query parameter map with batch replication fields.
-     */
-    private static void prepareReplicationParams(final Map<String, Object> queryParams, final QueryMode mode,
-            final Map<String, Object> objects) {
-        queryParams.put("mode", mode);
-        queryParams.put("objects", objects);
-    }
-
-    /**
-     * Populates the query parameter map with the replication mode.
-     */
-    private static void prepareReplicationParams(final Map<String, Object> queryParams, final QueryMode mode) {
-        queryParams.put("mode", mode);
-    }
-
-    /**
      * Executes a state-changing operation following the Write-Ahead Logging (WAL)
      * pattern.
      * If replication is enabled, the intent is appended to the queue BEFORE the
@@ -413,89 +380,6 @@ public class ReplicationQueue {
     public static <T> T call(final ReplicationQueue queue, final Map<String, Object> params,
             final SafeSupplier<T> action) {
         if (queue != null) {
-            final long index = queue.append(KryoSerializer.serialize(params));
-            if (index != -1L) {
-                final T result = action.get();
-                Logger.debug("DB write finished for index={}. Marking primary done.", index);
-                queue.markPrimaryProcessed(index);
-                return result;
-            }
-            return action.failureValue();
-        } else {
-            return action.get();
-        }
-    }
-
-    /**
-     * Prepares parameters and calls an action following the WAL pattern.
-     *
-     * @param <T>    Return type.
-     * @param queue  Replication queue.
-     * @param params Map to populate with query parameters.
-     * @param mode   The QueryMode for replication.
-     * @param key    The object key.
-     * @param value  The object value.
-     * @param action The database action.
-     * @return Result of the action.
-     */
-    public static <T> T prepareAndCall(final ReplicationQueue queue, final Map<String, Object> params,
-            final QueryMode mode, final Object key, final Object value, final SafeSupplier<T> action) {
-        if (queue != null) {
-            prepareReplicationParams(params, mode, key, value);
-            final long index = queue.append(KryoSerializer.serialize(params));
-            if (index != -1L) {
-                final T result = action.get();
-                queue.markPrimaryProcessed(index);
-                return result;
-            }
-            return action.failureValue();
-        } else {
-            return action.get();
-        }
-    }
-
-    /**
-     * Prepares batch parameters and calls an action following the WAL pattern.
-     *
-     * @param <T>     Return type.
-     * @param queue   Replication queue.
-     * @param params  Map to populate with query parameters.
-     * @param mode    The QueryMode for replication.
-     * @param objects Map of keys to objects for batch processing.
-     * @param action  The database action.
-     * @return Result of the action.
-     */
-    public static <T> T prepareAndCall(final ReplicationQueue queue, final Map<String, Object> params,
-            final QueryMode mode, final Map<String, Object> objects, final SafeSupplier<T> action) {
-        if (queue != null) {
-            prepareReplicationParams(params, mode, objects);
-            final long index = queue.append(KryoSerializer.serialize(params));
-            if (index != -1L) {
-                final T result = action.get();
-                queue.markPrimaryProcessed(index);
-                return result;
-            }
-            return action.failureValue();
-        } else {
-            return action.get();
-        }
-    }
-
-    /**
-     * Prepares simple parameters (mode only) and calls an action following the WAL
-     * pattern.
-     *
-     * @param <T>    Return type.
-     * @param queue  Replication queue.
-     * @param params Map to populate with query parameters.
-     * @param mode   The QueryMode for replication.
-     * @param action The database action.
-     * @return Result of the action.
-     */
-    public static <T> T prepareAndCall(final ReplicationQueue queue, final Map<String, Object> params,
-            final QueryMode mode, final SafeSupplier<T> action) {
-        if (queue != null) {
-            prepareReplicationParams(params, mode);
             final long index = queue.append(KryoSerializer.serialize(params));
             if (index != -1L) {
                 final T result = action.get();

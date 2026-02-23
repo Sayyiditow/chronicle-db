@@ -199,25 +199,41 @@ public interface ChronicleDao<V> {
      * Returns the expected number of entries per data file (shard).
      * <p>
      * This value is used to pre-allocate ChronicleMap capacity. When a file
-     * reaches this limit, a new file is created (file rotation). Set this to
-     * a reasonable estimate of your data size to optimize performance.
+     * reaches this limit, a new file is created (file rotation).
      * </p>
-     * 
-     * @return Expected entries per file
+     * <p>
+     * Can be overridden at runtime via system property:
+     * {@code chronicle.<entityName>.entries=<count>}
+     * <br>
+     * Example: {@code -Dchronicle.User.entries=50000}
+     * </p>
+     * <p>
+     * After changing this value, run vacuum to recreate files with new sizing.
+     * DAOs can override this method to provide a different default.
+     * </p>
+     *
+     * @return Expected entries per file (default 1000, or system property override)
      */
-    long entries();
+    default long entries() {
+        return Long.getLong("chronicle." + name() + ".entries", 1000L);
+    }
 
     /**
-     * Returns a representative average key for sizing calculations.
+     * Returns the average key size in bytes for Chronicle Map allocation.
      * <p>
-     * ChronicleMap uses this to estimate memory requirements. Provide a
-     * typical key that represents the average length and structure.
+     * Can be overridden at runtime via system property:
+     * {@code chronicle.<entityName>.key.size=<bytes>}
+     * <br>
+     * Example: {@code -Dchronicle.User.key.size=64}
      * </p>
-     * 
-     * @return A sample key (e.g., "user12345")
+     * <p>
+     * DAOs can override this method to provide a different default.
+     * </p>
+     *
+     * @return Average key size in bytes (default 36 for UUID)
      */
-    default String averageKey() {
-        return "k".repeat(Integer.getInteger("chronicle." + name() + ".key.size", 36));
+    default int averageKeySize() {
+        return Integer.getInteger("chronicle." + name() + ".key.size", 36);
     }
 
     /**
@@ -285,10 +301,30 @@ public interface ChronicleDao<V> {
      * fields that are frequently queried. Each index adds overhead to write
      * operations.
      * </p>
-     * 
-     * @return Set of field names to index (default: empty)
+     * <p>
+     * Can be set at runtime via system property:
+     * {@code chronicle.<entityName>.indexes=field1,field2,field3}
+     * <br>
+     * Example: {@code -Dchronicle.User.indexes=email,status}
+     * </p>
+     * <p>
+     * DAOs can override this method to provide hardcoded indexes.
+     * </p>
+     *
+     * @return Set of field names to index (default: empty, or from system property)
      */
     default Set<String> indexFileNames() {
+        final var indexes = System.getProperty("chronicle." + name() + ".indexes");
+        if (indexes != null && !indexes.isBlank()) {
+            final var result = new HashSet<String>();
+            for (final var index : indexes.split(",")) {
+                final var trimmed = index.trim();
+                if (!trimmed.isEmpty()) {
+                    result.add(trimmed);
+                }
+            }
+            return result;
+        }
         return Collections.emptySet();
     }
 
@@ -320,7 +356,7 @@ public interface ChronicleDao<V> {
      * @return a SharedChronicleMap handle (must be closed)
      */
     default SharedChronicleMap<String, V> openDb(final String dataDir, final String fileName) {
-        return CHRONICLE_DB.open(name(), entries(), averageKey(), averageValue(), dataPath() + dataDir + fileName,
+        return CHRONICLE_DB.open(name(), entries(), averageKeySize(), averageValue(), dataPath() + dataDir + fileName,
                 bloatFactor());
     }
 
@@ -338,7 +374,7 @@ public interface ChronicleDao<V> {
      * @return a SharedChronicleMap handle (must be closed)
      */
     default SharedChronicleMap<String, V> openDb(final String dataDir, final String fileName, final long entries) {
-        return CHRONICLE_DB.open(name(), entries, averageKey(), averageValue(), dataPath() + dataDir + fileName,
+        return CHRONICLE_DB.open(name(), entries, averageKeySize(), averageValue(), dataPath() + dataDir + fileName,
                 bloatFactor());
     }
 
@@ -605,9 +641,14 @@ public interface ChronicleDao<V> {
      * @return VacuumInfo if vacuum is needed, null otherwise
      */
     default VacuumInfo needsVacuum() {
+        final int actualFiles = getDataFileState().fileNames().size();
+        if (actualFiles <= 1) {
+            return null;  // Single file - no vacuum needed
+        }
+
+        // Only count records if multiple files exist
         final int size = size();
         final long entriesPerFile = entries();
-        final int actualFiles = getDataFileState().fileNames().size();
         final int expectedFiles = size == 0 ? 1 : (int) Math.ceil((double) size / entriesPerFile);
 
         if (actualFiles > expectedFiles) {
@@ -722,11 +763,19 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Initializes any missing indexes defined by {@link #indexFileNames()}.
+     * Synchronizes indexes with {@link #indexFileNames()} configuration.
      * <p>
-     * Compares configured indexes against existing index files and creates
-     * any that are missing. Called during application startup.
-     * Skipped in recovery mode to avoid deadlocks.
+     * Performs two operations:
+     * <ul>
+     * <li>Deletes stale indexes that exist on disk but are no longer in
+     * indexFileNames()</li>
+     * <li>Creates missing indexes that are in indexFileNames() but don't exist on
+     * disk</li>
+     * </ul>
+     * This ensures that if an index is removed and later re-added, it will be
+     * rebuilt fresh without stale data causing inconsistencies.
+     * Called during application startup. Skipped in recovery mode to avoid
+     * deadlocks.
      * </p>
      */
     default void initDefaultIndexes() {
@@ -739,15 +788,25 @@ public interface ChronicleDao<V> {
             CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
                 final var availableIndexes = availableIndexes();
                 final var indexFileNames = indexFileNames();
-                if (availableIndexes.size() != indexFileNames.size()) {
-                    // Find items in indexFileNames not in availableIndexes
-                    final Set<String> missingIndexes = new HashSet<>(indexFileNames);
-                    missingIndexes.removeAll(availableIndexes);
 
-                    if (!missingIndexes.isEmpty()) {
-                        initIndex(missingIndexes);
-                        Logger.info("Initialized {} indexes at [{}]", missingIndexes, dataPath());
+                // Find stale indexes (exist on disk but no longer in indexFileNames)
+                final Set<String> staleIndexes = new HashSet<>(availableIndexes);
+                staleIndexes.removeAll(indexFileNames);
+                if (!staleIndexes.isEmpty()) {
+                    for (final var staleIndex : staleIndexes) {
+                        final var indexPath = getIndexPath(staleIndex);
+                        MAP_DB.closeIndex(indexPath);
+                        CHRONICLE_UTILS.deleteFileIfExists(indexPath);
                     }
+                    Logger.info("Deleted stale indexes {} at [{}]", staleIndexes, dataPath());
+                }
+
+                // Find missing indexes (in indexFileNames but not on disk)
+                final Set<String> missingIndexes = new HashSet<>(indexFileNames);
+                missingIndexes.removeAll(availableIndexes);
+                if (!missingIndexes.isEmpty()) {
+                    initIndex(missingIndexes);
+                    Logger.info("Initialized {} indexes at [{}]", missingIndexes, dataPath());
                 }
             }, "Init Indexes - " + dataPath()));
         }
@@ -771,7 +830,7 @@ public interface ChronicleDao<V> {
         final var backupPath = Path.of(dataPath() + BACKUP_DIR + LOCKED_FILE + dataFileName);
         Files.copy(dataFilePath, backupPath, StandardCopyOption.REPLACE_EXISTING);
         Logger.info("Backed up file to {}", backupPath);
-        try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKey(), averageValue(),
+        try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKeySize(), averageValue(),
                 dataFileStr, bloatFactor())) {
             Logger.info("Recovered ChronicleMap [{}] with {} entries", dataFileName, db.size());
         }

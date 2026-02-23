@@ -1,7 +1,5 @@
 package chronicle.db.service;
 
-import static chronicle.db.utils.ChronicleUtils.CHRONICLE_UTILS;
-
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -11,16 +9,15 @@ import org.tinylog.Logger;
 import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.Server;
+import chronicle.db.utils.JsonUtils;
 
-public class DeadlockService {
+public final class DeadlockService {
     private DeadlockService() {
     }
 
-    public static final DeadlockService DEADLOCK_SERVICE = new DeadlockService();
-
-    public void recoverDeadLocks() throws Throwable {
+    public static void recoverDeadLocks() throws Throwable {
         final var deadlocksJsonPath = Server.getResourceDir() + "/deadlocks.json";
-        final var config = CHRONICLE_UTILS.fromJsonFileToObj(deadlocksJsonPath,
+        final var config = JsonUtils.fromJsonFileToObj(deadlocksJsonPath,
                 new TypeLiteral<List<Map<String, String>>>() {
                 });
         final int configSize = config.size();
@@ -31,14 +28,15 @@ public class DeadlockService {
 
         for (final var map : config) {
             final var fqn = map.get("fqn");
+            final var dbDir = map.get("dbDir");
             final var filePath = map.get("filePath");
             final var fileName = map.get("fileName");
-            final var dao = ChronicleDaoService.CHRONICLE_DAO_SERVICE.getDao(fqn, filePath);
+            final var dao = ChronicleDaoService.CHRONICLE_DAO_SERVICE.getDao(fqn, dbDir, filePath);
             dao.recoverData(fileName);
         }
 
         if (configSize > 0) {
-            CHRONICLE_UTILS.toJsonFileFromObj(deadlocksJsonPath, Collections.emptyList());
+            JsonUtils.toJsonFileFromObj(deadlocksJsonPath, Collections.emptyList());
             Logger.info("\n-----------Deadlocks Released-----------");
         }
     }

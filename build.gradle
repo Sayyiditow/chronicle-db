@@ -44,6 +44,7 @@ application {
                 "--add-opens=java.base/java.io=ALL-UNNAMED",
                 "--add-opens=java.base/java.util=ALL-UNNAMED",
                 "--add-exports=java.base/jdk.internal.util=ALL-UNNAMED",
+                "--enable-native-access=ALL-UNNAMED"
                 ]
 }
 
@@ -61,7 +62,7 @@ publishing {
 
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
-    options.release = 21
+    options.release = 25
 }
 
 tasks.withType(Javadoc) {
@@ -75,9 +76,13 @@ task copyDependencies(type: Copy) {
 
 build.dependsOn(copyDependencies)
 
-jar {
-    exclude { it.file.toPath().startsWith("$buildDir/resources/") }
+run {
+    classpath += files('src/main/resources')
 }
+
+distZip.enabled = false
+startScripts.enabled = false
+distTar.enabled = false
 
 // --- CRITICAL DATA INTEGRITY CHECK ---
 task verifyHashSeeds {

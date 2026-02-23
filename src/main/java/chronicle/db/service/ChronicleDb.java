@@ -100,12 +100,12 @@ public final class ChronicleDb {
         // Builder params for recovery
         private final String name;
         private final long entries;
-        private final K averageKey;
+        private final int averageKeySize;
         private final V averageValue;
         private final double maxBloatFactor;
 
         SharedChronicleMap(final ChronicleMap<K, V> map, final String filePath,
-                final String name, final long entries, final K averageKey,
+                final String name, final long entries, final int averageKeySize,
                 final V averageValue, final double maxBloatFactor) {
             this.map = map;
             this.filePath = filePath;
@@ -113,7 +113,7 @@ public final class ChronicleDb {
             this.needsRecovery = false;
             this.name = name;
             this.entries = entries;
-            this.averageKey = averageKey;
+            this.averageKeySize = averageKeySize;
             this.averageValue = averageValue;
             this.maxBloatFactor = maxBloatFactor;
         }
@@ -165,7 +165,7 @@ public final class ChronicleDb {
                             Logger.info("Recovering map [{}] on close...", filePath);
                             entry.map.close();
                             CHRONICLE_DB.backupCorruptedFile(filePath);
-                            CHRONICLE_DB.recoverDb(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
+                            CHRONICLE_DB.recoverDb(name, entries, averageKeySize, averageValue, filePath, maxBloatFactor);
                             Logger.info("Successfully recovered map [{}]", filePath);
                         } catch (final IOException e) {
                             Logger.error("Failed to recover map [{}]", filePath);
@@ -190,23 +190,22 @@ public final class ChronicleDb {
      * Do not use try-with-resources as it will prematurely close the shared
      * instance.
      * 
-     * @param entries    the number of entries of the db as a starter
-     * @param averageKey the average key
-     * @param filePath   the path to the file to create
-     * @param keyClass   the class of the key
-     * @param valueClass the class of the value (best to implement Value interface
-     *                   for complex structures)
+     * @param entries        the number of entries of the db as a starter
+     * @param averageKeySize the average key size in bytes
+     * @param filePath       the path to the file to create
+     * @param valueClass     the class of the value (best to implement Value interface
+     *                       for complex structures)
      * @return ChronicleMap or null, if null do not run close()
      */
-    public <K, V> SharedChronicleMap open(final String name, final long entries,
-            final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor) {
+    public <V> SharedChronicleMap<String, V> open(final String name, final long entries,
+            final int averageKeySize, final V averageValue, final String filePath, final double maxBloatFactor) {
         // Wait for any ongoing recovery
         final var recoveryFuture = recovering.get(filePath);
         if (recoveryFuture != null) {
             recoveryFuture.join();
         }
 
-        final SharedChronicleMap entry = mapCache.compute(filePath, (k, existingEntry) -> {
+        final SharedChronicleMap<String, V> entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 return existingEntry.retain();
             }
@@ -214,18 +213,17 @@ public final class ChronicleDb {
             // Create a new entry
             try {
                 final File file = new File(filePath);
-                final Class<K> keyClass = (Class<K>) averageKey.getClass();
                 final Class<V> valueClass = (Class<V>) averageValue.getClass();
-                final ChronicleMapBuilder<K, V> builder = ChronicleMapBuilder.of(keyClass, valueClass)
+                final ChronicleMapBuilder<String, V> builder = ChronicleMapBuilder.of(String.class, valueClass)
                         .maxBloatFactor(maxBloatFactor);
                 if (!file.exists()) {
-                    builder.name(name).entries(entries).averageKey(averageKey).averageValue(averageValue);
+                    builder.name(name).entries(entries).averageKeySize(averageKeySize).averageValue(averageValue);
                 }
-                final ChronicleMap<K, V> map = builder.createPersistedTo(file);
-                return new SharedChronicleMap(map, filePath, name, entries, averageKey, averageValue, maxBloatFactor);
+                final ChronicleMap<String, V> map = builder.createPersistedTo(file);
+                return new SharedChronicleMap<>(map, filePath, name, entries, averageKeySize, averageValue, maxBloatFactor);
             } catch (final InterProcessDeadLockException e) {
                 Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
-                return recoverFromDeadlock(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
+                return recoverFromDeadlock(name, entries, averageKeySize, averageValue, filePath, maxBloatFactor);
             } catch (final IOException e) {
                 Logger.error("Failed to open ChronicleMap at [{}]", filePath);
                 throw new UncheckedIOException(e);
@@ -233,7 +231,7 @@ public final class ChronicleDb {
                 // Check if wrapped exception is InterProcessDeadLockException
                 if (hasDeadlockCause(e)) {
                     Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
-                    return recoverFromDeadlock(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
+                    return recoverFromDeadlock(name, entries, averageKeySize, averageValue, filePath, maxBloatFactor);
                 }
                 throw e;
             }
@@ -297,13 +295,13 @@ public final class ChronicleDb {
     /**
      * Recovers from a deadlock by backing up and restoring the ChronicleMap file.
      */
-    private <K, V> SharedChronicleMap<K, V> recoverFromDeadlock(final String name, final long entries,
-            final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor) {
+    private <V> SharedChronicleMap<String, V> recoverFromDeadlock(final String name, final long entries,
+            final int averageKeySize, final V averageValue, final String filePath, final double maxBloatFactor) {
         try {
             backupCorruptedFile(filePath);
-            final ChronicleMap<K, V> map = recoverDb(name, entries, averageKey, averageValue, filePath, maxBloatFactor);
+            final ChronicleMap<String, V> map = recoverDb(name, entries, averageKeySize, averageValue, filePath, maxBloatFactor);
             Logger.info("Successfully recovered ChronicleMap at [{}]", filePath);
-            return new SharedChronicleMap<>(map, filePath, name, entries, averageKey, averageValue, maxBloatFactor);
+            return new SharedChronicleMap<>(map, filePath, name, entries, averageKeySize, averageValue, maxBloatFactor);
         } catch (final IOException ex) {
             Logger.error("Failed to recover ChronicleMap at [{}]", filePath);
             throw new UncheckedIOException(ex);
@@ -313,21 +311,20 @@ public final class ChronicleDb {
     /**
      * Run this on app startup to check and fix if there were any abnormal
      * terminations
-     * 
-     * @param filePath   the path to the file to with the data
-     * @param keyClass   the class of the key
-     * @param valueClass the class of the value (best to implement Value interface
-     *                   for complex structures)
+     *
+     * @param filePath       the path to the file with the data
+     * @param averageKeySize the average key size in bytes
+     * @param valueClass     the class of the value (best to implement Value interface
+     *                       for complex structures)
      */
-    public <K, V> ChronicleMap<K, V> recoverDb(final String name, final long entries,
-            final K averageKey, final V averageValue, final String filePath, final double maxBloatFactor)
+    public <V> ChronicleMap<String, V> recoverDb(final String name, final long entries,
+            final int averageKeySize, final V averageValue, final String filePath, final double maxBloatFactor)
             throws IOException {
         Logger.info("Restoring ChronicleMap {} at: {}", name, filePath);
         final File file = new File(filePath);
-        final Class<K> keyClass = (Class<K>) averageKey.getClass();
         final Class<V> valueClass = (Class<V>) averageValue.getClass();
 
-        return ChronicleMap.of(keyClass, valueClass).name(name).entries(entries).averageKey(averageKey)
+        return ChronicleMap.of(String.class, valueClass).name(name).entries(entries).averageKeySize(averageKeySize)
                 .averageValue(averageValue).maxBloatFactor(maxBloatFactor).recoverPersistedTo(file, true);
     }
 

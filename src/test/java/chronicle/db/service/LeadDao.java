@@ -1,6 +1,7 @@
 package chronicle.db.service;
 
 import java.util.ArrayList;
+import java.util.Set;
 
 import com.jsoniter.spi.TypeLiteral;
 
@@ -12,13 +13,14 @@ public class LeadDao implements ChronicleDao<Lead> {
     public LeadDao(final String dataPath) {
         this.dataPath = dataPath;
         createDataDirs();
+        initDefaultIndexes();
     }
 
     private static final ThreadLocal<Lead> USING = ThreadLocal.withInitial(Lead::new);
 
     @Override
     public long entries() {
-        return 100;
+        return 50_000;
     }
 
     @Override
@@ -41,6 +43,11 @@ public class LeadDao implements ChronicleDao<Lead> {
     public TypeLiteral<Lead> jsonType() {
         return new TypeLiteral<>() {
         };
+    }
+
+    @Override
+    public Set<String> indexFileNames() {
+        return Set.of("fullName");
     }
 
 }

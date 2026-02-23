@@ -3,7 +3,6 @@ package chronicle.db.utils;
 import static chronicle.db.service.MapDb.MAP_DB;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -50,10 +49,6 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.tinylog.Logger;
-
-import com.jsoniter.JsonIterator;
-import com.jsoniter.output.JsonStream;
-import com.jsoniter.spi.TypeLiteral;
 
 import chronicle.db.dao.ChronicleDao;
 import chronicle.db.entity.Search;
@@ -110,7 +105,6 @@ public final class ChronicleUtils {
             Integer.getInteger("chronicle.iterable.pool.size", Math.min(processors, 32)));
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
-    private static final int flushSize = 5_242_880;
     private static final int indexChunkSize = Integer.getInteger("chronicle.indexes.chunkSize", 10000);
     // CRITICAL: Changing these seeds will invalidate all existing KeyMaps and
     // Indexes! These values must be permanent for the life of the database.
@@ -1742,7 +1736,7 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Executes a list of Runnable tasks in parallel using Virtual Threads.
+     * Executes a list of Runnable tasks in parallel using sharedExecutor.
      *
      * @param tasks The list of tasks to execute.
      */
@@ -1854,34 +1848,6 @@ public final class ChronicleUtils {
 
     public String getCurrentDate() {
         return LocalDateTime.ofInstant(new Date().toInstant(), ZoneId.systemDefault()).format(logDateTimeFormatter);
-    }
-
-    /**
-     * Reads a JSON file and converts it to a specific Java object type.
-     * 
-     * @param path        The path to the JSON file
-     * @param typeLiteral The Jsoniter TypeLiteral representing the target type
-     * @param <T>         The type of the target object
-     * @return The deserialized object
-     * @throws IOException If an I/O error occurs
-     */
-    public <T> T fromJsonFileToObj(final String path, final TypeLiteral<T> typeLiteral) throws IOException {
-        return JsonIterator.deserialize(Files.readAllBytes(Path.of(path)), typeLiteral);
-    }
-
-    /**
-     * Saves a Java object to a file as JSON.
-     * 
-     * @param path The full file path
-     * @param prop The Java object to save
-     * @param <T>  The type of the object
-     * @throws IOException If an I/O error occurs
-     */
-    public <T> void toJsonFileFromObj(final String path, final T prop) throws IOException {
-        try (FileOutputStream fos = new FileOutputStream(path); JsonStream stream = new JsonStream(fos, flushSize)) {
-            stream.writeVal(prop);
-            stream.flush();
-        }
     }
 
     public String humanReadableByteCount(final long bytes) {
