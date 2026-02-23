@@ -374,10 +374,9 @@ public final class GetService {
         return null;
     }
 
-    public static Map<String, String> getFiles(final Map<String, Object> params) {
-        final var filePath = params.get("filePath").toString();
-        final var dirPath = Server.getDbPath() + "/" + params.get("dbDir") + "/" + filePath
-                + ChronicleDao.FILES_DIR;
+    public static Map<String, String> getFiles(final Map<String, Object> params) throws Throwable {
+        final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
+        final var dirPath = dao.dataPath() + ChronicleDao.FILES_DIR;
         final var files = new ConcurrentHashMap<String, String>();
         final var fileNames = (List<String>) params.get("fileNames");
 
