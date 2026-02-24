@@ -55,7 +55,13 @@ public final class PutService {
     }
 
     public static boolean moveFiles(final Map<String, Object> params) {
-        final List<String[]> paths = (List<String[]>) params.get("paths");
+        final var pathsParam = params.get("paths");
+
+        if (pathsParam == null) {
+            return true;
+        }
+
+        final var paths = (List<String[]>) pathsParam;
 
         for (final var sourceDest : paths) {
             if (Files.exists(Path.of(sourceDest[0])))
