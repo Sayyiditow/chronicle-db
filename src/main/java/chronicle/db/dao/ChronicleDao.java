@@ -490,41 +490,46 @@ public interface ChronicleDao<V> {
      * </p>
      */
     default void createDataDirs() {
-        // check if the backup directory exists, this is the last dir to be created
-        // for each db path
-        if (!Files.exists(Path.of(dataPath() + BACKUP_DIR))) {
-            for (final String dir : DB_DIRS) {
-                try {
-                    Files.createDirectories(Path.of(dataPath() + dir));
-                } catch (final IOException e) {
-                    Logger.error("Error on db directory creation for [{}].", dataPath());
-                    Logger.error(e);
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            // check if the backup directory exists, this is the last dir to be created
+            // for each db path
+            if (!Files.exists(Path.of(dataPath() + BACKUP_DIR))) {
+                for (final String dir : DB_DIRS) {
+                    try {
+                        Files.createDirectories(Path.of(dataPath() + dir));
+                    } catch (final IOException e) {
+                        Logger.error("Error on db directory creation for [{}].", dataPath());
+                        Logger.error(e);
+                    }
                 }
             }
-        }
 
-        // Skip keymap initialization in recovery mode to avoid deadlocks
-        if (IN_RECOVERY) {
-            return;
-        }
-
-        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            final var keyMapPath = getKeyMapPath();
-            // only if we have indexes/have multiple files otherwise hashes are not required
-            // to be tracked
-            if (hasKeyMap() && !Files.exists(Path.of(keyMapPath))) {
-                try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
-                    populateKeyMap(getDataFileState().fileNames(), sharedKeyMap.map);
-                } catch (final Exception e) {
-                    // Delete corrupt keyMap so it rebuilds on next startup
-                    // (try-with-resources already closed the map)
-                    Logger.error("Failed to populate KeyMap at [{}]. Deleting for rebuild.", keyMapPath);
-                    CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
-                    throw e;
-                }
-                Logger.info("Initialized KeyMap at [{}]", dataPath());
+            // Skip keymap initialization in recovery mode to avoid deadlocks
+            if (IN_RECOVERY) {
+                return;
             }
-        });
+
+            CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                final var keyMapPath = getKeyMapPath();
+                // only if we have indexes/have multiple files otherwise hashes are not required
+                // to be tracked
+                if (hasKeyMap() && !Files.exists(Path.of(keyMapPath))) {
+                    try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
+                        populateKeyMap(getDataFileState().fileNames(), sharedKeyMap.map);
+                    } catch (final Exception e) {
+                        // Delete corrupt keyMap so it rebuilds on next startup
+                        // (try-with-resources already closed the map)
+                        Logger.error("Failed to populate KeyMap at [{}]. Deleting for rebuild.", keyMapPath);
+                        CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
+                        throw e;
+                    }
+                    Logger.info("Initialized KeyMap at [{}]", dataPath());
+                }
+            });
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
+        }
     }
 
     /**
@@ -537,16 +542,21 @@ public interface ChronicleDao<V> {
      * @throws IOException if file operations fail
      */
     default void backup() throws IOException {
-        final var dataPath = dataPath() + DATA_DIR;
-        final var backupPath = dataPath() + BACKUP_DIR;
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            final var dataPath = dataPath() + DATA_DIR;
+            final var backupPath = dataPath() + BACKUP_DIR;
 
-        // cleanup the old backup files first
-        for (final var file : CHRONICLE_UTILS.getFileList(backupPath)) {
-            CHRONICLE_UTILS.deleteFileIfExists(backupPath + file);
-        }
+            // cleanup the old backup files first
+            for (final var file : CHRONICLE_UTILS.getFileList(backupPath)) {
+                CHRONICLE_UTILS.deleteFileIfExists(backupPath + file);
+            }
 
-        for (final var file : CHRONICLE_UTILS.getFileList(dataPath)) {
-            Files.copy(Path.of(dataPath + file), Path.of(backupPath + file), REPLACE_EXISTING);
+            for (final var file : CHRONICLE_UTILS.getFileList(dataPath)) {
+                Files.copy(Path.of(dataPath + file), Path.of(backupPath + file), REPLACE_EXISTING);
+            }
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
     }
 
@@ -558,8 +568,13 @@ public interface ChronicleDao<V> {
      * </p>
      */
     default void deleteDataFiles() {
-        for (final var file : getDataFileState().fileNames()) {
-            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            for (final var file : getDataFileState().fileNames()) {
+                CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
+            }
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
     }
 
@@ -574,13 +589,18 @@ public interface ChronicleDao<V> {
      * @return the set of index field names that were deleted
      */
     default Set<String> deleteIndexes() {
-        final var available = indexFileNames();
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            final var available = indexFileNames();
 
-        available.forEach(f -> {
-            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + INDEX_DIR + f);
-        });
+            available.forEach(f -> {
+                CHRONICLE_UTILS.deleteFileIfExists(dataPath() + INDEX_DIR + f);
+            });
 
-        return available;
+            return available;
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
+        }
     }
 
     /**
@@ -710,17 +730,22 @@ public interface ChronicleDao<V> {
      * </p>
      */
     default void refreshIndexes() {
-        final var indexFiles = indexFileNames();
-        if (!indexFiles.isEmpty()) {
-            CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                for (final String field : indexFiles) {
-                    final var indexPath = getIndexPath(field);
-                    MAP_DB.closeIndex(indexPath);
-                    CHRONICLE_UTILS.deleteFileIfExists(indexPath);
-                }
-                initIndex(indexFiles);
-            });
-            Logger.info("Refreshed indexes at [{}].", dataPath());
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            final var indexFiles = indexFileNames();
+            if (!indexFiles.isEmpty()) {
+                CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    for (final String field : indexFiles) {
+                        final var indexPath = getIndexPath(field);
+                        MAP_DB.closeIndex(indexPath);
+                        CHRONICLE_UTILS.deleteFileIfExists(indexPath);
+                    }
+                    initIndex(indexFiles);
+                });
+                Logger.info("Refreshed indexes at [{}].", dataPath());
+            }
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
     }
 
@@ -736,21 +761,26 @@ public interface ChronicleDao<V> {
      * </p>
      */
     default void refreshKeyMap() {
-        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            final var keyMapPath = getKeyMapPath();
-            MAP_DB.closeMap(keyMapPath);
-            CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
-            try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
-                populateKeyMap(getDataFileState().fileNames(), sharedKeyMap.map);
-            } catch (final Exception e) {
-                // Delete corrupt keyMap so it rebuilds on next startup
-                // (try-with-resources already closed the map)
-                Logger.error("Failed to refresh KeyMap at [{}]. Deleting for rebuild.", keyMapPath);
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                final var keyMapPath = getKeyMapPath();
+                MAP_DB.closeMap(keyMapPath);
                 CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
-                throw e;
-            }
-            Logger.info("Refreshed KeyMap at [{}]", dataPath());
-        });
+                try (final var sharedKeyMap = MAP_DB.openMap(keyMapPath, entries())) {
+                    populateKeyMap(getDataFileState().fileNames(), sharedKeyMap.map);
+                } catch (final Exception e) {
+                    // Delete corrupt keyMap so it rebuilds on next startup
+                    // (try-with-resources already closed the map)
+                    Logger.error("Failed to refresh KeyMap at [{}]. Deleting for rebuild.", keyMapPath);
+                    CHRONICLE_UTILS.deleteFileIfExists(keyMapPath);
+                    throw e;
+                }
+                Logger.info("Refreshed KeyMap at [{}]", dataPath());
+            });
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
+        }
     }
 
     /**
@@ -785,31 +815,36 @@ public interface ChronicleDao<V> {
             return;
         }
 
-        if (!getDataFileState().fileNames().isEmpty()) {
-            CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
-                final var availableIndexes = availableIndexes();
-                final var indexFileNames = indexFileNames();
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            if (!getDataFileState().fileNames().isEmpty()) {
+                CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
+                    final var availableIndexes = availableIndexes();
+                    final var indexFileNames = indexFileNames();
 
-                // Find stale indexes (exist on disk but no longer in indexFileNames)
-                final Set<String> staleIndexes = new HashSet<>(availableIndexes);
-                staleIndexes.removeAll(indexFileNames);
-                if (!staleIndexes.isEmpty()) {
-                    for (final var staleIndex : staleIndexes) {
-                        final var indexPath = getIndexPath(staleIndex);
-                        MAP_DB.closeIndex(indexPath);
-                        CHRONICLE_UTILS.deleteFileIfExists(indexPath);
+                    // Find stale indexes (exist on disk but no longer in indexFileNames)
+                    final Set<String> staleIndexes = new HashSet<>(availableIndexes);
+                    staleIndexes.removeAll(indexFileNames);
+                    if (!staleIndexes.isEmpty()) {
+                        for (final var staleIndex : staleIndexes) {
+                            final var indexPath = getIndexPath(staleIndex);
+                            MAP_DB.closeIndex(indexPath);
+                            CHRONICLE_UTILS.deleteFileIfExists(indexPath);
+                        }
+                        Logger.info("Deleted stale indexes {} at [{}]", staleIndexes, dataPath());
                     }
-                    Logger.info("Deleted stale indexes {} at [{}]", staleIndexes, dataPath());
-                }
 
-                // Find missing indexes (in indexFileNames but not on disk)
-                final Set<String> missingIndexes = new HashSet<>(indexFileNames);
-                missingIndexes.removeAll(availableIndexes);
-                if (!missingIndexes.isEmpty()) {
-                    initIndex(missingIndexes);
-                    Logger.info("Initialized {} indexes at [{}]", missingIndexes, dataPath());
-                }
-            }, "Init Indexes - " + dataPath()));
+                    // Find missing indexes (in indexFileNames but not on disk)
+                    final Set<String> missingIndexes = new HashSet<>(indexFileNames);
+                    missingIndexes.removeAll(availableIndexes);
+                    if (!missingIndexes.isEmpty()) {
+                        initIndex(missingIndexes);
+                        Logger.info("Initialized {} indexes at [{}]", missingIndexes, dataPath());
+                    }
+                }, "Init Indexes - " + dataPath()));
+            }
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
     }
 
@@ -824,16 +859,21 @@ public interface ChronicleDao<V> {
      * @throws IOException if backup or recovery fails
      */
     default void recoverData(final String dataFileName) throws IOException {
-        final var dataFileStr = dataPath() + DATA_DIR + dataFileName;
-        final var dataFilePath = Path.of(dataFileStr);
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            final var dataFileStr = dataPath() + DATA_DIR + dataFileName;
+            final var dataFilePath = Path.of(dataFileStr);
 
-        // 1. Make a backup before recovery
-        final var backupPath = Path.of(dataPath() + BACKUP_DIR + LOCKED_FILE + dataFileName);
-        Files.copy(dataFilePath, backupPath, StandardCopyOption.REPLACE_EXISTING);
-        Logger.info("Backed up file to {}", backupPath);
-        try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKeySize(), averageValue(),
-                dataFileStr, bloatFactor())) {
-            Logger.info("Recovered ChronicleMap [{}] with {} entries", dataFileName, db.size());
+            // 1. Make a backup before recovery
+            final var backupPath = Path.of(dataPath() + BACKUP_DIR + LOCKED_FILE + dataFileName);
+            Files.copy(dataFilePath, backupPath, StandardCopyOption.REPLACE_EXISTING);
+            Logger.info("Backed up file to {}", backupPath);
+            try (final var db = CHRONICLE_DB.recoverDb(name(), entries(), averageKeySize(), averageValue(),
+                    dataFileStr, bloatFactor())) {
+                Logger.info("Recovered ChronicleMap [{}] with {} entries", dataFileName, db.size());
+            }
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
     }
 
@@ -1239,34 +1279,39 @@ public interface ChronicleDao<V> {
      * @param newSize  the new size to set
      */
     default void resizeDb(final String fileName, final long newSize) {
-        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
-            final var dataFilePath = dataPath() + DATA_DIR + fileName;
-            final var backupDataFilePath = dataPath() + BACKUP_DIR + fileName;
-            final var tempFileName = "data.tmp";
-            final var tempFilePath = dataPath() + DATA_DIR + tempFileName;
-            long currentEntrySize = 0;
-            boolean success = false;
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
+                final var dataFilePath = dataPath() + DATA_DIR + fileName;
+                final var backupDataFilePath = dataPath() + BACKUP_DIR + fileName;
+                final var tempFileName = "data.tmp";
+                final var tempFilePath = dataPath() + DATA_DIR + tempFileName;
+                long currentEntrySize = 0;
+                boolean success = false;
 
-            try (final var shared = openDb()) {
-                currentEntrySize = shared.map.size();
-                if (newSize <= currentEntrySize) {
-                    Logger.warn("New size {} is not larger than current size {} at [{}]. Skipping resize.",
-                            newSize, currentEntrySize, dataPath());
-                    return;
+                try (final var shared = openDb()) {
+                    currentEntrySize = shared.map.size();
+                    if (newSize <= currentEntrySize) {
+                        Logger.warn("New size {} is not larger than current size {} at [{}]. Skipping resize.",
+                                newSize, currentEntrySize, dataPath());
+                        return;
+                    }
+
+                    try (final var newShared = openDb(tempFileName, newSize)) {
+                        newShared.map.putAll(shared.map);
+                        success = true;
+                    }
                 }
 
-                try (final var newShared = openDb(tempFileName, newSize)) {
-                    newShared.map.putAll(shared.map);
-                    success = true;
+                if (success) {
+                    Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
+                    Files.move(Path.of(tempFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
+                    Logger.info("Resized DB at [{}] from {} to {}.", dataPath(), currentEntrySize, newSize);
                 }
-            }
-
-            if (success) {
-                Files.move(Path.of(dataFilePath), Path.of(backupDataFilePath), REPLACE_EXISTING);
-                Files.move(Path.of(tempFilePath), Path.of(dataFilePath), REPLACE_EXISTING);
-                Logger.info("Resized DB at [{}] from {} to {}.", dataPath(), currentEntrySize, newSize);
-            }
-        }, "Resize DB - " + dataPath() + fileName));
+            }, "Resize DB - " + dataPath() + fileName));
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
+        }
     }
 
     /**
@@ -1294,25 +1339,30 @@ public interface ChronicleDao<V> {
             return;
         }
 
-        Logger.info("Vacuuming database at [{}]", dataPath());
-        CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
-            backup();
-            deleteDataFiles();
-            deleteIndexes();
-            CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
-            DATA_FILE_CACHE.remove(dataPath());
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            Logger.info("Vacuuming database at [{}]", dataPath());
+            CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
+                backup();
+                deleteDataFiles();
+                deleteIndexes();
+                CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
+                DATA_FILE_CACHE.remove(dataPath());
 
-            // Re-insert all records from backup files
-            // Note: insert() will re-acquire the same lock (reentrant lock behavior)
-            for (final String file : CHRONICLE_UTILS.getFileList(dataPath() + BACKUP_DIR)) {
-                if (file.startsWith("data")) {
-                    try (final var shared = openDb(BACKUP_DIR, file)) {
-                        // Copy to HashMap for thread-safe parallel processing in updateIndex()
-                        insert(new HashMap<>(shared.map));
+                // Re-insert all records from backup files
+                // Note: insert() will re-acquire the same lock (reentrant lock behavior)
+                for (final String file : CHRONICLE_UTILS.getFileList(dataPath() + BACKUP_DIR)) {
+                    if (file.startsWith("data")) {
+                        try (final var shared = openDb(BACKUP_DIR, file)) {
+                            // Copy to HashMap for thread-safe parallel processing in updateIndex()
+                            insert(new HashMap<>(shared.map));
+                        }
                     }
                 }
-            }
-        }, "Vacuum DB - " + dataPath()));
+            }, "Vacuum DB - " + dataPath()));
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
+        }
     }
 
     /**
@@ -7412,12 +7462,17 @@ public interface ChronicleDao<V> {
      * @throws IOException if backup or deletion fails
      */
     default void truncate() throws IOException {
-        Logger.info("Dropping database at [{}].", dataPath());
-        backup();
-        deleteDataFiles();
-        deleteIndexes();
-        CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
-        DATA_FILE_CACHE.remove(dataPath());
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            Logger.info("Dropping database at [{}].", dataPath());
+            backup();
+            deleteDataFiles();
+            deleteIndexes();
+            CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
+            DATA_FILE_CACHE.remove(dataPath());
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
+        }
     }
 
     /**
