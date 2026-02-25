@@ -3416,6 +3416,11 @@ public interface ChronicleDao<V> {
 
                             while (startIndex < batches.size()) {
                                 final long remainingEntries = entries() - shared.map.size();
+                                if (remainingEntries <= 0) {
+                                    // Current file is full, rotate to a new file
+                                    shared = checkAndRotate(shared);
+                                    continue;
+                                }
                                 final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
 
                                 // Process this batch (sublist)
@@ -3506,6 +3511,11 @@ public interface ChronicleDao<V> {
 
                             while (startIndex < batches.size()) {
                                 final long remainingEntries = entries() - shared.map.size();
+                                if (remainingEntries <= 0) {
+                                    // Current file is full, rotate to a new file
+                                    shared = checkAndRotate(shared, keyMapUpdate, keyHashMap);
+                                    continue;
+                                }
                                 final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
 
                                 // Process this batch (sublist)
@@ -3756,6 +3766,12 @@ public interface ChronicleDao<V> {
 
                         while (startIndex < insertSize) {
                             final long remainingEntries = entries() - shared.map.size();
+                            if (remainingEntries <= 0) {
+                                // Current file is full, rotate to a new file
+                                shared = checkAndRotate(shared);
+                                keyMapUpdate.clear();
+                                continue;
+                            }
                             final int endIndex = (int) Math.min(startIndex + remainingEntries, insertSize);
                             final var batch = notExists.subList(startIndex, endIndex);
                             final var currentFileSnap = getDataFileState().currentFile();
@@ -3842,6 +3858,11 @@ public interface ChronicleDao<V> {
 
                     while (startIndex < batches.size()) {
                         final long remainingEntries = entries() - shared.map.size();
+                        if (remainingEntries <= 0) {
+                            // Current file is full, rotate to a new file
+                            shared = checkAndRotate(shared, keyMapUpdate, filteredKeyHashMap);
+                            continue;
+                        }
                         final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
                         final var batch = batches.subList(startIndex, endIndex);
                         final var currentFileSnap = getDataFileState().currentFile();
