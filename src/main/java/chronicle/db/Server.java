@@ -38,6 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.tinylog.Logger;
 
 import chronicle.db.config.KryoSerializer;
+import chronicle.db.dao.ChronicleDao;
 import chronicle.db.config.QueryMode;
 import chronicle.db.entity.PutStatus;
 import chronicle.db.service.ClientSocketService;
@@ -806,6 +807,26 @@ public class Server {
 
             // set to true to close long running tasks in loops
             SHUTDOWN_REQUESTED.set(true);
+
+            // block new requests at server level
+            upgrading = true;
+
+            // wait for in-flight writes to complete
+            int inFlight = ChronicleDao.IN_FLIGHT_WRITES.get();
+            if (inFlight > 0) {
+                try {
+                    Files.writeString(infoLogPath, "INFO: [" + inFlight + "] In-flight writes pending. Waiting...\n");
+                } catch (final IOException e) {
+                }
+            }
+            while (inFlight > 0) {
+                try {
+                    Thread.sleep(50);
+                } catch (final InterruptedException e) {
+                    break;
+                }
+                inFlight = ChronicleDao.IN_FLIGHT_WRITES.get();
+            }
 
             // close replication queue
             if (replicationQueue != null) {

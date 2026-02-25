@@ -181,6 +181,7 @@ public interface ChronicleDao<V> {
     int HARD_LIMIT = 100_000;
     String RECOVERY_MODE_PROPERTY = "chronicle.recovery.mode";
     boolean IN_RECOVERY = Boolean.getBoolean(RECOVERY_MODE_PROPERTY);
+    AtomicInteger IN_FLIGHT_WRITES = new AtomicInteger(0);
 
     /**
      * Returns the name of this DAO for logging and identification purposes.
@@ -643,7 +644,7 @@ public interface ChronicleDao<V> {
     default VacuumInfo needsVacuum() {
         final int actualFiles = getDataFileState().fileNames().size();
         if (actualFiles <= 1) {
-            return null;  // Single file - no vacuum needed
+            return null; // Single file - no vacuum needed
         }
 
         // Only count records if multiple files exist
@@ -2779,50 +2780,55 @@ public interface ChronicleDao<V> {
             return false;
         }
 
-        if (!hasKeyMap()) {
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            if (!hasKeyMap()) {
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    V deletedValue = null;
+                    try (final var shared = openDb()) {
+                        deletedValue = shared.map.remove(key);
+                    }
+
+                    if (deletedValue != null) {
+                        Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
+                        return true;
+                    }
+
+                    return false;
+                });
+            }
+
+            // Pre-calculate hash ONCE before all operations
+            final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+            final var keyHashMap = Map.of(key, keyHash);
+
+            // STEP 0: Slow lookup outside the lock using pre-calculated hash
+            final var file = getDbFile(keyHash);
+            if (file == null)
+                return false;
+
+            // STEP 1: The Critical Section (Short Lock)
             return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
                 V deletedValue = null;
-                try (final var shared = openDb()) {
+                try (final var shared = openDb(file)) {
                     deletedValue = shared.map.remove(key);
                 }
 
                 if (deletedValue != null) {
+                    // STEP 2: The Cleanup
+                    removeFromKeyMap(key, keyHash);
+                    CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, deletedValue),
+                            averageValue().getClass(), keyHashMap);
+
                     Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
                     return true;
                 }
 
                 return false;
             });
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
-
-        // Pre-calculate hash ONCE before all operations
-        final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
-        final var keyHashMap = Map.of(key, keyHash);
-
-        // STEP 0: Slow lookup outside the lock using pre-calculated hash
-        final var file = getDbFile(keyHash);
-        if (file == null)
-            return false;
-
-        // STEP 1: The Critical Section (Short Lock)
-        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            V deletedValue = null;
-            try (final var shared = openDb(file)) {
-                deletedValue = shared.map.remove(key);
-            }
-
-            if (deletedValue != null) {
-                // STEP 2: The Cleanup
-                removeFromKeyMap(key, keyHash);
-                CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), Map.of(key, deletedValue),
-                        averageValue().getClass(), keyHashMap);
-
-                Logger.info("Deleted using key [{}] at [{}].", key, dataPath());
-                return true;
-            }
-
-            return false;
-        });
     }
 
     /**
@@ -2841,40 +2847,13 @@ public interface ChronicleDao<V> {
             return false;
         }
 
-        final var deletedMap = new ConcurrentHashMap<String, V>(1000);
-        if (!hasKeyMap()) {
-            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                try (final var shared = openDb()) {
-                    CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
-                        final var deleted = shared.map.remove(key);
-                        if (deleted != null) {
-                            deletedMap.put(key, deleted);
-                        }
-                    });
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-
-                return !deletedMap.isEmpty();
-            });
-        }
-
-        // Pre-calculate hashes ONCE before all operations
-        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keys);
-        // STEP 0: Group keys by file using pre-calculated hashes
-        final var grouped = getDbFiles(keyHashMap.values());
-        if (grouped.fileGroups().isEmpty()) {
-            return false;
-        }
-
+        IN_FLIGHT_WRITES.incrementAndGet();
         try {
-            // STEP 1: The Critical Section (Short Lock)
-            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                    final var file = entry.getKey();
-                    try (final var shared = openDb(file)) {
-                        CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
+            final var deletedMap = new ConcurrentHashMap<String, V>(1000);
+            if (!hasKeyMap()) {
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    try (final var shared = openDb()) {
+                        CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
                             final var deleted = shared.map.remove(key);
                             if (deleted != null) {
                                 deletedMap.put(key, deleted);
@@ -2884,34 +2863,66 @@ public interface ChronicleDao<V> {
                         Thread.currentThread().interrupt();
                         throw new RuntimeException(e);
                     }
+
+                    return !deletedMap.isEmpty();
                 });
-
-                if (deletedMap.isEmpty()) {
-                    return false;
-                }
-
-                // Filter keyHashMap to only include deleted keys
-                final var deletedKeyHashMap = new HashMap<String, byte[]>();
-                for (final var key : deletedMap.keySet()) {
-                    deletedKeyHashMap.put(key, keyHashMap.get(key));
-                }
-
-                // STEP 2: Parallel Metadata Cleanup (Outside Lock)
-                // Since we are doing many keys, parallelizing here is great.
-                final var tasks = new ArrayList<Runnable>();
-                tasks.add(() -> removeAllFromKeyMap(deletedKeyHashMap));
-                tasks.add(() -> CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap,
-                        averageValue().getClass(), keyHashMap));
-                CHRONICLE_UTILS.processInParallel(tasks);
-                Logger.info("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
-                return true;
-            });
-        } finally {
-            try {
-                grouped.close();
-            } catch (final Exception e) {
-                throw new RuntimeException(e);
             }
+
+            // Pre-calculate hashes ONCE before all operations
+            final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keys);
+            // STEP 0: Group keys by file using pre-calculated hashes
+            final var grouped = getDbFiles(keyHashMap.values());
+            if (grouped.fileGroups().isEmpty()) {
+                return false;
+            }
+
+            try {
+                // STEP 1: The Critical Section (Short Lock)
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                        final var file = entry.getKey();
+                        try (final var shared = openDb(file)) {
+                            CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
+                                final var deleted = shared.map.remove(key);
+                                if (deleted != null) {
+                                    deletedMap.put(key, deleted);
+                                }
+                            });
+                        } catch (final InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(e);
+                        }
+                    });
+
+                    if (deletedMap.isEmpty()) {
+                        return false;
+                    }
+
+                    // Filter keyHashMap to only include deleted keys
+                    final var deletedKeyHashMap = new HashMap<String, byte[]>();
+                    for (final var key : deletedMap.keySet()) {
+                        deletedKeyHashMap.put(key, keyHashMap.get(key));
+                    }
+
+                    // STEP 2: Parallel Metadata Cleanup (Outside Lock)
+                    // Since we are doing many keys, parallelizing here is great.
+                    final var tasks = new ArrayList<Runnable>();
+                    tasks.add(() -> removeAllFromKeyMap(deletedKeyHashMap));
+                    tasks.add(() -> CHRONICLE_UTILS.removeFromIndex(name(), dataPath(), indexFileNames(), deletedMap,
+                            averageValue().getClass(), keyHashMap));
+                    CHRONICLE_UTILS.processInParallel(tasks);
+                    Logger.info("Deleted [{}] records at [{}].", deletedMap.size(), dataPath());
+                    return true;
+                });
+            } finally {
+                try {
+                    grouped.close();
+                } catch (final Exception e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
     }
 
@@ -3009,88 +3020,94 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        // Pre-calculate hash ONCE before all operations
-        final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            // Pre-calculate hash ONCE before all operations
+            final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
 
-        if (!hasKeyMap()) {
+            if (!hasKeyMap()) {
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    var shared = openDb(); // no try with resource here for rotation
+                    try {
+                        if (!shared.map.containsKey(key)) {
+                            shared = checkAndRotate(shared);
+                        }
+
+                        final var prevValue = shared.map.put(key, value);
+                        if (hasKeyMap()) {
+                            addToKeyMap(key, getDataFileState().currentFile(), keyHash);
+                        }
+                        // since initially hasKeyMap was false, it means there was no indexes to update
+                        // even if rotataion happened.
+                        if (prevValue != null) {
+                            Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                            return PutStatus.UPDATED;
+                        }
+
+                        Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                        return PutStatus.INSERTED;
+                    } finally {
+                        shared.close();
+                    }
+                });
+            }
+
+            final var keyHashMap = Map.of(key, keyHash);
+
+            // 1. Prepare Index (OUTSIDE LOCK)
+            final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
+                    averageValue().getClass(), indexExclusions(), keyHashMap);
+
+            // 2. PRE-LOCK: Look in MapDB using pre-calculated hash
+            final var initialFile = getDbFile(keyHash);
+
+            // 3. Lock short time
             return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                var shared = openDb(); // no try with resource here for rotation
+                String file;
+                String capturedFile = null;
+                // If key wasnt found and another thread beat current one in the insert
+                if (initialFile == null) {
+                    file = getDbFile(keyHash);
+                    if (file == null) {
+                        file = getDataFileState().currentFile();
+                        capturedFile = file;
+                    }
+                } else {
+                    file = initialFile;
+                }
+
+                var shared = openDb(file); // no try with resource here for rotation
+                // only rotate if current file is full and insert mode
                 try {
-                    if (!shared.map.containsKey(key)) {
+                    if (getDataFileState().currentFile().equals(file) && !shared.map.containsKey(key)) {
                         shared = checkAndRotate(shared);
+                        // if rotated, then the file = latest file
+                        capturedFile = getDataFileState().currentFile();
                     }
 
                     final var prevValue = shared.map.put(key, value);
-                    if (hasKeyMap()) {
-                        addToKeyMap(key, getDataFileState().currentFile(), keyHash);
-                    }
-                    // since initially hasKeyMap was false, it means there was no indexes to update
-                    // even if rotataion happened.
-                    if (prevValue != null) {
-                        Logger.info("Updated using key [{}] at [{}].", key, dataPath());
-                        return PutStatus.UPDATED;
+                    if (capturedFile != null) {
+                        addToKeyMap(key, capturedFile, keyHash);
                     }
 
-                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
-                    return PutStatus.INSERTED;
+                    if (prevValue != null) {
+                        CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex,
+                                Map.of(key, prevValue),
+                                averageValue().getClass(), indexExclusions(), keyHashMap);
+                        Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                        return PutStatus.UPDATED;
+                    } else {
+                        CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
+                        Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                        return PutStatus.INSERTED;
+                    }
                 } finally {
                     shared.close();
                 }
             });
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
-
-        final var keyHashMap = Map.of(key, keyHash);
-
-        // 1. Prepare Index (OUTSIDE LOCK)
-        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
-                averageValue().getClass(), indexExclusions(), keyHashMap);
-
-        // 2. PRE-LOCK: Look in MapDB using pre-calculated hash
-        final var initialFile = getDbFile(keyHash);
-
-        // 3. Lock short time
-        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            String file;
-            String capturedFile = null;
-            // If key wasnt found and another thread beat current one in the insert
-            if (initialFile == null) {
-                file = getDbFile(keyHash);
-                if (file == null) {
-                    file = getDataFileState().currentFile();
-                    capturedFile = file;
-                }
-            } else {
-                file = initialFile;
-            }
-
-            var shared = openDb(file); // no try with resource here for rotation
-            // only rotate if current file is full and insert mode
-            try {
-                if (getDataFileState().currentFile().equals(file) && !shared.map.containsKey(key)) {
-                    shared = checkAndRotate(shared);
-                    // if rotated, then the file = latest file
-                    capturedFile = getDataFileState().currentFile();
-                }
-
-                final var prevValue = shared.map.put(key, value);
-                if (capturedFile != null) {
-                    addToKeyMap(key, capturedFile, keyHash);
-                }
-
-                if (prevValue != null) {
-                    CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
-                            averageValue().getClass(), indexExclusions(), keyHashMap);
-                    Logger.info("Updated using key [{}] at [{}].", key, dataPath());
-                    return PutStatus.UPDATED;
-                } else {
-                    CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
-                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
-                    return PutStatus.INSERTED;
-                }
-            } finally {
-                shared.close();
-            }
-        });
     }
 
     /**
@@ -3130,53 +3147,58 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        if (!hasKeyMap()) {
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            if (!hasKeyMap()) {
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    try (final var shared = openDb()) {
+                        if (shared.map.containsKey(key)) {
+                            shared.map.put(key, value);
+                            Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                            return PutStatus.UPDATED;
+                        }
+                    }
+
+                    return PutStatus.FAILED;
+                });
+            }
+
+            // Pre-calculate hash ONCE before all operations
+            final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+            final var keyHashMap = Map.of(key, keyHash);
+
+            // 1. Prepare Index (OUTSIDE LOCK)
+            final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
+                    averageValue().getClass(), indexExclusions(), keyHashMap);
+
+            // 2. PRE-LOCK: Look in MapDB using pre-calculated hash
+            final var file = getDbFile(keyHash);
+            if (file == null) {
+                Logger.error("Key [{}] does not exist during update at [{}].", key, dataPath());
+                return PutStatus.FAILED;
+            }
+
+            // 3. Now update
             return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                try (final var shared = openDb()) {
+                V prevValue = null;
+                try (final var shared = openDb(file)) {
+                    // check if deleted in between by another thread
                     if (shared.map.containsKey(key)) {
-                        shared.map.put(key, value);
-                        Logger.info("Updated using key [{}] at [{}].", key, dataPath());
-                        return PutStatus.UPDATED;
+                        prevValue = shared.map.put(key, value);
                     }
                 }
 
+                if (prevValue != null) {
+                    CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
+                            averageValue().getClass(), indexExclusions(), keyHashMap);
+                    Logger.info("Updated using key [{}] at [{}].", key, dataPath());
+                    return PutStatus.UPDATED;
+                }
                 return PutStatus.FAILED;
             });
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
-
-        // Pre-calculate hash ONCE before all operations
-        final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
-        final var keyHashMap = Map.of(key, keyHash);
-
-        // 1. Prepare Index (OUTSIDE LOCK)
-        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
-                averageValue().getClass(), indexExclusions(), keyHashMap);
-
-        // 2. PRE-LOCK: Look in MapDB using pre-calculated hash
-        final var file = getDbFile(keyHash);
-        if (file == null) {
-            Logger.error("Key [{}] does not exist during update at [{}].", key, dataPath());
-            return PutStatus.FAILED;
-        }
-
-        // 3. Now update
-        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            V prevValue = null;
-            try (final var shared = openDb(file)) {
-                // check if deleted in between by another thread
-                if (shared.map.containsKey(key)) {
-                    prevValue = shared.map.put(key, value);
-                }
-            }
-
-            if (prevValue != null) {
-                CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames, preparedIndex, Map.of(key, prevValue),
-                        averageValue().getClass(), indexExclusions(), keyHashMap);
-                Logger.info("Updated using key [{}] at [{}].", key, dataPath());
-                return PutStatus.UPDATED;
-            }
-            return PutStatus.FAILED;
-        });
     }
 
     /**
@@ -3214,18 +3236,50 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        // Pre-calculate hash ONCE before all operations
-        final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
-        if (!hasKeyMap()) {
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            // Pre-calculate hash ONCE before all operations
+            final byte[] keyHash = CHRONICLE_UTILS.to128BitHash(key);
+            if (!hasKeyMap()) {
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    var shared = openDb();
+                    try {
+                        if (!shared.map.containsKey(key)) {
+                            shared = checkAndRotate(shared);
+                            shared.map.put(key, value);
+                            if (hasKeyMap()) {
+                                addToKeyMap(key, getDataFileState().currentFile(), keyHash);
+                            }
+                            Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
+                            return PutStatus.INSERTED;
+                        }
+                        return PutStatus.FAILED;
+                    } finally {
+                        shared.close();
+                    }
+                });
+            }
+
+            final var keyHashMap = Map.of(key, keyHash);
+
+            // 1. Prepare Index (OUTSIDE LOCK)
+            final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
+                    averageValue().getClass(), indexExclusions(), keyHashMap);
+
             return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                final var file = getDbFile(keyHash);
+                if (file != null) {
+                    Logger.error("Key [{}] already exists during insert at [{}].", key, dataPath());
+                    return PutStatus.FAILED;
+                }
+
                 var shared = openDb();
                 try {
                     if (!shared.map.containsKey(key)) {
                         shared = checkAndRotate(shared);
                         shared.map.put(key, value);
-                        if (hasKeyMap()) {
-                            addToKeyMap(key, getDataFileState().currentFile(), keyHash);
-                        }
+                        addToKeyMap(key, getDataFileState().currentFile(), keyHash);
+                        CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
                         Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
                         return PutStatus.INSERTED;
                     }
@@ -3234,36 +3288,9 @@ public interface ChronicleDao<V> {
                     shared.close();
                 }
             });
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
-
-        final var keyHashMap = Map.of(key, keyHash);
-
-        // 1. Prepare Index (OUTSIDE LOCK)
-        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames, Map.of(key, value),
-                averageValue().getClass(), indexExclusions(), keyHashMap);
-
-        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            final var file = getDbFile(keyHash);
-            if (file != null) {
-                Logger.error("Key [{}] already exists during insert at [{}].", key, dataPath());
-                return PutStatus.FAILED;
-            }
-
-            var shared = openDb();
-            try {
-                if (!shared.map.containsKey(key)) {
-                    shared = checkAndRotate(shared);
-                    shared.map.put(key, value);
-                    addToKeyMap(key, getDataFileState().currentFile(), keyHash);
-                    CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex);
-                    Logger.info("Inserted using key [{}] at [{}].", key, dataPath());
-                    return PutStatus.INSERTED;
-                }
-                return PutStatus.FAILED;
-            } finally {
-                shared.close();
-            }
-        });
     }
 
     /**
@@ -3301,75 +3328,188 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        final int putSize = map.size();
-        final var prevValues = new ConcurrentHashMap<String, V>(putSize);
-        final Set<String> keysToInsert = new HashSet<>(map.keySet());
-        final var keyMapUpdate = new ConcurrentHashMap<String, String>(putSize);
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            final int putSize = map.size();
+            final var prevValues = new ConcurrentHashMap<String, V>(putSize);
+            final Set<String> keysToInsert = new HashSet<>(map.keySet());
+            final var keyMapUpdate = new ConcurrentHashMap<String, String>(putSize);
 
-        if (!hasKeyMap()) {
-            final var exists = existsList(keysToInsert);
-            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                var status = PutStatus.INSERTED;
-                var shared = openDb();
-                try {
-                    // Separate updates from inserts
-                    final var sharedForUpdate = shared; // capture for this lambda
+            if (!hasKeyMap()) {
+                final var exists = existsList(keysToInsert);
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    var status = PutStatus.INSERTED;
+                    var shared = openDb();
                     try {
-                        CHRONICLE_UTILS.parallelIterable(exists, Integer.MAX_VALUE, key -> {
-                            if (sharedForUpdate.map.containsKey(key)) {
-                                prevValues.put(key, sharedForUpdate.map.put(key, map.get(key)));
+                        // Separate updates from inserts
+                        final var sharedForUpdate = shared; // capture for this lambda
+                        try {
+                            CHRONICLE_UTILS.parallelIterable(exists, Integer.MAX_VALUE, key -> {
+                                if (sharedForUpdate.map.containsKey(key)) {
+                                    prevValues.put(key, sharedForUpdate.map.put(key, map.get(key)));
+                                }
+                            });
+                        } catch (final InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(e);
+                        }
+
+                        if (!prevValues.isEmpty()) {
+                            status = PutStatus.UPDATED;
+                            keysToInsert.removeAll(prevValues.keySet());
+                        }
+
+                        // Insert new keys with rotation handling
+                        if (!keysToInsert.isEmpty()) {
+                            final var batches = new ArrayList<>(keysToInsert);
+                            int startIndex = 0;
+
+                            while (startIndex < batches.size()) {
+                                final long remainingEntries = entries() - shared.map.size();
+                                final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
+
+                                // Process this batch (sublist)
+                                final var batch = batches.subList(startIndex, endIndex);
+                                final String currentFileSnap = getDataFileState().currentFile();
+                                final var currentShared = shared; // capture for this lambda
+                                try {
+                                    CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
+                                        final V value = map.get(key);
+                                        currentShared.map.put(key, value);
+                                        keyMapUpdate.put(key, currentFileSnap);
+                                    });
+                                } catch (final InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    throw new RuntimeException(e);
+                                }
+
+                                startIndex = endIndex;
+
+                                // More to insert? Rotate and continue
+                                if (startIndex < batches.size()) {
+                                    shared = checkAndRotate(shared);
+                                    keyMapUpdate.clear();
+                                }
                             }
-                        });
-                    } catch (final InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException(e);
+                        }
+
+                        // Only update KeyMap if rotation happened (hasKeyMap becomes true)
+                        // No indexes since it was !hasKeyMap()
+                        if (hasKeyMap() && !keyMapUpdate.isEmpty()) {
+                            final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keyMapUpdate.keySet());
+                            addAllToKeyMap(keyMapUpdate, keyHashMap);
+                        }
+
+                        if (!prevValues.isEmpty()) {
+                            Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                        }
+                        if (!keysToInsert.isEmpty()) {
+                            Logger.info("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
+                        }
+
+                        return status;
+                    } finally {
+                        shared.close();
                     }
+                });
+            }
+
+            // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
+            final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keysToInsert);
+
+            // 1. Prepare index additions (OUTSIDE LOCK)
+            final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), map,
+                    averageValue().getClass(), indexExclusions(), keyHashMap);
+
+            try (final var grouped = getDbFiles(keyHashMap.values())) {
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    var status = PutStatus.INSERTED;
+
+                    // 2. PHASE 1: Updates (Inside Lock)
+                    CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                        final var file = entry.getKey();
+                        try (final var shared = openDb(file)) {
+                            CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
+                                if (shared.map.containsKey(key)) {
+                                    prevValues.put(key, shared.map.put(key, map.get(key)));
+                                }
+                            });
+                        } catch (final InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(e);
+                        }
+                    });
 
                     if (!prevValues.isEmpty()) {
                         status = PutStatus.UPDATED;
                         keysToInsert.removeAll(prevValues.keySet());
                     }
 
-                    // Insert new keys with rotation handling
+                    final var tasks = new ArrayList<Runnable>();
+                    // 3. PHASE 2: Inserts (Inside Lock)
                     if (!keysToInsert.isEmpty()) {
-                        final var batches = new ArrayList<>(keysToInsert);
-                        int startIndex = 0;
+                        // Insert new records (only keys in keysToInsert) in batches
+                        var shared = openDb();
+                        try {
+                            final var batches = new ArrayList<>(keysToInsert);
+                            int startIndex = 0;
 
-                        while (startIndex < batches.size()) {
-                            final long remainingEntries = entries() - shared.map.size();
-                            final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
+                            while (startIndex < batches.size()) {
+                                final long remainingEntries = entries() - shared.map.size();
+                                final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
 
-                            // Process this batch (sublist)
-                            final var batch = batches.subList(startIndex, endIndex);
-                            final String currentFileSnap = getDataFileState().currentFile();
-                            final var currentShared = shared; // capture for this lambda
-                            try {
-                                CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
-                                    final V value = map.get(key);
-                                    currentShared.map.put(key, value);
-                                    keyMapUpdate.put(key, currentFileSnap);
-                                });
-                            } catch (final InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                throw new RuntimeException(e);
+                                // Process this batch (sublist)
+                                final var batch = batches.subList(startIndex, endIndex);
+                                final String currentFileSnap = getDataFileState().currentFile();
+                                final var currentShared = shared;
+                                try {
+                                    CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
+                                        final V value = map.get(key);
+                                        currentShared.map.put(key, value);
+                                        keyMapUpdate.put(key, currentFileSnap);
+                                    });
+                                } catch (final InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    throw new RuntimeException(e);
+                                }
+
+                                startIndex = endIndex;
+
+                                // More to insert? Rotate and continue
+                                if (startIndex < batches.size()) {
+                                    shared = checkAndRotate(shared, keyMapUpdate, keyHashMap);
+                                }
                             }
-
-                            startIndex = endIndex;
-
-                            // More to insert? Rotate and continue
-                            if (startIndex < batches.size()) {
-                                shared = checkAndRotate(shared);
-                                keyMapUpdate.clear();
-                            }
+                        } finally {
+                            shared.close();
                         }
+
+                        // Filter prepared index to only include inserts for the additions task
+                        final var preparedInserts = new ConcurrentHashMap<String, Map<String, byte[]>>();
+                        preparedIndex.entrySet().parallelStream().forEach(entry -> {
+                            final var filtered = new HashMap<>(entry.getValue());
+                            filtered.keySet().retainAll(keysToInsert);
+
+                            if (!filtered.isEmpty()) {
+                                preparedInserts.put(entry.getKey(), filtered);
+                            }
+                        });
+
+                        tasks.add(() -> CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedInserts));
                     }
 
-                    // Only update KeyMap if rotation happened (hasKeyMap becomes true)
-                    // No indexes since it was !hasKeyMap()
-                    if (hasKeyMap() && !keyMapUpdate.isEmpty()) {
-                        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keyMapUpdate.keySet());
-                        addAllToKeyMap(keyMapUpdate, keyHashMap);
+                    // 4. PHASE 3: KeyMap Update
+                    if (!keyMapUpdate.isEmpty()) {
+                        tasks.add(() -> addAllToKeyMap(keyMapUpdate, keyHashMap));
                     }
+
+                    // 5. PHASE 4: Indexing
+                    // Apply Updates (Existing Keys)
+                    tasks.add(
+                            () -> CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex,
+                                    prevValues,
+                                    averageValue().getClass(), indexExclusions(), keyHashMap));
+                    CHRONICLE_UTILS.processInParallel(tasks);
 
                     if (!prevValues.isEmpty()) {
                         Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
@@ -3377,120 +3517,13 @@ public interface ChronicleDao<V> {
                     if (!keysToInsert.isEmpty()) {
                         Logger.info("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
                     }
-
                     return status;
-                } finally {
-                    shared.close();
-                }
-            });
-        }
-
-        // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
-        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keysToInsert);
-
-        // 1. Prepare index additions (OUTSIDE LOCK)
-        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), map,
-                averageValue().getClass(), indexExclusions(), keyHashMap);
-
-        try (final var grouped = getDbFiles(keyHashMap.values())) {
-            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                var status = PutStatus.INSERTED;
-
-                // 2. PHASE 1: Updates (Inside Lock)
-                CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                    final var file = entry.getKey();
-                    try (final var shared = openDb(file)) {
-                        CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
-                            if (shared.map.containsKey(key)) {
-                                prevValues.put(key, shared.map.put(key, map.get(key)));
-                            }
-                        });
-                    } catch (final InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException(e);
-                    }
                 });
-
-                if (!prevValues.isEmpty()) {
-                    status = PutStatus.UPDATED;
-                    keysToInsert.removeAll(prevValues.keySet());
-                }
-
-                final var tasks = new ArrayList<Runnable>();
-                // 3. PHASE 2: Inserts (Inside Lock)
-                if (!keysToInsert.isEmpty()) {
-                    // Insert new records (only keys in keysToInsert) in batches
-                    var shared = openDb();
-                    try {
-                        final var batches = new ArrayList<>(keysToInsert);
-                        int startIndex = 0;
-
-                        while (startIndex < batches.size()) {
-                            final long remainingEntries = entries() - shared.map.size();
-                            final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
-
-                            // Process this batch (sublist)
-                            final var batch = batches.subList(startIndex, endIndex);
-                            final String currentFileSnap = getDataFileState().currentFile();
-                            final var currentShared = shared;
-                            try {
-                                CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
-                                    final V value = map.get(key);
-                                    currentShared.map.put(key, value);
-                                    keyMapUpdate.put(key, currentFileSnap);
-                                });
-                            } catch (final InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                throw new RuntimeException(e);
-                            }
-
-                            startIndex = endIndex;
-
-                            // More to insert? Rotate and continue
-                            if (startIndex < batches.size()) {
-                                shared = checkAndRotate(shared, keyMapUpdate, keyHashMap);
-                            }
-                        }
-                    } finally {
-                        shared.close();
-                    }
-
-                    // Filter prepared index to only include inserts for the additions task
-                    final var preparedInserts = new ConcurrentHashMap<String, Map<String, byte[]>>();
-                    preparedIndex.entrySet().parallelStream().forEach(entry -> {
-                        final var filtered = new HashMap<>(entry.getValue());
-                        filtered.keySet().retainAll(keysToInsert);
-
-                        if (!filtered.isEmpty()) {
-                            preparedInserts.put(entry.getKey(), filtered);
-                        }
-                    });
-
-                    tasks.add(() -> CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedInserts));
-                }
-
-                // 4. PHASE 3: KeyMap Update
-                if (!keyMapUpdate.isEmpty()) {
-                    tasks.add(() -> addAllToKeyMap(keyMapUpdate, keyHashMap));
-                }
-
-                // 5. PHASE 4: Indexing
-                // Apply Updates (Existing Keys)
-                tasks.add(
-                        () -> CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex, prevValues,
-                                averageValue().getClass(), indexExclusions(), keyHashMap));
-                CHRONICLE_UTILS.processInParallel(tasks);
-
-                if (!prevValues.isEmpty()) {
-                    Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
-                }
-                if (!keysToInsert.isEmpty()) {
-                    Logger.info("Inserted [{}] records at [{}].", keysToInsert.size(), dataPath());
-                }
-                return status;
-            });
-        } catch (final Exception e) {
-            throw new RuntimeException(e);
+            } catch (final Exception e) {
+                throw new RuntimeException(e);
+            }
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
     }
 
@@ -3517,60 +3550,16 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        final var mapSize = map.size();
-        final var prevValues = new ConcurrentHashMap<String, V>(mapSize);
-        final var keys = map.keySet();
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            final var mapSize = map.size();
+            final var prevValues = new ConcurrentHashMap<String, V>(mapSize);
+            final var keys = map.keySet();
 
-        if (!hasKeyMap()) {
-            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                try (final var shared = openDb()) {
-                    CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
-                        if (shared.map.containsKey(key)) {
-                            prevValues.put(key, shared.map.put(key, map.get(key)));
-                        }
-                    });
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-
-                final var prevValueSize = prevValues.size();
-                if (prevValueSize == 0) {
-                    Logger.error("All [{}] values do not exist during update at [{}]", mapSize, dataPath());
-                    return PutStatus.FAILED;
-                }
-
-                var status = PutStatus.UPDATED;
-                if (prevValueSize != mapSize) {
-                    final var missingKeys = new HashSet<>(keys);
-                    missingKeys.removeAll(prevValues.keySet());
-                    Logger.error("{} keys missing during update at [{}]. Missing: {}.",
-                            missingKeys.size(), dataPath(), missingKeys);
-                    status = PutStatus.PARTIAL;
-                }
-
-                Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
-                return status;
-            });
-        }
-
-        // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
-        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keys);
-
-        // 1. PHASE 1: Preparation (OUTSIDE LOCK)
-        // Identify exactly which files hold these keys before blocking other writers.
-        // Also prepare index additions (heavy reflection & hashing)
-        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), map,
-                averageValue().getClass(), indexExclusions(), keyHashMap);
-
-        try (final var grouped = getDbFiles(keyHashMap.values())) {
-            // 2. PHASE 2: Data Update (INSIDE LOCK)
-            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
-                    final var file = entry.getKey();
-                    try (final var shared = openDb(file)) {
-                        CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
-                            // STRICT UPDATE: Only put if it actually exists in this file
+            if (!hasKeyMap()) {
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    try (final var shared = openDb()) {
+                        CHRONICLE_UTILS.parallelIterable(keys, Integer.MAX_VALUE, key -> {
                             if (shared.map.containsKey(key)) {
                                 prevValues.put(key, shared.map.put(key, map.get(key)));
                             }
@@ -3579,34 +3568,83 @@ public interface ChronicleDao<V> {
                         Thread.currentThread().interrupt();
                         throw new RuntimeException(e);
                     }
+
+                    final var prevValueSize = prevValues.size();
+                    if (prevValueSize == 0) {
+                        Logger.error("All [{}] values do not exist during update at [{}]", mapSize, dataPath());
+                        return PutStatus.FAILED;
+                    }
+
+                    var status = PutStatus.UPDATED;
+                    if (prevValueSize != mapSize) {
+                        final var missingKeys = new HashSet<>(keys);
+                        missingKeys.removeAll(prevValues.keySet());
+                        Logger.error("{} keys missing during update at [{}]. Missing: {}.",
+                                missingKeys.size(), dataPath(), missingKeys);
+                        status = PutStatus.PARTIAL;
+                    }
+
+                    Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                    return status;
+                });
+            }
+
+            // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
+            final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keys);
+
+            // 1. PHASE 1: Preparation (OUTSIDE LOCK)
+            // Identify exactly which files hold these keys before blocking other writers.
+            // Also prepare index additions (heavy reflection & hashing)
+            final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), map,
+                    averageValue().getClass(), indexExclusions(), keyHashMap);
+
+            try (final var grouped = getDbFiles(keyHashMap.values())) {
+                // 2. PHASE 2: Data Update (INSIDE LOCK)
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    CHRONICLE_UTILS.processInParallel(grouped.fileGroups().entrySet(), entry -> {
+                        final var file = entry.getKey();
+                        try (final var shared = openDb(file)) {
+                            CHRONICLE_UTILS.parallelIterable(entry.getValue(), Integer.MAX_VALUE, key -> {
+                                // STRICT UPDATE: Only put if it actually exists in this file
+                                if (shared.map.containsKey(key)) {
+                                    prevValues.put(key, shared.map.put(key, map.get(key)));
+                                }
+                            });
+                        } catch (final InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(e);
+                        }
+                    });
+
+                    final var prevValueSize = prevValues.size();
+                    if (prevValueSize == 0) {
+                        Logger.error("All [{}] values do not exist during update at [{}]", mapSize, dataPath());
+                        return PutStatus.FAILED;
+                    }
+
+                    var status = PutStatus.UPDATED;
+                    if (prevValueSize != mapSize) {
+                        // Calculation for logging can stay inside since it's error-path only
+                        final var missingKeys = new HashSet<>(keys);
+                        missingKeys.removeAll(prevValues.keySet());
+                        Logger.error("{} keys missing during update at [{}]. Missing: {}.",
+                                missingKeys.size(), dataPath(), missingKeys);
+                        status = PutStatus.PARTIAL;
+                    }
+
+                    // 3. PHASE 3: Indexing
+                    // Only happens if the transaction succeeded.
+                    CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex, prevValues,
+                            averageValue().getClass(), indexExclusions(), keyHashMap);
+                    Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
+                    return status;
                 });
 
-                final var prevValueSize = prevValues.size();
-                if (prevValueSize == 0) {
-                    Logger.error("All [{}] values do not exist during update at [{}]", mapSize, dataPath());
-                    return PutStatus.FAILED;
-                }
-
-                var status = PutStatus.UPDATED;
-                if (prevValueSize != mapSize) {
-                    // Calculation for logging can stay inside since it's error-path only
-                    final var missingKeys = new HashSet<>(keys);
-                    missingKeys.removeAll(prevValues.keySet());
-                    Logger.error("{} keys missing during update at [{}]. Missing: {}.",
-                            missingKeys.size(), dataPath(), missingKeys);
-                    status = PutStatus.PARTIAL;
-                }
-
-                // 3. PHASE 3: Indexing
-                // Only happens if the transaction succeeded.
-                CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex, prevValues,
-                        averageValue().getClass(), indexExclusions(), keyHashMap);
-                Logger.info("Updated [{}] records at [{}].", prevValues.size(), dataPath());
-                return status;
-            });
-
-        } catch (final Exception e) {
-            throw new RuntimeException(e);
+            } catch (final Exception e) {
+                throw new RuntimeException(e);
+            }
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
     }
 
@@ -3637,44 +3675,132 @@ public interface ChronicleDao<V> {
             return PutStatus.FAILED;
         }
 
-        final var keyMapUpdate = new ConcurrentHashMap<String, String>();
+        IN_FLIGHT_WRITES.incrementAndGet();
+        try {
+            final var keyMapUpdate = new ConcurrentHashMap<String, String>();
 
-        if (!hasKeyMap()) {
-            final var notExists = notExistsList(map.keySet());
-            if (notExists.isEmpty()) {
-                Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
-                return PutStatus.FAILED;
-            }
-            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-                final var raceConditionKeys = existsList(notExists);
-
-                if (!raceConditionKeys.isEmpty()) {
-                    // Race detected! Another thread inserted these keys while we were preparing.
-                    notExists.removeAll(raceConditionKeys);
-                }
-
+            if (!hasKeyMap()) {
+                final var notExists = notExistsList(map.keySet());
                 if (notExists.isEmpty()) {
                     Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
                     return PutStatus.FAILED;
                 }
+                return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                    final var raceConditionKeys = existsList(notExists);
 
+                    if (!raceConditionKeys.isEmpty()) {
+                        // Race detected! Another thread inserted these keys while we were preparing.
+                        notExists.removeAll(raceConditionKeys);
+                    }
+
+                    if (notExists.isEmpty()) {
+                        Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
+                        return PutStatus.FAILED;
+                    }
+
+                    var shared = openDb();
+                    try {
+                        // Insert in batches
+                        int startIndex = 0;
+                        final var insertSize = notExists.size();
+
+                        while (startIndex < insertSize) {
+                            final long remainingEntries = entries() - shared.map.size();
+                            final int endIndex = (int) Math.min(startIndex + remainingEntries, insertSize);
+                            final var batch = notExists.subList(startIndex, endIndex);
+                            final var currentFileSnap = getDataFileState().currentFile();
+                            final var currentShared = shared;
+
+                            try {
+                                CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
+                                    currentShared.map.put(key, map.get(key));
+                                    keyMapUpdate.put(key, currentFileSnap);
+                                });
+                            } catch (final InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException(e);
+                            }
+
+                            startIndex = endIndex;
+                            if (startIndex < insertSize) {
+                                shared = checkAndRotate(shared); // Simple rotation - creates KeyMap
+                                keyMapUpdate.clear(); // Keys now in KeyMap from rotation
+                            }
+                        }
+
+                        // Only update KeyMap if rotation happened
+                        if (hasKeyMap() && !keyMapUpdate.isEmpty()) {
+                            final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keyMapUpdate.keySet());
+                            addAllToKeyMap(keyMapUpdate, keyHashMap);
+                        }
+
+                        Logger.info("Inserted [{}] records at [{}].", insertSize, dataPath());
+                        return PutStatus.INSERTED;
+                    } finally {
+                        shared.close();
+                    }
+                });
+            }
+
+            // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
+            final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(map.keySet());
+            final var dataToInsert = new HashMap<>(map);
+
+            // 1. OUTSIDE LOCK: Optimistic Preparation
+            // Filter out existing keys to avoid preparing indexes for them (using
+            // pre-calculated hashes)
+            final var initiallyExisting = existsListFromHashes(dataToInsert.keySet(), keyHashMap);
+            dataToInsert.keySet().removeAll(initiallyExisting);
+
+            if (dataToInsert.isEmpty()) {
+                Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
+                return PutStatus.FAILED;
+            }
+
+            // Filter keyHashMap to only include keys we're actually inserting
+            final var filteredKeyHashMap = new HashMap<String, byte[]>(dataToInsert.size());
+            dataToInsert.keySet().forEach(key -> filteredKeyHashMap.put(key, keyHashMap.get(key)));
+
+            // Prepare index for the "optimistically safe" subset
+            final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), dataToInsert,
+                    averageValue().getClass(), indexExclusions(), filteredKeyHashMap);
+
+            return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
+                // 2. INSIDE LOCK: Double-Check for Race Conditions (using pre-calculated
+                // hashes)
+                final var raceConditionKeys = existsListFromHashes(dataToInsert.keySet(), keyHashMap);
+
+                if (!raceConditionKeys.isEmpty()) {
+                    // Race detected! Another thread inserted these keys while we were preparing.
+                    dataToInsert.keySet().removeAll(raceConditionKeys);
+                    if (dataToInsert.isEmpty()) {
+                        Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
+                        return PutStatus.FAILED;
+                    }
+
+                    // Cleanup: Remove the race-condition keys from our prepared index batch and
+                    // hash map. This is fast and avoids re-calculating everything.
+                    preparedIndex.values().forEach(idxMap -> idxMap.keySet().removeAll(raceConditionKeys));
+                    filteredKeyHashMap.keySet().removeAll(raceConditionKeys);
+                }
+
+                // Insert in batches
                 var shared = openDb();
                 try {
-                    // Insert in batches
+                    final var batches = new ArrayList<>(dataToInsert.entrySet());
                     int startIndex = 0;
-                    final var insertSize = notExists.size();
 
-                    while (startIndex < insertSize) {
+                    while (startIndex < batches.size()) {
                         final long remainingEntries = entries() - shared.map.size();
-                        final int endIndex = (int) Math.min(startIndex + remainingEntries, insertSize);
-                        final var batch = notExists.subList(startIndex, endIndex);
+                        final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
+                        final var batch = batches.subList(startIndex, endIndex);
                         final var currentFileSnap = getDataFileState().currentFile();
                         final var currentShared = shared;
 
                         try {
-                            CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, key -> {
-                                currentShared.map.put(key, map.get(key));
-                                keyMapUpdate.put(key, currentFileSnap);
+                            CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, entry -> {
+                                currentShared.map.put(entry.getKey(), entry.getValue());
+                                keyMapUpdate.put(entry.getKey(), currentFileSnap);
                             });
                         } catch (final InterruptedException e) {
                             Thread.currentThread().interrupt();
@@ -3682,110 +3808,27 @@ public interface ChronicleDao<V> {
                         }
 
                         startIndex = endIndex;
-                        if (startIndex < insertSize) {
-                            shared = checkAndRotate(shared); // Simple rotation - creates KeyMap
-                            keyMapUpdate.clear(); // Keys now in KeyMap from rotation
+                        if (startIndex < batches.size()) {
+                            shared = checkAndRotate(shared, keyMapUpdate, filteredKeyHashMap);
                         }
                     }
-
-                    // Only update KeyMap if rotation happened
-                    if (hasKeyMap() && !keyMapUpdate.isEmpty()) {
-                        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(keyMapUpdate.keySet());
-                        addAllToKeyMap(keyMapUpdate, keyHashMap);
-                    }
-
-                    Logger.info("Inserted [{}] records at [{}].", insertSize, dataPath());
-                    return PutStatus.INSERTED;
                 } finally {
                     shared.close();
                 }
+
+                final var tasks = new ArrayList<Runnable>();
+                tasks.add(() -> addAllToKeyMap(keyMapUpdate, filteredKeyHashMap));
+
+                // 3. Apply Indexing (Always use the prepared batch, now cleaned)
+                tasks.add(() -> CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex));
+
+                CHRONICLE_UTILS.processInParallel(tasks);
+                Logger.info("Inserted [{}] records at [{}].", dataToInsert.size(), dataPath());
+                return PutStatus.INSERTED;
             });
+        } finally {
+            IN_FLIGHT_WRITES.decrementAndGet();
         }
-
-        // 0. Pre-calculate key hashes ONCE (OUTSIDE LOCK)
-        final var keyHashMap = CHRONICLE_UTILS.preCalculateKeyHashMap(map.keySet());
-        final var dataToInsert = new HashMap<>(map);
-
-        // 1. OUTSIDE LOCK: Optimistic Preparation
-        // Filter out existing keys to avoid preparing indexes for them (using
-        // pre-calculated hashes)
-        final var initiallyExisting = existsListFromHashes(dataToInsert.keySet(), keyHashMap);
-        dataToInsert.keySet().removeAll(initiallyExisting);
-
-        if (dataToInsert.isEmpty()) {
-            Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
-            return PutStatus.FAILED;
-        }
-
-        // Filter keyHashMap to only include keys we're actually inserting
-        final var filteredKeyHashMap = new HashMap<String, byte[]>(dataToInsert.size());
-        dataToInsert.keySet().forEach(key -> filteredKeyHashMap.put(key, keyHashMap.get(key)));
-
-        // Prepare index for the "optimistically safe" subset
-        final var preparedIndex = CHRONICLE_UTILS.prepareIndexAdditions(indexFileNames(), dataToInsert,
-                averageValue().getClass(), indexExclusions(), filteredKeyHashMap);
-
-        return CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), () -> {
-            // 2. INSIDE LOCK: Double-Check for Race Conditions (using pre-calculated
-            // hashes)
-            final var raceConditionKeys = existsListFromHashes(dataToInsert.keySet(), keyHashMap);
-
-            if (!raceConditionKeys.isEmpty()) {
-                // Race detected! Another thread inserted these keys while we were preparing.
-                dataToInsert.keySet().removeAll(raceConditionKeys);
-                if (dataToInsert.isEmpty()) {
-                    Logger.error("No new records found (all exist) during insert at [{}].", dataPath());
-                    return PutStatus.FAILED;
-                }
-
-                // Cleanup: Remove the race-condition keys from our prepared index batch and
-                // hash map. This is fast and avoids re-calculating everything.
-                preparedIndex.values().forEach(idxMap -> idxMap.keySet().removeAll(raceConditionKeys));
-                filteredKeyHashMap.keySet().removeAll(raceConditionKeys);
-            }
-
-            // Insert in batches
-            var shared = openDb();
-            try {
-                final var batches = new ArrayList<>(dataToInsert.entrySet());
-                int startIndex = 0;
-
-                while (startIndex < batches.size()) {
-                    final long remainingEntries = entries() - shared.map.size();
-                    final int endIndex = (int) Math.min(startIndex + remainingEntries, batches.size());
-                    final var batch = batches.subList(startIndex, endIndex);
-                    final var currentFileSnap = getDataFileState().currentFile();
-                    final var currentShared = shared;
-
-                    try {
-                        CHRONICLE_UTILS.parallelIterable(batch, Integer.MAX_VALUE, entry -> {
-                            currentShared.map.put(entry.getKey(), entry.getValue());
-                            keyMapUpdate.put(entry.getKey(), currentFileSnap);
-                        });
-                    } catch (final InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException(e);
-                    }
-
-                    startIndex = endIndex;
-                    if (startIndex < batches.size()) {
-                        shared = checkAndRotate(shared, keyMapUpdate, filteredKeyHashMap);
-                    }
-                }
-            } finally {
-                shared.close();
-            }
-
-            final var tasks = new ArrayList<Runnable>();
-            tasks.add(() -> addAllToKeyMap(keyMapUpdate, filteredKeyHashMap));
-
-            // 3. Apply Indexing (Always use the prepared batch, now cleaned)
-            tasks.add(() -> CHRONICLE_UTILS.applyIndexAdditions(dataPath(), preparedIndex));
-
-            CHRONICLE_UTILS.processInParallel(tasks);
-            Logger.info("Inserted [{}] records at [{}].", dataToInsert.size(), dataPath());
-            return PutStatus.INSERTED;
-        });
     }
 
     /**
