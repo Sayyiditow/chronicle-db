@@ -564,7 +564,7 @@ public class Server {
                 }
                 final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
                 final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.put(objects),
-                        "PUT_MULTIPLE - " + params.get("objectEnum"), PutStatus.FAILED);
+                        "PUT_MULTIPLE - " + dao.dataPath(), PutStatus.FAILED);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case PUT_MULTIPLE_JSON -> {
@@ -591,7 +591,7 @@ public class Server {
                     }
                 }
                 final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.put(preparedObjects),
-                        "PUT_MULTIPLE_JSON - " + params.get("objectEnum"), PutStatus.FAILED);
+                        "PUT_MULTIPLE_JSON - " + dao.dataPath(), PutStatus.FAILED);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case UPDATE_MULTIPLE -> {
@@ -601,7 +601,7 @@ public class Server {
                 }
                 final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
                 final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.update(objects),
-                        "UPDATE_MULTIPLE - " + params.get("objectEnum"), PutStatus.FAILED);
+                        "UPDATE_MULTIPLE - " + dao.dataPath(), PutStatus.FAILED);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case UPDATE_MULTIPLE_JSON -> {
@@ -627,7 +627,7 @@ public class Server {
                 }
 
                 final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.update(updatedObjects),
-                        "UPDATE_MULTIPLE_JSON - " + params.get("objectEnum"), PutStatus.FAILED);
+                        "UPDATE_MULTIPLE_JSON - " + dao.dataPath(), PutStatus.FAILED);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case INSERT_ALL -> {
@@ -637,7 +637,7 @@ public class Server {
                 }
                 final var dao = CHRONICLE_DAO_SERVICE.getDao(params);
                 final var safeSupplier = new SafeSupplier<PutStatus>(() -> dao.insert(objects),
-                        "INSERT_ALL - " + params.get("objectEnum"), PutStatus.FAILED);
+                        "INSERT_ALL - " + dao.dataPath(), PutStatus.FAILED);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case UPDATE_FILE -> {
@@ -669,24 +669,24 @@ public class Server {
             }
             case REFRESH_INDEXES -> {
                 final var safeSupplier = new SafeSupplier<Boolean>(() -> PutService.refreshIndexes(params),
-                        "REFRESH_INDEXES - " + params.get("objectEnum"), false);
+                        "REFRESH_INDEXES - " + params.get("filePath"), false);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case REFRESH_KEY_MAP -> {
                 final var safeSupplier = new SafeSupplier<Boolean>(() -> PutService.refreshKeyMap(params),
-                        "REFRESH_KEY_MAP - " + params.get("objectEnum"), false);
+                        "REFRESH_KEY_MAP - " + params.get("filePath"), false);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case TRUNCATE -> {
                 final var safeSupplier = new SafeSupplier<Boolean>(() -> DeleteService.truncate(params),
-                        "TRUNCATE - " + params.get("objectEnum"), false);
+                        "TRUNCATE - " + params.get("filePath"), false);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case VACUUM_CANDIDATES ->
                 VacuumService.printVacuumCandidates((Map<String, List<String>>) params.get("fqnMap"));
             case VACUUM -> {
                 final var safeSupplier = new SafeSupplier<Boolean>(() -> DeleteService.vacuum(params),
-                        "VACUUM - " + params.get("objectEnum"), false);
+                        "VACUUM - " + params.get("filePath"), false);
                 yield ReplicationQueue.call(queue, params, safeSupplier);
             }
             case RESIZE -> {
