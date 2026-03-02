@@ -23,6 +23,7 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -38,8 +39,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.tinylog.Logger;
 
 import chronicle.db.config.KryoSerializer;
-import chronicle.db.dao.ChronicleDao;
 import chronicle.db.config.QueryMode;
+import chronicle.db.dao.ChronicleDao;
 import chronicle.db.entity.PutStatus;
 import chronicle.db.service.ClientSocketService;
 import chronicle.db.service.DeadlockService;
@@ -117,20 +118,18 @@ public class Server {
                     replicationEnabled = Boolean.parseBoolean(properties.getProperty("replication", "false"));
                     final var standbyUrlslArr = standbyUrls.split(",");
                     final var standbyPortsArr = properties.getProperty("standbyDbPorts").split(",");
-                    final var standBySize = standbyUrlslArr.length;
-                    final String[] tailerNames = new String[standBySize + 1];
-                    for (int i = 0; i < standBySize; i++) {
+                    final Set<String> tailerNames = new HashSet<>();
+                    tailerNames.add(ReplicationQueue.getPrimaryTailerName());
+                    for (int i = 0; i < standbyUrlslArr.length; i++) {
                         final var url = standbyUrlslArr[i];
                         final var rawPort = standbyPortsArr[i];
                         final var standbyPort = Integer.parseInt(rawPort);
-                        tailerNames[i] = ReplicationQueue.generateTailerName(url, rawPort);
+                        tailerNames.add(ReplicationQueue.generateTailerName(url, rawPort));
                         if (replicationEnabled) {
-                            standbyServers
-                                    .add(new StandbyServer(url, standbyPort,
-                                            new ClientSocketService(url, standbyPort, 1, 0)));
+                            standbyServers.add(new StandbyServer(url, standbyPort,
+                                    new ClientSocketService(url, standbyPort, 1, 0)));
                         }
                     }
-                    tailerNames[standBySize] = ReplicationQueue.getPrimaryTailerName();
                     replicationQueue = new ReplicationQueue(tailerNames);
                 }
             }

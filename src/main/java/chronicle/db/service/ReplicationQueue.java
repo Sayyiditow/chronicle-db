@@ -11,8 +11,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListSet;
@@ -52,7 +52,7 @@ public class ReplicationQueue {
     private final ReentrantLock queueLock = new ReentrantLock();
     private final ConcurrentMap<String, ConcurrentSkipListSet<Long>> completionSets = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, ReentrantLock> tailerLocks = new ConcurrentHashMap<>();
-    private final String[] tailerNames;
+    private final Set<String> tailerNames;
     private static final long blockSize = Server.getQueueSize() * 1024L * 1024L;
 
     /**
@@ -71,13 +71,13 @@ public class ReplicationQueue {
     /**
      * Constructs a new ReplicationQueue.
      *
-     * @param tailerNames Array of names for the tailers (e.g., consumer
+     * @param tailerNames Set of names for the tailers (e.g., consumer
      *                    identifiers) that will track their progress in the queue.
      */
-    public ReplicationQueue(final String[] tailerNames) {
+    public ReplicationQueue(final Set<String> tailerNames) {
         this.tailerNames = tailerNames;
         this.queue = initQueue();
-        Logger.info("Initialized replication queue for {}", Arrays.toString(tailerNames));
+        Logger.info("Initialized replication queue for {}", this.tailerNames);
     }
 
     /**

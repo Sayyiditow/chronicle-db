@@ -443,6 +443,31 @@ primary=false
 
 The primary writes to a Chronicle Queue, and background threads replicate to standbys. Use `FAIL_OVER` to verify all standbys are in sync before switching.
 
+### WAL Without Standby Server
+
+If you want Write-Ahead Logging (WAL) for durability without running a separate standby server, you can configure the server to use itself as the standby:
+
+```properties
+# Primary server with WAL but no actual standby
+primary=true
+replication=false
+standbyDbUrls=localhost
+standbyDbPorts=9099
+```
+
+This configuration:
+- Creates a primary tailer to track local database writes
+- Creates a "standby" tailer pointing to itself (localhost:9099)
+- Ensures all writes go through the Chronicle Queue before being applied
+- Provides crash recovery - on restart, any unprocessed queue entries are replayed
+
+The `replication=false` setting disables actual network replication to standbys while still maintaining the WAL queue. The duplicate tailer (localhost pointing to itself) is harmless since tailer names are stored in a Set, preventing actual duplicates.
+
+This is useful for production servers that:
+- Need WAL durability guarantees
+- Don't have a standby server available
+- Want to ensure writes are persisted before acknowledgment
+
 ## System Properties
 
 Runtime configuration via JVM system properties:
