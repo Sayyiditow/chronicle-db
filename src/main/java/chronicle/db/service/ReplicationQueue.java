@@ -264,6 +264,39 @@ public class ReplicationQueue {
     }
 
     /**
+     * Resets all tailers to the start of the last written queue cycle.
+     * Used for crash recovery - after reset, processPending() will replay
+     * all entries from the cycle start.
+     * <p>
+     * Uses queue.lastIndex() to find the cycle of the last written entry,
+     * which handles cases where server was down for hours (new cycle created
+     * on init, but data is in old file).
+     */
+    public void resetAllTailersToLastWrittenCycle() {
+        final long lastIndex = queue.lastIndex();
+        if (lastIndex == -1) {
+            Logger.info("Queue is empty, no tailer reset needed");
+            return;
+        }
+
+        final int lastCycle = queue.rollCycle().toCycle(lastIndex);
+        Logger.info("Resetting all tailers to cycle {} (last written index={})", lastCycle, lastIndex);
+
+        for (final var tailerName : tailerNames) {
+            CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
+                try (final var tailer = queue.createTailer(tailerName)) {
+                    final boolean moved = tailer.moveToCycle(lastCycle);
+                    if (moved) {
+                        Logger.info("Reset tailer [{}] to start of cycle {}", tailerName, lastCycle);
+                    } else {
+                        Logger.info("No entries in cycle {} for tailer [{}]", lastCycle, tailerName);
+                    }
+                }
+            });
+        }
+    }
+
+    /**
      * Helper to generate a standardized tailer name based on the target database
      * address.
      *

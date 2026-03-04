@@ -763,6 +763,12 @@ public class Server {
 
         // Process any leftover writes from previous run synchronously
         if (replicationQueue != null) {
+            // Check for manual recovery replay (e.g., after power outage)
+            if (Boolean.getBoolean("chronicle.queue.replay")) {
+                Logger.warn("Recovery replay enabled via -Dchronicle.queue.replay=true");
+                replicationQueue.resetAllTailersToLastWrittenCycle();
+            }
+
             // send any pending writes
             sendAllPendingPrimaryWrites();
 
