@@ -468,6 +468,21 @@ This is useful for production servers that:
 - Don't have a standby server available
 - Want to ensure writes are persisted before acknowledgment
 
+### Crash Recovery Replay
+
+After a power outage, ChronicleMap data in the OS page cache may not have been flushed to disk. To recover potentially lost writes, you can replay the last WAL cycle on startup:
+
+```bash
+java -Dchronicle.queue.replay=true -jar chronicle-db.jar
+```
+
+This will:
+1. Reset all tailers to the start of the last written queue cycle
+2. Replay all WAL entries from that cycle via `processPending()`
+3. Re-apply operations to ChronicleMap (idempotent, safe to replay)
+
+**Important:** Remove the `-Dchronicle.queue.replay=true` property for subsequent starts, otherwise it will replay on every startup.
+
 ## System Properties
 
 Runtime configuration via JVM system properties:
@@ -484,6 +499,7 @@ Runtime configuration via JVM system properties:
 |----------|-------------|---------|
 | `chronicle.tasks.dir` | Directory for hot-swappable task JARs | `../lib/tasks` |
 | `chronicle.recovery.mode` | Enable recovery mode on startup | `false` |
+| `chronicle.queue.replay` | Replay last WAL cycle on startup (for crash recovery) | `false` |
 | `chronicle.db.batchSizeMedium` | Batch size for medium operations | `20000` |
 | `chronicle.db.batchSizeLarge` | Batch size for large operations | `50000` |
 
