@@ -7,6 +7,7 @@ import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -1257,18 +1258,18 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Convert a set of String keys to a set of byte[] hashes for exclusion
-     * filtering.
+     * Convert a set of String keys to a set of ByteBuffer hashes for exclusion
+     * filtering. ByteBuffer provides O(1) lookup vs O(n) for byte[].
      *
      * @param excludedKeys set of String keys to exclude
-     * @return set of byte[] hashes
+     * @return set of ByteBuffer hashes
      */
-    private Set<byte[]> preCalculateExcludedHashes(final Set<String> excludedKeys) {
+    private Set<ByteBuffer> preCalculateExcludedHashes(final Set<String> excludedKeys) {
         if (excludedKeys == null || excludedKeys.isEmpty()) {
             return Collections.emptySet();
         }
         return excludedKeys.parallelStream()
-                .map(CHRONICLE_UTILS::to128BitHash)
+                .map(k -> ByteBuffer.wrap(CHRONICLE_UTILS.to128BitHash(k)))
                 .collect(Collectors.toSet());
     }
 
@@ -5985,7 +5986,7 @@ public interface ChronicleDao<V> {
      * @return {@link SearchResult} containing matching hashes (excluding specified)
      */
     default SearchResult indexedSearch(final Search search, final NavigableSet<byte[]> index,
-            final Set<byte[]> excludedHashes) {
+            final Set<ByteBuffer> excludedHashes) {
         Logger.debug("Index searching at [{}] with [{}] excluded keys for {}.", dataPath(), excludedHashes.size(),
                 search.field());
         if (index == null || index.isEmpty()) {
@@ -6948,9 +6949,7 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            final Set<byte[]> excludedHashes = excludedKeys.stream()
-                    .map(CHRONICLE_UTILS::to128BitHash)
-                    .collect(Collectors.toSet());
+            final Set<ByteBuffer> excludedHashes = preCalculateExcludedHashes(excludedKeys);
             searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
 
             if (isResultEmpty(searchResult.results())) {
@@ -7044,9 +7043,7 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            final Set<byte[]> excludedHashes = excludedKeys.stream()
-                    .map(CHRONICLE_UTILS::to128BitHash)
-                    .collect(Collectors.toSet());
+            final Set<ByteBuffer> excludedHashes = preCalculateExcludedHashes(excludedKeys);
             searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
@@ -7142,9 +7139,7 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            final Set<byte[]> excludedHashes = excludedKeys.stream()
-                    .map(CHRONICLE_UTILS::to128BitHash)
-                    .collect(Collectors.toSet());
+            final Set<ByteBuffer> excludedHashes = preCalculateExcludedHashes(excludedKeys);
             searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
@@ -7239,9 +7234,7 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            final Set<byte[]> excludedHashes = excludedKeys.stream()
-                    .map(CHRONICLE_UTILS::to128BitHash)
-                    .collect(Collectors.toSet());
+            final Set<ByteBuffer> excludedHashes = preCalculateExcludedHashes(excludedKeys);
             searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();

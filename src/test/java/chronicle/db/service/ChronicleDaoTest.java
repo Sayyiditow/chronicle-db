@@ -477,7 +477,21 @@ public class ChronicleDaoTest {
 
         final Set<String> excludedKeys = Set.of("exclusion-test-0", "exclusion-test-5", "exclusion-test-9");
 
+        System.out.println("=== Exclusion Test Debug ===");
+        System.out.println("Total keys to query: " + keys.size() + " -> " + keys);
+        System.out.println("Excluded keys: " + excludedKeys);
+
         final Map<String, Lead> results = singleFileDao.get(keys, excludedKeys, 100);
+
+        System.out.println("Results count: " + results.size());
+        System.out.println("Returned keys: " + results.keySet());
+        System.out.println("Missing from results (should be excluded): ");
+        for (final String key : keys) {
+            if (!results.containsKey(key)) {
+                System.out.println("  - " + key + (excludedKeys.contains(key) ? " (EXCLUDED)" : " (UNEXPECTED!)"));
+            }
+        }
+        System.out.println("=== End Debug ===");
 
         assertEquals(7, results.size());
         for (final String excluded : excludedKeys) {

@@ -3,6 +3,7 @@ package chronicle.db.service;
 import static chronicle.db.utils.ChronicleUtils.CHRONICLE_UTILS;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collection;
@@ -538,7 +539,7 @@ public final class MapDb {
     }
 
     private SearchResult getSearchResult(final NavigableSet<byte[]> result, final int limit,
-            final Set<byte[]> excludedKeyHashes) {
+            final Set<ByteBuffer> excludedKeyHashes) {
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = result.iterator();
             private int remaining = limit == -1 ? Integer.MAX_VALUE : limit;
@@ -548,7 +549,7 @@ public final class MapDb {
             public boolean hasNext() {
                 while (nextHash == null && remaining > 0 && it.hasNext()) {
                     final var hash = extractIndexKey(it.next());
-                    if (!containsHash(excludedKeyHashes, hash)) {
+                    if (!excludedKeyHashes.contains(ByteBuffer.wrap(hash))) {
                         nextHash = hash;
                     }
                 }
@@ -567,15 +568,6 @@ public final class MapDb {
         };
 
         return new SearchResult(iterable);
-    }
-
-    private boolean containsHash(final Set<byte[]> set, final byte[] hash) {
-        for (final byte[] h : set) {
-            if (Arrays.equals(h, hash)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private byte[] createLowerBoundKey(final byte[] fieldBytes) {
@@ -608,7 +600,7 @@ public final class MapDb {
     }
 
     public SearchResult getEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         return getSearchResult(getEqualIndexSubset(index, searchTerm), limit, excludedKeyHashes);
     }
 
@@ -620,7 +612,7 @@ public final class MapDb {
     }
 
     public SearchResult getBeforeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final byte[] upperKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         final byte[] lowerKey = new byte[] { 0 }; // Minimal key
         return getSearchResult(index.subSet(lowerKey, true, upperKey, false), limit, excludedKeyHashes);
@@ -633,7 +625,7 @@ public final class MapDb {
     }
 
     public SearchResult getAfterIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final byte[] lowerKey = createUpperBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.tailSet(lowerKey, false), limit, excludedKeyHashes);
     }
@@ -645,7 +637,7 @@ public final class MapDb {
     }
 
     public SearchResult getLessThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final byte[] upperKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.headSet(upperKey, false), limit, excludedKeyHashes);
     }
@@ -657,7 +649,7 @@ public final class MapDb {
     }
 
     public SearchResult getLessThanOrEqualIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final byte[] upperKey = createUpperBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.headSet(upperKey, true), limit, excludedKeyHashes);
     }
@@ -669,7 +661,7 @@ public final class MapDb {
     }
 
     public SearchResult getGreaterThanIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final byte[] lowerKey = createUpperBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.tailSet(lowerKey, false), limit, excludedKeyHashes);
     }
@@ -681,7 +673,7 @@ public final class MapDb {
     }
 
     public SearchResult getGreaterThanOrEqualIndexSearch(final NavigableSet<byte[]> index,
-            final String searchTerm, final int limit, final Set<byte[]> excludedKeyHashes) {
+            final String searchTerm, final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final byte[] lowerKey = createLowerBoundKey(getSanitizedByte(searchTerm));
         return getSearchResult(index.tailSet(lowerKey, true), limit, excludedKeyHashes);
     }
@@ -695,7 +687,7 @@ public final class MapDb {
     }
 
     public SearchResult getStartsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final byte[] termBytes = getSanitizedByte(searchTerm);
         final byte[] upperKey = Arrays.copyOf(termBytes, termBytes.length + 1);
         upperKey[termBytes.length] = upperByte;
@@ -710,7 +702,7 @@ public final class MapDb {
     }
 
     public SearchResult getBetweenIndexSearch(final NavigableSet<byte[]> index, final String lowerBound,
-            final String upperBound, final int limit, final Set<byte[]> excludedKeyHashes) {
+            final String upperBound, final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final byte[] lowerKey = createLowerBoundKey(getSanitizedByte(lowerBound));
         final byte[] upperKey = createUpperBoundKey(getSanitizedByte(upperBound));
         return getSearchResult(index.subSet(lowerKey, true, upperKey, true), limit, excludedKeyHashes);
@@ -759,7 +751,7 @@ public final class MapDb {
     }
 
     public SearchResult getLikeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
             private byte[] nextMatch = null;
@@ -778,7 +770,7 @@ public final class MapDb {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
                     final byte[] keyHash = (byte[]) indexValueAndKey[1];
 
-                    if (containsHash(excludedKeyHashes, keyHash))
+                    if (excludedKeyHashes.contains(ByteBuffer.wrap(keyHash)))
                         continue;
 
                     if (CHRONICLE_UTILS.containsIgnoreCase(indexValueAndKey[0], searchTerm)) {
@@ -847,7 +839,7 @@ public final class MapDb {
     }
 
     public SearchResult getNotLikeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
             private byte[] nextMatch = null;
@@ -866,7 +858,7 @@ public final class MapDb {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
                     final byte[] keyHash = (byte[]) indexValueAndKey[1];
 
-                    if (containsHash(excludedKeyHashes, keyHash))
+                    if (excludedKeyHashes.contains(ByteBuffer.wrap(keyHash)))
                         continue;
 
                     if (!CHRONICLE_UTILS.containsIgnoreCase(indexValueAndKey[0], searchTerm)) {
@@ -957,7 +949,7 @@ public final class MapDb {
     }
 
     public SearchResult getInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         // For small term sets, use sequential (parallel overhead not worth it)
         if (searchTerms.size() <= 100) {
             return getInIndexSearchSequential(index, searchTerms, limit, excludedKeyHashes);
@@ -969,7 +961,7 @@ public final class MapDb {
                     final NavigableSet<byte[]> matches = getEqualIndexSubset(index, term);
                     return matches.stream()
                             .map(this::extractIndexKey)
-                            .filter(hash -> !containsHash(excludedKeyHashes, hash));
+                            .filter(hash -> !excludedKeyHashes.contains(ByteBuffer.wrap(hash)));
                 })
                 .limit(limit == -1 ? Long.MAX_VALUE : limit)
                 .toList();
@@ -978,7 +970,7 @@ public final class MapDb {
     }
 
     private SearchResult getInIndexSearchSequential(final NavigableSet<byte[]> index, final Set<String> searchTerms,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final Iterable<byte[]> lazyResults = () -> new Iterator<>() {
             private final Iterator<String> termIterator = searchTerms.iterator();
             private Iterator<byte[]> currentTermResults = Collections.emptyIterator();
@@ -1000,7 +992,7 @@ public final class MapDb {
                         public boolean hasNext() {
                             while (nextHash == null && it.hasNext()) {
                                 final var hash = extractIndexKey(it.next());
-                                if (!containsHash(excludedKeyHashes, hash)) {
+                                if (!excludedKeyHashes.contains(ByteBuffer.wrap(hash))) {
                                     nextHash = hash;
                                 }
                             }
@@ -1086,7 +1078,7 @@ public final class MapDb {
      * checks HashSet.
      */
     public SearchResult getInIndexSearchFullScan(final NavigableSet<byte[]> index, final Set<String> searchTerms,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
             final Iterator<byte[]> it = index.iterator();
             byte[] nextValid = null;
@@ -1104,7 +1096,7 @@ public final class MapDb {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
                     final byte[] keyHash = (byte[]) indexValueAndKey[1];
 
-                    if (containsHash(excludedKeyHashes, keyHash))
+                    if (excludedKeyHashes.contains(ByteBuffer.wrap(keyHash)))
                         continue;
 
                     if (searchTerms.contains(indexValueAndKey[0])) {
@@ -1170,7 +1162,7 @@ public final class MapDb {
     }
 
     public SearchResult getNotInIndexSearch(final NavigableSet<byte[]> index, final Set<String> searchTerms,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
             final Iterator<byte[]> it = index.iterator();
             byte[] nextValid = null;
@@ -1188,7 +1180,7 @@ public final class MapDb {
                     final var indexValueAndKey = extractIndexValueAndKey(it.next());
                     final byte[] keyHash = (byte[]) indexValueAndKey[1];
 
-                    if (containsHash(excludedKeyHashes, keyHash))
+                    if (excludedKeyHashes.contains(ByteBuffer.wrap(keyHash)))
                         continue;
 
                     if (!searchTerms.contains(indexValueAndKey[0])) {
@@ -1268,7 +1260,7 @@ public final class MapDb {
     }
 
     public SearchResult getEndsWithIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,
-            final int limit, final Set<byte[]> excludedKeyHashes) {
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
         final Iterable<byte[]> iterable = () -> new Iterator<>() {
             private final Iterator<byte[]> it = index.iterator();
             private byte[] nextItem = null;
@@ -1293,7 +1285,7 @@ public final class MapDb {
                     final String fieldValue = (String) indexValueAndKey[0];
                     final byte[] keyHash = (byte[]) indexValueAndKey[1];
 
-                    if (containsHash(excludedKeyHashes, keyHash)) {
+                    if (excludedKeyHashes.contains(ByteBuffer.wrap(keyHash))) {
                         continue;
                     }
 
