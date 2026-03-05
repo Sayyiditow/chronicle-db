@@ -100,9 +100,9 @@ public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
     private static final int processors = Runtime.getRuntime().availableProcessors();
     private static final ExecutorService sharedExecutor = Executors.newFixedThreadPool(
-            Integer.getInteger("chronicle.shared.pool.size", Math.min(processors, 32)));
+            Integer.getInteger("chronicle.shared.pool.size", Math.max(processors / 3, 2)));
     private static final ExecutorService iterableExecutor = Executors.newFixedThreadPool(
-            Integer.getInteger("chronicle.iterable.pool.size", Math.min(processors, 32)));
+            Integer.getInteger("chronicle.iterable.pool.size", Math.max(processors / 3, 2)));
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
     private static final int indexChunkSize = Integer.getInteger("chronicle.indexes.chunkSize", 10000);
