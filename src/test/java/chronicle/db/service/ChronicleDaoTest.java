@@ -500,6 +500,46 @@ public class ChronicleDaoTest {
     }
 
     @Test
+    @Order(481)
+    void edgeCase_multiSearchWithExclusions() throws InterruptedException {
+        final String prefix = "MultiExclude" + System.currentTimeMillis();
+        final List<String> keys = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            final String key = "multi-exclude-" + prefix + "-" + i;
+            singleFileDao.put(key, createLead(prefix + i, "me" + i + "@test.com"));
+            keys.add(key);
+        }
+
+        final Set<String> excludedKeys = Set.of(
+                "multi-exclude-" + prefix + "-0",
+                "multi-exclude-" + prefix + "-5",
+                "multi-exclude-" + prefix + "-9");
+
+        final List<Search> searches = List.of(new Search("fullName", SearchType.STARTS_WITH, prefix));
+
+        System.out.println("=== MultiSearch Exclusion Test Debug ===");
+        System.out.println("Total records created: " + keys.size());
+        System.out.println("Excluded keys: " + excludedKeys);
+
+        final Map<String, Lead> results = singleFileDao.multiSearch(searches, excludedKeys);
+
+        System.out.println("Results count: " + results.size());
+        System.out.println("Returned keys: " + results.keySet());
+        System.out.println("Missing from results (should be excluded): ");
+        for (final String key : keys) {
+            if (!results.containsKey(key)) {
+                System.out.println("  - " + key + (excludedKeys.contains(key) ? " (EXCLUDED)" : " (UNEXPECTED!)"));
+            }
+        }
+        System.out.println("=== End Debug ===");
+
+        assertEquals(7, results.size());
+        for (final String excluded : excludedKeys) {
+            assertFalse(results.containsKey(excluded), "Excluded key should not be in results: " + excluded);
+        }
+    }
+
+    @Test
     @Order(49)
     void edgeCase_multiSearchCount() throws InterruptedException {
         final String prefix = "CountTest" + System.currentTimeMillis();
