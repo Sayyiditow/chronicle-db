@@ -179,7 +179,7 @@ public interface ChronicleDao<V> {
             DATA_FILE = "data", LOCKED_FILE = "locked-", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
             KEY_FILE = "keys";
     String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
-    int HARD_LIMIT = 100_000;
+    int HARD_LIMIT = Integer.getInteger("chronicle.search.hardLimit", 100_000);
     String RECOVERY_MODE_PROPERTY = "chronicle.recovery.mode";
     boolean IN_RECOVERY = Boolean.getBoolean(RECOVERY_MODE_PROPERTY);
     AtomicInteger IN_FLIGHT_WRITES = new AtomicInteger(0);
