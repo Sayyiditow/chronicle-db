@@ -502,6 +502,7 @@ Runtime configuration via JVM system properties:
 | `chronicle.queue.replay` | Replay last WAL cycle on startup (for crash recovery) | `false` |
 | `chronicle.db.batchSizeMedium` | Batch size for medium operations | `20000` |
 | `chronicle.db.batchSizeLarge` | Batch size for large operations | `50000` |
+| `chronicle.search.hardLimit` | Max results returned per search query | `100000` |
 
 ### Thread Pool Configuration
 | Property | Description | Default |
