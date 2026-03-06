@@ -426,13 +426,20 @@ public class ClientSocketService {
                 return null;
             }
 
-            if ("200".equals(responseMap.get("status").toString())) {
+            final var status = responseMap.get("status").toString();
+            if ("200".equals(status)) {
                 return responseMap.get("response");
-            } else {
+            } else if ("400".equals(status)) {
+                Logger.error("DB returned 400 (bad request). Error: {}", responseMap.get("error"));
+                return null; // Don't retry - bad request is a code issue
+            } else if ("503".equals(status)) {
                 Logger.info("DB is upgrading. Reconnecting...");
                 Thread.sleep(waitTimeout);
                 returnSocket(pooledSocket);
-                return execute(queryMap);// retry
+                return execute(queryMap); // retry
+            } else {
+                Logger.warn("DB returned unexpected status [{}]. Not retrying.", status);
+                return null;
             }
         } catch (final EOFException eofException) {
             renewSocket(pooledSocket); // immediately
@@ -471,13 +478,20 @@ public class ClientSocketService {
                 return null;
             }
 
-            if ("200".equals(responseMap.get("status").toString())) {
+            final var status = responseMap.get("status").toString();
+            if ("200".equals(status)) {
                 return responseMap.get("response");
-            } else {
+            } else if ("400".equals(status)) {
+                Logger.error("DB returned 400 (bad request). Error: {}", responseMap.get("error"));
+                return null; // Don't retry - bad request is a code issue
+            } else if ("503".equals(status)) {
                 Logger.info("DB is upgrading. Reconnecting...");
                 Thread.sleep(waitTimeout);
                 returnSocket(pooledSocket);
-                return execute(data);// retry
+                return execute(data); // retry
+            } else {
+                Logger.warn("DB returned unexpected status [{}]. Not retrying.", status);
+                return null;
             }
         } catch (final EOFException eofException) {
             renewSocket(pooledSocket); // immediately
