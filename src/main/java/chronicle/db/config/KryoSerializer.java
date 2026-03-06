@@ -55,7 +55,7 @@ public class KryoSerializer {
         kryo.register(Object[].class);
         kryo.register(ConcurrentHashMap.KeySetView.class, new JavaSerializer());
         kryo.setRegistrationRequired(false); // No explicit registration
-        kryo.setReferences(true); // Handle object references
+        kryo.setReferences(false); // Handle object references
         return kryo;
     }
 
