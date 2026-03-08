@@ -5226,7 +5226,7 @@ public interface ChronicleDao<V> {
                 try (final var shared = openDb(file)) {
                     CHRONICLE_UTILS.parallelIterable(entry.getValue(), limit, counter,
                             key -> {
-                                final V value = shared.map.getUsing(key, using());
+                                final V value = shared.map.get(key);
                                 if (value == null)
                                     return false;
 
