@@ -100,7 +100,6 @@ public class ReplicationQueue {
             try (final var appender = queue.createAppender()) {
                 appender.writeDocument(w -> w.write("data").bytes(data));
                 final long index = appender.lastIndexAppended();
-                appender.sync();
                 Logger.debug("Queued replication data, size={}", len);
                 return index;
             } catch (final Throwable e) {
