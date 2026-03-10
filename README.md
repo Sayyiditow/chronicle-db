@@ -8,7 +8,7 @@ chronicle-db provides:
 - **Off-heap storage** using Chronicle Map for memory-mapped persistence
 - **Secondary indexes** using MapDB for fast lookups on any field
 - **Socket-based server** for distributed client-server architecture
-- **Kryo serialization** for high-performance data transfer
+- **Fory serialization** for high-performance data transfer
 - **Replication support** for failover and high availability
 - **Hot-swappable tasks** for custom operations without server restart
 
@@ -17,7 +17,7 @@ chronicle-db provides:
 ```
 ┌─────────────────┐     Socket      ┌─────────────────┐
 │    Your App     │ ◄────────────► │  chronicle-db   │
-│                 │   Kryo Proto   │     Server      │
+│                 │   Fory Proto   │     Server      │
 └─────────────────┘                 └────────┬────────┘
                                              │
                          ┌───────────────────┼───────────────────┐
@@ -67,7 +67,8 @@ application {
         "--add-opens=java.base/java.io=ALL-UNNAMED",
         "--add-opens=java.base/java.util=ALL-UNNAMED",
         "--add-exports=java.base/jdk.internal.util=ALL-UNNAMED",
-        "--enable-native-access=ALL-UNNAMED"
+        "--enable-native-access=ALL-UNNAMED",
+        "--sun-misc-unsafe-memory-access=allow"
     ]
 }
 ```
@@ -110,7 +111,7 @@ chronicle-db enforces specific Java types for optimal storage and querying:
 | Text fields (varchar, text) | `String` | Primary/foreign keys should also be String (UUID preferred) |
 | Dates and timestamps | `long` | Format: `yyyyMMddHHmmss` (e.g., `20261225143000`) |
 | Currency/amounts | `BigDecimal` | Never use float/double for money |
-| Fixed reference values | `enum` | Must be in separate files for Kryo registration |
+| Fixed reference values | `enum` | Must be in separate files for Fory registration |
 | True/false flags | `boolean` | Primitive type |
 | Small numbers | `int` | For counts, quantities |
 | Precision decimals | `double` | Only if precision fits requirements |
@@ -565,15 +566,14 @@ After changing entries, key size, or indexes, run vacuum to recreate files with 
 3. **Index selectively** - Only index fields you search on frequently
 4. **Use subset queries** - Fetch only needed fields to reduce memory
 5. **Batch operations** - Use `PUT_MULTIPLE` instead of multiple `PUT` calls
-6. **Register enums with Kryo** - Put enums in separate files and register in KryoSerializer
-7. **Monitor shard count** - Too many shards indicate entries() is set too low
+6. **Monitor shard count** - Too many shards indicate entries() is set too low
 
 ## Dependencies
 
 - Chronicle Map 2026.1 - Off-heap storage
 - Chronicle Queue 2026.1 - Replication WAL
 - MapDB 3.1.0 - Secondary indexes
-- Kryo 5.6.2 - Serialization
+- Fory 0.15.0 - Serialization
 - JsonIter 0.9.23 - JSON parsing
 - TinyLog 2.7.0 - Logging
 

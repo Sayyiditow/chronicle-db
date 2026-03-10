@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.tinylog.Logger;
 
-import chronicle.db.config.KryoSerializer;
+import chronicle.db.config.ForySerializer;
 import chronicle.db.config.QueryMode;
 import chronicle.db.dao.ChronicleDao;
 import chronicle.db.entity.PutStatus;
@@ -289,7 +289,7 @@ public class Server {
 
         final int processedCount = replicationQueue.processPending(tailerName, data -> {
             try {
-                final var params = (Map<String, Object>) KryoSerializer.deserialize(data);
+                final var params = (Map<String, Object>) ForySerializer.deserialize(data);
                 executeRequest(params, null); // null = don't re-queue
                 return true;
             } catch (final Throwable e) {
@@ -717,7 +717,7 @@ public class Server {
 
     private static void respond(final Map<String, Object> responseMap, final DataSocket dataSocket) throws IOException {
         // Serialize and send response
-        final byte[] responseData = KryoSerializer.serialize(responseMap);
+        final byte[] responseData = ForySerializer.serialize(responseMap);
         dataSocket.dos.writeInt(responseData.length); // Send length prefix
         dataSocket.dos.write(responseData); // Send serialized response
         dataSocket.dos.flush();
@@ -727,7 +727,7 @@ public class Server {
         final int length = dataSocket.dis.readInt(); // Read length
         final byte[] data = new byte[length];
         dataSocket.dis.readFully(data); // Read exactly 'length' bytes
-        final var params = (Map<String, Object>) KryoSerializer.deserialize(data);
+        final var params = (Map<String, Object>) ForySerializer.deserialize(data);
 
         if (params == null || params.isEmpty()) {
             Logger.error("Received null/empty params from client");

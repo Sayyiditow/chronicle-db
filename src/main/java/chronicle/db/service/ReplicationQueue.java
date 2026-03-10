@@ -25,7 +25,7 @@ import java.util.function.Predicate;
 import org.tinylog.Logger;
 
 import chronicle.db.Server;
-import chronicle.db.config.KryoSerializer;
+import chronicle.db.config.ForySerializer;
 import chronicle.db.utils.SafeRunnable;
 import chronicle.db.utils.SafeSupplier;
 import net.openhft.chronicle.queue.ChronicleQueue;
@@ -387,7 +387,7 @@ public class ReplicationQueue {
     public static void run(final ReplicationQueue queue, final Map<String, Object> params,
             final SafeRunnable action) {
         if (queue != null) {
-            final long index = queue.append(KryoSerializer.serialize(params));
+            final long index = queue.append(ForySerializer.serialize(params));
             if (index != -1L) {
                 action.run();
                 Logger.debug("DB write finished for index={}. Marking primary done.", index);
@@ -412,7 +412,7 @@ public class ReplicationQueue {
     public static <T> T call(final ReplicationQueue queue, final Map<String, Object> params,
             final SafeSupplier<T> action) {
         if (queue != null) {
-            final long index = queue.append(KryoSerializer.serialize(params));
+            final long index = queue.append(ForySerializer.serialize(params));
             if (index != -1L) {
                 final T result = action.get();
                 queue.markPrimaryProcessed(index);

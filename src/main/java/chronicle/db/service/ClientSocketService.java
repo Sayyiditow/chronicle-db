@@ -17,7 +17,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 
 import org.tinylog.Logger;
 
-import chronicle.db.config.KryoSerializer;
+import chronicle.db.config.ForySerializer;
 import chronicle.db.config.QueryMode;
 import chronicle.db.entity.Search;
 
@@ -411,7 +411,7 @@ public class ClientSocketService {
     public Object execute(final Map<String, Object> queryMap) throws InterruptedException {
         final var pooledSocket = borrowSocket();
         try {
-            final var data = KryoSerializer.serialize(queryMap);
+            final var data = ForySerializer.serialize(queryMap);
             // Send the query to the server
             pooledSocket.dos.writeInt(data.length); // Send length first
             pooledSocket.dos.write(data);
@@ -420,7 +420,7 @@ public class ClientSocketService {
             final int length = pooledSocket.dis.readInt(); // Read length
             final byte[] disData = new byte[length];
             pooledSocket.dis.readFully(disData); // Read exactly 'length' bytes
-            final var responseMap = (Map<String, Object>) KryoSerializer.deserialize(disData);
+            final var responseMap = (Map<String, Object>) ForySerializer.deserialize(disData);
 
             if (responseMap == null) {
                 return null;
@@ -472,7 +472,7 @@ public class ClientSocketService {
             final int length = pooledSocket.dis.readInt(); // Read length
             final byte[] disData = new byte[length];
             pooledSocket.dis.readFully(disData); // Read exactly 'length' bytes
-            final var responseMap = (Map<String, Object>) KryoSerializer.deserialize(disData);
+            final var responseMap = (Map<String, Object>) ForySerializer.deserialize(disData);
 
             if (responseMap == null) {
                 return null;
