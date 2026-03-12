@@ -56,9 +56,6 @@ import chronicle.db.entity.Search.SearchType;
 import chronicle.db.service.ChronicleDb.SharedChronicleMap;
 import chronicle.db.service.MapDb.SharedIndexSet;
 import net.openhft.chronicle.algo.hashing.LongHashFunction;
-import net.openhft.chronicle.hash.locks.InterProcessDeadLockException;
-import net.openhft.chronicle.map.ChronicleMap;
-import net.openhft.chronicle.map.MapEntry;
 
 /**
  * Utility class providing core functionality for ChronicleDao operations.
@@ -720,7 +717,7 @@ public final class ChronicleUtils {
             }
         }
 
-        if (db.map.isEmpty()) {
+        if (db.isEmpty()) {
             Logger.info("DB is empty. Index files created at [{}].", indexDirPath);
             openIndexes.forEach((indexPath, sharedIndexSet) -> {
                 sharedIndexSet.close();
@@ -742,7 +739,7 @@ public final class ChronicleUtils {
 
             final StringBuilder sb = new StringBuilder();
             try {
-                safeForEachEntry(db, entry -> {
+                db.forEachEntry(entry -> {
                     final var key = entry.key().get();
                     final V value = entry.value().get();
                     final byte[] keyHash = to128BitHash(key);
@@ -1354,7 +1351,7 @@ public final class ChronicleUtils {
      * @throws NoSuchMethodException
      * @throws ClassNotFoundException
      */
-    public <V> Map<String, Object> moveRecords(final ChronicleMap<String, V> currentValues,
+    public <V> Map<String, Object> moveRecords(final SharedChronicleMap<String, V> currentValues,
             final String fromObjectClass, final String toObjectClass, final Map<String, String> move,
             final Map<String, Object> def)
             throws SecurityException, InstantiationException, IllegalAccessException, IllegalArgumentException,
@@ -1894,39 +1891,5 @@ public final class ChronicleUtils {
         result[15] = (byte) h2;
 
         return result;
-    }
-
-    /**
-     * Safely iterates over map entries, marking for recovery if deadlock is
-     * detected.
-     * Recovery happens automatically when all references are closed.
-     */
-    public <V> void safeForEachEntry(final SharedChronicleMap<String, V> sharedChronicleMap,
-            final Consumer<MapEntry<String, V>> action) {
-        try {
-            sharedChronicleMap.map.forEachEntry(action);
-        } catch (final InterProcessDeadLockException e) {
-            Logger.error("Deadlock detected on [{}]. Marked for recovery on close.", sharedChronicleMap.getFilePath());
-            sharedChronicleMap.markForRecovery();
-            throw e; // Let caller know operation failed
-        }
-    }
-
-    /**
-     * Safely iterates over map entries with early termination support, marking
-     * for recovery if deadlock is detected.
-     * Recovery happens automatically when all references are closed.
-     *
-     * @return true if iteration completed, false if terminated early by predicate
-     */
-    public <V> boolean safeForEachEntryWhile(final SharedChronicleMap<String, V> sharedChronicleMap,
-            final Predicate<MapEntry<String, V>> predicate) {
-        try {
-            return sharedChronicleMap.map.forEachEntryWhile(predicate);
-        } catch (final InterProcessDeadLockException e) {
-            Logger.error("Deadlock detected on [{}]. Marked for recovery on close.", sharedChronicleMap.getFilePath());
-            sharedChronicleMap.markForRecovery();
-            throw e; // Let caller know operation failed
-        }
     }
 }

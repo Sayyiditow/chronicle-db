@@ -58,7 +58,7 @@ import org.tinylog.Logger;
  * </p>
  * <p>
  * Usage example:
- * 
+ *
  * <pre>{@code
  * // Open an index
  * SharedIndexSet idx = MAP_DB.openIndex("/path/to/index.db");
@@ -66,7 +66,6 @@ import org.tinylog.Logger;
  *     // Add an entry: field value "active" for key "user123"
  *     byte[] compositeKey = MAP_DB.createIndexKey("active", "user123");
  *     idx.index.add(compositeKey);
- *     idx.commit();
  * } finally {
  *     idx.close();
  * }
@@ -118,15 +117,30 @@ public final class MapDb {
      * Wrapper for a shared MapDB HTreeMap instance with reference counting.
      * <p>
      * Used for key-to-file mappings in ChronicleDao's file rotation system.
-     * The map stores primary keys and their corresponding shard file paths.
+     * The map stores primary keys (as 128-bit hashes) and their corresponding
+     * shard file paths.
+     * </p>
+     * <p>
+     * <b>Important:</b> The underlying HTreeMap is encapsulated to prevent
+     * direct access to its {@code close()} method, which would bypass reference
+     * counting. Use the provided wrapper methods instead.
+     * </p>
+     * <p>
+     * Usage example:
+     *
+     * <pre>{@code
+     * try (SharedKeyMap keyMap = MAP_DB.openMap("/path/to/keymap.db")) {
+     *     byte[] keyHash = CHRONICLE_UTILS.to128BitHash("myKey");
+     *     keyMap.put(keyHash, new KeyMapValue("myKey", "data"));
+     *     KeyMapValue value = keyMap.get(keyHash);
+     * }
+     * }</pre>
      * </p>
      */
     public static class SharedKeyMap implements AutoCloseable {
-        /** The underlying MapDB HTreeMap */
-        public final HTreeMap<byte[], KeyMapValue> map;
-
+        private final HTreeMap<byte[], KeyMapValue> map;
         private final AtomicInteger refCount;
-        private final String filePath; // Track file path for cleanup
+        private final String filePath;
 
         SharedKeyMap(final HTreeMap<byte[], KeyMapValue> map, final String filePath) {
             this.map = map;
@@ -138,9 +152,29 @@ public final class MapDb {
             return filePath;
         }
 
+        public KeyMapValue get(final byte[] key) {
+            return map.get(key);
+        }
+
+        public void put(final byte[] key, final KeyMapValue value) {
+            map.put(key, value);
+        }
+
+        public void remove(final byte[] key) {
+            map.remove(key);
+        }
+
+        public int size() {
+            return map.size();
+        }
+
+        public boolean containsKey(final byte[] key) {
+            return map.containsKey(key);
+        }
+
         /**
          * Increments the reference count when sharing this map.
-         * 
+         *
          * @return This SharedKeyMap instance for chaining
          */
         SharedKeyMap retain() {
@@ -172,23 +206,21 @@ public final class MapDb {
      * range queries and prefix searches.
      * </p>
      * <p>
-     * <b>Important:</b> Call {@link #commit()} after modifications to persist
-     * changes.
+     * The {@code index} field is public since {@link NavigableSet} has no
+     * {@code close()} method that could bypass reference counting.
      * </p>
      */
     public static class SharedIndexSet implements AutoCloseable {
-        /** The underlying MapDB NavigableSet (sorted index) */
         public final NavigableSet<byte[]> index;
-
         private final DB db;
         private final AtomicInteger refCount;
-        private final String filePath; // Track file path for cleanup
+        private final String filePath;
 
         SharedIndexSet(final DB db, final NavigableSet<byte[]> index, final String filePath) {
             this.db = db;
             this.index = index;
             this.filePath = filePath;
-            this.refCount = new AtomicInteger(1); // Start with a reference count of 1
+            this.refCount = new AtomicInteger(1);
         }
 
         public String getFilePath() {
@@ -197,7 +229,7 @@ public final class MapDb {
 
         /**
          * Increments the reference count when sharing this index.
-         * 
+         *
          * @return This SharedIndexSet instance for chaining
          */
         SharedIndexSet retain() {

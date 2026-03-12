@@ -87,9 +87,8 @@ public final class MigrationService {
 
                         for (final var file : sourceDao.getDataFileState().fileNames()) {
                             try (final var shared = sourceDao.openDb(file)) {
-                                final var db = shared.map;
-                                final var updateDb = CHRONICLE_UTILS.moveRecords(db, sourceObject, destObject, move,
-                                        def);
+                                final var updateDb = CHRONICLE_UTILS.moveRecords(shared, sourceObject, destObject,
+                                        move, def);
                                 destDao.insert(updateDb);
                             }
                         }
