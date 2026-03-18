@@ -20,11 +20,11 @@ dependencies {
     api 'com.jsoniter:jsoniter:0.9.23'
     api "org.tinylog:tinylog-impl:$tinyLogVersion"
     api "org.tinylog:tinylog-api:$tinyLogVersion"
+    api 'org.mapdb:mapdb:3.1.0'
     implementation 'org.apache.fory:fory-core:0.15.0'
     implementation('net.openhft:chronicle-queue:2026.1') {
         exclude group: 'org.xerial.snappy', module: 'snappy-java'
     }
-    implementation 'org.mapdb:mapdb:3.1.0'
     runtimeOnly "org.tinylog:slf4j-tinylog:$tinyLogVersion"
     testImplementation 'org.apache.logging.log4j:log4j-1.2-api:2.23.1'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:6.0.2'
