@@ -432,6 +432,9 @@ public class ClientSocketService {
             } else if ("400".equals(status)) {
                 Logger.error("DB returned 400 (bad request). Error: {}", responseMap.get("error"));
                 return null; // Don't retry - bad request is a code issue
+            } else if ("500".equals(status)) {
+                Logger.error("DB returned 500 (server error). Error: {}", responseMap.get("error"));
+                return null; // Don't retry - server had internal error
             } else if ("503".equals(status)) {
                 Logger.info("DB is upgrading. Reconnecting...");
                 Thread.sleep(waitTimeout);
@@ -484,6 +487,9 @@ public class ClientSocketService {
             } else if ("400".equals(status)) {
                 Logger.error("DB returned 400 (bad request). Error: {}", responseMap.get("error"));
                 return null; // Don't retry - bad request is a code issue
+            } else if ("500".equals(status)) {
+                Logger.error("DB returned 500 (server error). Error: {}", responseMap.get("error"));
+                return null; // Don't retry - server had internal error
             } else if ("503".equals(status)) {
                 Logger.info("DB is upgrading. Reconnecting...");
                 Thread.sleep(waitTimeout);

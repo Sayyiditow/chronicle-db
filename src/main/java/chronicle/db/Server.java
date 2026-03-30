@@ -899,9 +899,19 @@ public class Server {
                         } catch (final NullPointerException e) {
                             Logger.error("NullPointerException while handling client from [{}]", addr);
                             Logger.error(e);
+                            try {
+                                respond(Map.of("status", "500", "error", "NullPointerException: " + e.getMessage()),
+                                        dataSocket);
+                            } catch (final IOException ignored) {
+                            }
                         } catch (final Throwable e) {
                             Logger.error("Error handling client from [{}]: {}", addr, e.getMessage());
                             Logger.error(e);
+                            try {
+                                respond(Map.of("status", "500", "error",
+                                        e.getClass().getSimpleName() + ": " + e.getMessage()), dataSocket);
+                            } catch (final IOException ignored) {
+                            }
                         } finally {
                             activeThreads.remove(Thread.currentThread());
                             closeSocketResources(dataSocket);
