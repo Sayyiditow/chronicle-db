@@ -298,7 +298,7 @@ public final class MapDb {
             } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
                     | DBException.WrongFormat | InternalError e) {
                 CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reinit
-                Logger.info("Reinitializing KeyMap at [{}]", filePath);
+                Logger.error("Reinitializing KeyMap at [{}]", filePath);
                 throw new RuntimeException(e);
             } catch (final Exception e) {
                 Logger.error("Failed to open KeyMap at [{}]", filePath);
