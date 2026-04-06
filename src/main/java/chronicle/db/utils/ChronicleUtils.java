@@ -192,7 +192,8 @@ public final class ChronicleUtils {
         }
     }
 
-    private static final Map<Class<?>, ClassData> CLASS_DATA_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Class<?>, ClassData> classDataCache = new ConcurrentHashMap<>();
+    private static final Map<Class<?>, Map<String, List<FieldData>>> indexFieldCache = new ConcurrentHashMap<>();
 
     /**
      * Retrieves or creates cached ClassData for the given class.
@@ -202,7 +203,7 @@ public final class ChronicleUtils {
      * @return The cached ClassData instance.
      */
     public ClassData getClassData(final Class<?> clazz) {
-        return CLASS_DATA_CACHE.computeIfAbsent(clazz, ClassData::new);
+        return classDataCache.computeIfAbsent(clazz, ClassData::new);
     }
 
     /**
@@ -227,6 +228,31 @@ public final class ChronicleUtils {
                 }
                 return null;
             }
+        });
+    }
+
+    /**
+     * Returns cached index field map for the given value class and index names.
+     * Parses compound index names (e.g., "field1+field2") into FieldData lists
+     * once, then caches for all subsequent calls.
+     *
+     * @param valueClass     the entity class
+     * @param indexFileNames the set of index names
+     * @return map of index name to list of FieldData
+     */
+    public Map<String, List<FieldData>> getIndexFieldMap(final Class<?> valueClass,
+            final Set<String> indexFileNames) {
+        return indexFieldCache.computeIfAbsent(valueClass, clazz -> {
+            final Map<String, List<FieldData>> map = new HashMap<>();
+            for (final String indexName : indexFileNames) {
+                final String[] parts = indexName.split("\\+");
+                final List<FieldData> getters = new ArrayList<>();
+                for (final String part : parts) {
+                    getters.add(getFieldData(clazz, part));
+                }
+                map.put(indexName, getters);
+            }
+            return map;
         });
     }
 
@@ -694,18 +720,7 @@ public final class ChronicleUtils {
             final String dataPath, final Class<?> valueClass, final Map<String, Set<String>> exclusions,
             final long expectedEntries) {
         final var indexDirPath = dataPath + ChronicleDao.INDEX_DIR;
-
-        final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
-        for (final String rawField : fields) {
-            final String[] parts = rawField.split("\\+");
-            final List<FieldData> getters = new ArrayList<>();
-            for (final String part : parts) {
-                getters.add(getFieldData(valueClass, part));
-            }
-            if (!getters.isEmpty()) {
-                indexFieldMap.put(rawField, getters);
-            }
-        }
+        final var indexFieldMap = getIndexFieldMap(valueClass, fields);
 
         final Map<String, SharedIndexSet> openIndexes = new ConcurrentHashMap<>();
         for (final String field : indexFieldMap.keySet()) {
@@ -849,16 +864,9 @@ public final class ChronicleUtils {
 
         final Map<String, SharedIndexSet> openIndexes = new ConcurrentHashMap<>();
         try {
-            // Step 1: Parse all field getters (supporting compound fields)
-            final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
+            // Step 1: Get field getters (cached)
+            final var indexFieldMap = getIndexFieldMap(valueClass, indexFileNames);
             for (final String indexName : indexFileNames) {
-                final String[] parts = indexName.split("\\+");
-                final List<FieldData> getters = new ArrayList<>();
-
-                for (final String part : parts) {
-                    getters.add(getFieldData(valueClass, part));
-                }
-                indexFieldMap.put(indexName, getters);
                 final String indexPath = dataPath + ChronicleDao.INDEX_DIR + indexName;
                 try {
                     openIndexes.put(indexPath, MAP_DB.openIndex(indexPath));
@@ -918,17 +926,7 @@ public final class ChronicleUtils {
 
         final var indexAdditions = new ConcurrentHashMap<String, Map<String, byte[]>>();
         final var recordList = new ArrayList<>(values.entrySet());
-
-        // Parse fields once
-        final Map<String, List<FieldData>> indexFieldMap = new HashMap<>();
-        for (final String indexName : indexFileNames) {
-            final String[] parts = indexName.split("\\+");
-            final List<FieldData> getters = new ArrayList<>();
-            for (final String part : parts) {
-                getters.add(getFieldData(valueClass, part));
-            }
-            indexFieldMap.put(indexName, getters);
-        }
+        final var indexFieldMap = getIndexFieldMap(valueClass, indexFileNames);
 
         // Process each index field in parallel (different indexes are independent)
         processInParallel(indexFieldMap.entrySet(), entry -> {
@@ -1031,10 +1029,7 @@ public final class ChronicleUtils {
             parallelIterable(indexFileNames, Integer.MAX_VALUE, (Consumer<String>) indexName -> {
                 final String indexPath = indexDirPath + indexName;
                 final Map<String, byte[]> newKeysMap = preparedAdds.getOrDefault(indexName, Collections.emptyMap());
-                final List<FieldData> fieldGetters = new ArrayList<>();
-                for (final String part : indexName.split("\\+")) {
-                    fieldGetters.add(getFieldData(valueClass, part));
-                }
+                final List<FieldData> fieldGetters = getIndexFieldMap(valueClass, indexFileNames).get(indexName);
                 final Set<String> excluded = exclusions.getOrDefault(indexName, Collections.emptySet());
 
                 try (final var sharedIndex = MAP_DB.openIndex(indexPath)) {

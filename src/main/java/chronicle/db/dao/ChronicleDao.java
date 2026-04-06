@@ -3547,8 +3547,14 @@ public interface ChronicleDao<V> {
                         // Filter prepared index to only include inserts for the additions task
                         final var preparedInserts = new ConcurrentHashMap<String, Map<String, byte[]>>();
                         preparedIndex.entrySet().parallelStream().forEach(entry -> {
-                            final var filtered = new HashMap<>(entry.getValue());
-                            filtered.keySet().retainAll(keysToInsert);
+                            final var source = entry.getValue();
+                            final var filtered = new HashMap<String, byte[]>(keysToInsert.size());
+                            for (final String key : keysToInsert) {
+                                final byte[] val = source.get(key);
+                                if (val != null) {
+                                    filtered.put(key, val);
+                                }
+                            }
 
                             if (!filtered.isEmpty()) {
                                 preparedInserts.put(entry.getKey(), filtered);
