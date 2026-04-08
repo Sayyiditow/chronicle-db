@@ -723,7 +723,7 @@ public class Server {
         dataSocket.dos.flush();
     }
 
-    private static void handleClient(final DataSocket dataSocket) throws Throwable {
+    private static void handleClient(final DataSocket dataSocket) throws IOException {
         final int length = dataSocket.dis.readInt(); // Read length
         final byte[] data = new byte[length];
         dataSocket.dis.readFully(data); // Read exactly 'length' bytes
@@ -748,13 +748,21 @@ public class Server {
             return;
         }
 
-        final var response = executeRequest(params);
+        try {
+            final var response = executeRequest(params);
 
-        // Prepare response map
-        final Map<String, Object> responseMap = new HashMap<>();
-        responseMap.put("status", "200");
-        responseMap.put("response", response);
-        respond(responseMap, dataSocket);
+            // Prepare response map
+            final Map<String, Object> responseMap = new HashMap<>();
+            responseMap.put("status", "200");
+            responseMap.put("response", response);
+            respond(responseMap, dataSocket);
+        } catch (final Throwable e) {
+            Logger.error("Error executing request. Mode [{}], DB [{}]",
+                    params.get("mode"), params.get("dbDir"));
+            Logger.error(e);
+            respond(Map.of("status", "500", "error",
+                    e.getClass().getSimpleName() + ": " + e.getMessage()), dataSocket);
+        }
     }
 
     public static void main(final String[] args) throws Throwable {
@@ -896,22 +904,8 @@ public class Server {
                             // Client disconnected, socket closed remotely
                         } catch (final SocketException | SocketTimeoutException e) {
                             // Connection lost, socket unusable, client will close n reconnect
-                        } catch (final NullPointerException e) {
-                            Logger.error("NullPointerException while handling client from [{}]", addr);
-                            Logger.error(e);
-                            try {
-                                respond(Map.of("status", "500", "error", "NullPointerException: " + e.getMessage()),
-                                        dataSocket);
-                            } catch (final IOException ignored) {
-                            }
-                        } catch (final Throwable e) {
-                            Logger.error("Error handling client from [{}]: {}", addr, e.getMessage());
-                            Logger.error(e);
-                            try {
-                                respond(Map.of("status", "500", "error",
-                                        e.getClass().getSimpleName() + ": " + e.getMessage()), dataSocket);
-                            } catch (final IOException ignored) {
-                            }
+                        } catch (final IOException e) {
+                            Logger.error("IO error handling client from [{}]: {}", addr, e.getMessage());
                         } finally {
                             activeThreads.remove(Thread.currentThread());
                             closeSocketResources(dataSocket);
