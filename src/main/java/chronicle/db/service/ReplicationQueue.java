@@ -50,6 +50,7 @@ public class ReplicationQueue {
     private static final String primaryTailerName = "localhost_9099";
     private final ChronicleQueue queue;
     private final ReentrantLock queueLock = new ReentrantLock();
+    private final ReentrantLock tailerCreationLock = new ReentrantLock();
     private final ConcurrentMap<String, ConcurrentSkipListSet<Long>> completionSets = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, ReentrantLock> tailerLocks = new ConcurrentHashMap<>();
     private final Set<String> tailerNames;
@@ -66,6 +67,18 @@ public class ReplicationQueue {
                 .rollCycle(RollCycles.FAST_HOURLY)
                 .blockSize(blockSize)
                 .build());
+    }
+
+    /**
+     * Creates a named tailer under {@code tailerCreationLock} to prevent concurrent
+     * metadata file access across multiple tailer names at startup.
+     * The caller owns the returned tailer and must close it.
+     *
+     * @param name The named tailer identifier.
+     * @return A new ExcerptTailer for the given name.
+     */
+    private ExcerptTailer getTailer(final String name) {
+        return CHRONICLE_UTILS.doWithLock(tailerCreationLock, () -> queue.createTailer(name));
     }
 
     /**
@@ -131,7 +144,7 @@ public class ReplicationQueue {
             final var earliestCycle = new AtomicLong(Long.MAX_VALUE);
             for (final var tailerName : tailerNames) {
                 CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
-                    try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
+                    try (final var tailer = getTailer(tailerName).direction(TailerDirection.FORWARD)) {
                         earliestCycle.set(Math.min(earliestCycle.get(), tailer.cycle()));
                     }
                 });
@@ -202,7 +215,7 @@ public class ReplicationQueue {
 
         // 2. Try to advance the tailer as far as possible (filling gaps)
         CHRONICLE_UTILS.doWithLock(tailerLocks, primaryTailerName, () -> {
-            try (final var tailer = queue.createTailer(primaryTailerName).direction(TailerDirection.FORWARD)) {
+            try (final var tailer = getTailer(primaryTailerName).direction(TailerDirection.FORWARD)) {
                 while (!completed.isEmpty()) {
                     boolean advanced = false;
                     // Peek at the NEXT available record in the queue
@@ -245,7 +258,7 @@ public class ReplicationQueue {
      */
     public boolean isEmpty(final String tailerName) {
         return CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
-            try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
+            try (final var tailer = getTailer(tailerName).direction(TailerDirection.FORWARD)) {
                 final var index = tailer.index();
                 final var queueIndex = queue.lastIndex();
                 Logger.info("Tailer [{}] index={}, queueIndex={}", tailerName, index, queueIndex);
@@ -283,7 +296,7 @@ public class ReplicationQueue {
 
         for (final var tailerName : tailerNames) {
             CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
-                try (final var tailer = queue.createTailer(tailerName)) {
+                try (final var tailer = getTailer(tailerName).direction(TailerDirection.FORWARD)) {
                     final boolean moved = tailer.moveToCycle(lastCycle);
                     if (moved) {
                         Logger.info("Reset tailer [{}] to start of cycle {}", tailerName, lastCycle);
@@ -331,7 +344,7 @@ public class ReplicationQueue {
     public int processPending(final String tailerName, final Predicate<byte[]> processor) {
         final var processedCount = new AtomicInteger(0);
         CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
-            try (final var tailer = queue.createTailer(tailerName).direction(TailerDirection.FORWARD)) {
+            try (final var tailer = getTailer(tailerName).direction(TailerDirection.FORWARD)) {
                 try (var tempTailer = queue.createTailer()) {
                     tempTailer.moveToIndex(tailer.index());
                     while (true) {
