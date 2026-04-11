@@ -151,22 +151,25 @@ public class FailOver {
      * Connects to a remote standby, retrieves its counts, and compares them
      * against the local primary counts.
      */
-    public static boolean checkConsistency(final Map<String, List<String>> fqnMap, final String host, final int port) {
+    public static boolean checkConsistency(final Map<String, List<String>> fqnMap,
+            final Map<String, Integer> standbyMap) {
         try {
             // 1. Get Primary (Local) counts
             final var primaryCounts = getDbCounts(fqnMap);
 
-            // 2. Get Standby (Remote) counts
-            final var dbService = new ClientSocketService(host, port, 1, 0);
-            final Map<String, Object> queryParams = new HashMap<>();
-            queryParams.put("mode", QueryMode.DB_COUNT);
-            queryParams.put("fqnMap", fqnMap);
+            for (final var entry : standbyMap.entrySet()) {
+                // 2. Get Standby (Remote) counts
+                final var dbService = new ClientSocketService(entry.getKey(), entry.getValue(), 1, 0);
+                final Map<String, Object> queryParams = new HashMap<>();
+                queryParams.put("mode", QueryMode.DB_COUNT);
+                queryParams.put("fqnMap", fqnMap);
 
-            final var standbyCounts = (ConcurrentMap<String, ConcurrentMap<String, Integer>>) dbService
-                    .execute(queryParams);
+                final var standbyCounts = (ConcurrentMap<String, ConcurrentMap<String, Integer>>) dbService
+                        .execute(queryParams);
 
-            // 3. Print side-by-side comparison
-            printDbCountsSideBySide(fqnMap, primaryCounts, standbyCounts);
+                // 3. Print side-by-side comparison
+                printDbCountsSideBySide(fqnMap, primaryCounts, standbyCounts);
+            }
             return true;
         } catch (final Throwable e) {
             Logger.error("❌ Consistency check failed");

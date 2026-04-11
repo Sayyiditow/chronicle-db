@@ -699,7 +699,7 @@ public class Server {
             // misc
             case DB_COUNT -> FailOver.getDbCounts((Map<String, List<String>>) params.get("fqnMap"));
             case CONSISTENCY_CHECK -> FailOver.checkConsistency((Map<String, List<String>>) params.get("fqnMap"),
-                    params.get("host").toString(), Integer.parseInt(params.get("port").toString()));
+                    (Map<String, Integer>) params.get("standbyMap"));
             case FAIL_OVER -> isAllSafeToFailOver((Map<String, List<String>>) params.get("fqnMap"));
             case UPDATE_SEQUENCES -> PutService.updateSequences(params);
             case BACKUP -> PutService.backup(params);
