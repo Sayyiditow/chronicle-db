@@ -80,5 +80,6 @@ public enum QueryMode {
     BACKUP,
     VACUUM_CANDIDATES,
     EXECUTE_TASK,
-    REFRESH_TASKS
+    REFRESH_TASKS,
+    CONSISTENCY_CHECK
 }
