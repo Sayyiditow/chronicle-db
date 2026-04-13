@@ -10,7 +10,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -69,7 +68,6 @@ public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
     private static final ConcurrentMap<String, SharedChronicleMap> mapCache = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, CompletableFuture<Void>> recovering = new ConcurrentHashMap<>();
 
     private ChronicleDb() {
     }
@@ -86,7 +84,7 @@ public final class ChronicleDb {
      * <b>Deadlock Protection:</b> All map operations ({@link #put}, {@link #get},
      * {@link #remove}, {@link #forEachEntry}, etc.) are wrapped to catch
      * {@link InterProcessDeadLockException}. When a deadlock is detected, the map
-     * is marked for recovery and will be automatically recovered when closed.
+     * is automatically recovered in place and the operation is retried once.
      * </p>
      * <p>
      * <b>Important:</b> Do not use try-with-resources when obtaining this from
@@ -98,10 +96,9 @@ public final class ChronicleDb {
      * @param <V> The value type
      */
     public static class SharedChronicleMap<K, V> implements AutoCloseable {
-        private final ChronicleMap<K, V> map;
+        private volatile ChronicleMap<K, V> map;
         private final AtomicInteger refCount;
         private final String filePath;
-        private volatile boolean needsRecovery;
 
         // Builder params for recovery
         private final String name;
@@ -116,7 +113,6 @@ public final class ChronicleDb {
             this.map = map;
             this.filePath = filePath;
             this.refCount = new AtomicInteger(1);
-            this.needsRecovery = false;
             this.name = name;
             this.entries = entries;
             this.averageKeySize = averageKeySize;
@@ -129,77 +125,118 @@ public final class ChronicleDb {
         }
 
         /**
-         * Marks this map for recovery. Actual recovery happens on close() when refCount
-         * reaches 0.
+         * Recovers the map by closing the broken instance, backing up the file,
+         * and re-opening with recoverPersistedTo. Synchronized so only one thread
+         * performs recovery if multiple threads hit the deadlock concurrently.
          */
-        public void markForRecovery() {
-            if (!needsRecovery) {
-                needsRecovery = true;
-                recovering.put(filePath, new CompletableFuture<>());
-                Logger.warn("Deadlock on [{}] marked for recovery.", filePath);
+        private synchronized void recoverAndSwap(final ChronicleMap<K, V> brokenMap) {
+            if (map != brokenMap) {
+                Logger.debug("Map [{}] already recovered by another thread. Skipping.", filePath);
+                return;
+            }
+            Logger.warn("Deadlock on [{}]. Recovering and swapping map...", filePath);
+            try {
+                map.close();
+                CHRONICLE_DB.backupCorruptedFile(filePath);
+                map = (ChronicleMap<K, V>) CHRONICLE_DB.recoverDb(name, entries, averageKeySize, averageValue,
+                        filePath, maxBloatFactor);
+                Logger.info("Successfully recovered and swapped map [{}]", filePath);
+            } catch (final IOException e) {
+                Logger.error("Failed to recover map [{}]: {}", filePath, e.getMessage());
+                throw new UncheckedIOException(e);
             }
         }
 
         /**
-         * Safely performs a put operation, marking for recovery if deadlock is
+         * Safely performs a put operation, recovering and retrying if deadlock is
          * detected.
          */
         public V put(final K key, final V value) {
+            final var current = map;
             try {
-                return map.put(key, value);
+                return current.put(key, value);
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.put(key, value);
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.put(key, value);
+                }
                 throw e;
             }
         }
 
         /**
-         * Safely performs a get operation, marking for recovery if deadlock is
-         * detected.
+         * Safely performs a get operation, recovering and retrying if deadlock or
+         * closed map is detected.
          */
         public V get(final K key) {
+            final var current = map;
             try {
-                return map.get(key);
+                return current.get(key);
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.get(key);
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.get(key);
+                }
                 throw e;
             }
         }
 
         /**
-         * Safely performs a getUsing operation, marking for recovery if deadlock is
+         * Safely performs a getUsing operation, recovering and retrying if deadlock is
          * detected.
          */
         public V getUsing(final K key, final V usingValue) {
+            final var current = map;
             try {
-                return map.getUsing(key, usingValue);
+                return current.getUsing(key, usingValue);
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.getUsing(key, usingValue);
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.getUsing(key, usingValue);
+                }
                 throw e;
             }
         }
 
         /**
-         * Safely checks if key exists, marking for recovery if deadlock is detected.
+         * Safely checks if key exists, recovering and retrying if deadlock is detected.
          */
         public boolean containsKey(final K key) {
+            final var current = map;
             try {
-                return map.containsKey(key);
+                return current.containsKey(key);
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.containsKey(key);
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.containsKey(key);
+                }
                 throw e;
             }
         }
 
         /**
-         * Safely performs a remove operation, marking for recovery if deadlock is
+         * Safely performs a remove operation, recovering and retrying if deadlock is
          * detected.
          */
         public V remove(final K key) {
+            final var current = map;
             try {
-                return map.remove(key);
+                return current.remove(key);
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.remove(key);
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.remove(key);
+                }
                 throw e;
             }
         }
@@ -208,10 +245,17 @@ public final class ChronicleDb {
          * Safely performs a putAll operation from another SharedChronicleMap.
          */
         public void putAll(final SharedChronicleMap<K, V> source) {
+            final var current = map;
             try {
-                map.putAll(source.map);
+                current.putAll(source.map);
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                map.putAll(source.map);
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    map.putAll(source.map);
+                    return;
+                }
                 throw e;
             }
         }
@@ -224,54 +268,85 @@ public final class ChronicleDb {
         }
 
         /**
-         * Safely iterates over map entries, marking for recovery if deadlock is
+         * Safely iterates over map entries, recovering and retrying if deadlock is
          * detected.
          */
         public void forEachEntry(final Consumer<MapEntry<K, V>> action) {
+            final var current = map;
             try {
-                map.forEachEntry(action);
+                current.forEachEntry(action);
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                map.forEachEntry(action);
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    map.forEachEntry(action);
+                    return;
+                }
                 throw e;
             }
         }
 
         /**
-         * Safely iterates over map entries with early termination, marking for recovery
-         * if deadlock is detected.
+         * Safely iterates over map entries with early termination, recovering and
+         * retrying if deadlock is detected.
          */
         public boolean forEachEntryWhile(final Predicate<MapEntry<K, V>> predicate) {
+            final var current = map;
             try {
-                return map.forEachEntryWhile(predicate);
+                return current.forEachEntryWhile(predicate);
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.forEachEntryWhile(predicate);
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.forEachEntryWhile(predicate);
+                }
                 throw e;
             }
         }
 
         public boolean isEmpty() {
+            final var current = map;
             try {
-                return map.isEmpty();
+                return current.isEmpty();
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.isEmpty();
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.isEmpty();
+                }
                 throw e;
             }
         }
 
         public int size() {
+            final var current = map;
             try {
-                return map.size();
+                return current.size();
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.size();
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.size();
+                }
                 throw e;
             }
         }
 
         public long longSize() {
+            final var current = map;
             try {
-                return map.longSize();
+                return current.longSize();
             } catch (final InterProcessDeadLockException e) {
-                markForRecovery();
+                recoverAndSwap(current);
+                return map.longSize();
+            } catch (final IllegalStateException e) {
+                if (map != current) {
+                    return map.longSize();
+                }
                 throw e;
             }
         }
@@ -282,7 +357,7 @@ public final class ChronicleDb {
          * Call this method when passing the shared map to another component
          * that will independently manage its lifecycle.
          * </p>
-         * 
+         *
          * @return This SharedChronicleMap instance for chaining
          */
         SharedChronicleMap retain() {
@@ -292,7 +367,6 @@ public final class ChronicleDb {
 
         /**
          * Decrements the reference count and closes the map if no references remain.
-         * If recovery was requested, performs backup and recovery before closing.
          * <p>
          * This method is thread-safe and ensures the underlying ChronicleMap is
          * only closed when the last reference is released.
@@ -302,29 +376,10 @@ public final class ChronicleDb {
         public void close() {
             mapCache.computeIfPresent(filePath, (k, entry) -> {
                 if (entry.refCount.decrementAndGet() == 0) {
-                    if (entry.needsRecovery) {
-                        // Perform recovery
-                        try {
-                            Logger.info("Recovering map [{}] on close...", filePath);
-                            entry.map.close();
-                            CHRONICLE_DB.backupCorruptedFile(filePath);
-                            CHRONICLE_DB.recoverDb(name, entries, averageKeySize, averageValue, filePath,
-                                    maxBloatFactor);
-                            Logger.info("Successfully recovered map [{}]", filePath);
-                        } catch (final IOException e) {
-                            Logger.error("Failed to recover map [{}]", filePath);
-                        } finally {
-                            final var future = recovering.remove(filePath);
-                            if (future != null) {
-                                future.complete(null);
-                            }
-                        }
-                    } else {
-                        entry.map.close();
-                    }
+                    entry.map.close();
                     return null;
                 }
-                return entry; // Keep the entry
+                return entry;
             });
         }
     }
@@ -333,7 +388,7 @@ public final class ChronicleDb {
      * Opens a shared ChronicleMap instance. Call close(filePath) to release it.
      * Do not use try-with-resources as it will prematurely close the shared
      * instance.
-     * 
+     *
      * @param entries        the number of entries of the db as a starter
      * @param averageKeySize the average key size in bytes
      * @param filePath       the path to the file to create
@@ -344,12 +399,6 @@ public final class ChronicleDb {
      */
     public <V> SharedChronicleMap<String, V> open(final String name, final long entries,
             final int averageKeySize, final V averageValue, final String filePath, final double maxBloatFactor) {
-        // Wait for any ongoing recovery
-        final var recoveryFuture = recovering.get(filePath);
-        if (recoveryFuture != null) {
-            recoveryFuture.join();
-        }
-
         final SharedChronicleMap<String, V> entry = mapCache.compute(filePath, (k, existingEntry) -> {
             if (existingEntry != null) {
                 return existingEntry.retain();
@@ -479,10 +528,10 @@ public final class ChronicleDb {
     /**
      * Gets the Chronicle dao object to run different methods such as CRUD
      * reflectively
-     * 
+     *
      * @param daoClassName       the full package class name for the dao
      * @param daoClassObjectName the static object name
-     * 
+     *
      * @return ChronicleDao
      * @throws Throwable
      */
