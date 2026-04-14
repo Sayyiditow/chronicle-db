@@ -719,7 +719,20 @@ public class Server {
 
     private static void respond(final Map<String, Object> responseMap, final DataSocket dataSocket) throws IOException {
         // Serialize and send response
-        final byte[] responseData = ForySerializer.serialize(responseMap);
+        final byte[] responseData;
+        try {
+            responseData = ForySerializer.serialize(responseMap);
+        } catch (final Throwable e) {
+            Logger.error("Failed to serialize response (likely too large): {}", e.getMessage());
+            // Send a small error response so the client gets a clean failure instead of a dead socket
+            final byte[] errorData = ForySerializer.serialize(Map.of("status", "500",
+                    "error", "Response serialization failed: " + e.getClass().getSimpleName() + " - "
+                            + e.getMessage()));
+            dataSocket.dos.writeInt(errorData.length);
+            dataSocket.dos.write(errorData);
+            dataSocket.dos.flush();
+            return;
+        }
         dataSocket.dos.writeInt(responseData.length); // Send length prefix
         dataSocket.dos.write(responseData); // Send serialized response
         dataSocket.dos.flush();
