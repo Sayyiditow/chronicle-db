@@ -3573,8 +3573,7 @@ public interface ChronicleDao<V> {
                     // Apply Updates (Existing Keys)
                     tasks.add(
                             () -> CHRONICLE_UTILS.applyIndexUpdates(dataPath(), indexFileNames(), preparedIndex,
-                                    prevValues,
-                                    averageValue().getClass(), indexExclusions(), keyHashMap));
+                                    prevValues, averageValue().getClass(), indexExclusions(), keyHashMap));
                     CHRONICLE_UTILS.processInParallel(tasks);
 
                     if (!prevValues.isEmpty()) {

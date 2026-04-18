@@ -193,7 +193,6 @@ public final class ChronicleUtils {
     }
 
     private static final Map<Class<?>, ClassData> classDataCache = new ConcurrentHashMap<>();
-    private static final Map<Class<?>, Map<String, List<FieldData>>> indexFieldCache = new ConcurrentHashMap<>();
 
     /**
      * Retrieves or creates cached ClassData for the given class.
@@ -232,9 +231,8 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Returns cached index field map for the given value class and index names.
-     * Parses compound index names (e.g., "field1+field2") into FieldData lists
-     * once, then caches for all subsequent calls.
+     * Builds an index field map for the given value class and index names.
+     * Parses compound index names (e.g., "field1+field2") into FieldData lists.
      *
      * @param valueClass     the entity class
      * @param indexFileNames the set of index names
@@ -242,18 +240,16 @@ public final class ChronicleUtils {
      */
     public Map<String, List<FieldData>> getIndexFieldMap(final Class<?> valueClass,
             final Set<String> indexFileNames) {
-        return indexFieldCache.computeIfAbsent(valueClass, clazz -> {
-            final Map<String, List<FieldData>> map = new HashMap<>();
-            for (final String indexName : indexFileNames) {
-                final String[] parts = indexName.split("\\+");
-                final List<FieldData> getters = new ArrayList<>();
-                for (final String part : parts) {
-                    getters.add(getFieldData(clazz, part));
-                }
-                map.put(indexName, getters);
+        final Map<String, List<FieldData>> map = new HashMap<>();
+        for (final String indexName : indexFileNames) {
+            final String[] parts = indexName.split("\\+");
+            final List<FieldData> getters = new ArrayList<>();
+            for (final String part : parts) {
+                getters.add(getFieldData(valueClass, part));
             }
-            return map;
-        });
+            map.put(indexName, getters);
+        }
+        return map;
     }
 
     /**
