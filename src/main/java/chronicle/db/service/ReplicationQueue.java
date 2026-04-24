@@ -16,6 +16,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -125,56 +126,77 @@ public class ReplicationQueue {
     /**
      * Deletes old queue files as long as they have been processed by all tailers.
      * Keeps at least one buffer day of history.
+     * <p>
+     * Does not acquire {@code queueLock} — file deletes don't conflict with
+     * {@link #append} which only writes to the current cycle file.
+     * <p>
+     * Uses {@code tryLock} with a short timeout on each tailer lock so a slow
+     * replication thread cannot stall cleanup. If any tailer lock can't be
+     * acquired, cleanup is skipped for this run — files will be retried tomorrow.
      *
      * @throws IOException If file deletion fails.
      */
     public void cleanupQueue() throws IOException {
-        CHRONICLE_UTILS.doWithLock(queueLock, new SafeRunnable(() -> {
-            if (queue == null)
+        if (queue == null) {
+            return;
+        }
+
+        final File queueDir = queue.file();
+        final File[] queueFiles = queueDir.listFiles((dir, name) -> name.endsWith(".cq4"));
+        if (queueFiles == null || queueFiles.length == 0) {
+            Logger.info("No queue files found.");
+            return;
+        }
+
+        // Find earliest cycle from all tailers. Use tryLock so a slow replication
+        // thread holding a tailer lock doesn't stall cleanup indefinitely.
+        final var earliestCycle = new AtomicLong(Long.MAX_VALUE);
+        for (final var tailerName : tailerNames) {
+            final var lock = tailerLocks.computeIfAbsent(tailerName, k -> new ReentrantLock(true));
+            final boolean acquired;
+            try {
+                acquired = lock.tryLock(30, TimeUnit.SECONDS);
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Logger.warn("Queue cleanup interrupted while waiting for tailer [{}] lock. Skipping.", tailerName);
                 return;
-
-            final File queueDir = queue.file();
-            final File[] queueFiles = queueDir.listFiles((dir, name) -> name.endsWith(".cq4"));
-            if (queueFiles == null || queueFiles.length == 0) {
-                Logger.info("No queue files found.");
+            }
+            if (!acquired) {
+                Logger.warn("Queue cleanup could not acquire tailer [{}] lock within 30s. "
+                        + "Skipping this run to avoid blocking writes.", tailerName);
                 return;
             }
-
-            // Find earliest cycle from all tailers
-            final var earliestCycle = new AtomicLong(Long.MAX_VALUE);
-            for (final var tailerName : tailerNames) {
-                CHRONICLE_UTILS.doWithLock(tailerLocks, tailerName, () -> {
-                    try (final var tailer = getTailer(tailerName).direction(TailerDirection.FORWARD)) {
-                        earliestCycle.set(Math.min(earliestCycle.get(), tailer.cycle()));
-                    }
-                });
+            try (final var tailer = getTailer(tailerName).direction(TailerDirection.FORWARD)) {
+                earliestCycle.set(Math.min(earliestCycle.get(), tailer.cycle()));
+            } finally {
+                lock.unlock();
             }
+        }
 
-            final RollCycle rollCycle = queue.rollCycle();
-            final var rollCycleLength = rollCycle.lengthInMillis();
-            final long tailerCycle = earliestCycle.get();
-            final Instant earliestInstant = Instant.ofEpochMilli(tailerCycle * rollCycleLength);
-            Logger.info("Queue cleanup. Earliest tailer cycle = {} ({} UTC)", tailerCycle, earliestInstant);
-            // Keep previous day's files
-            final var bufferToKeep = Long.parseLong(LocalDate.now(ZoneOffset.UTC).minusDays(1)
-                    .format(DateTimeFormatter.ofPattern("yyyyMMdd")));
-            final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH").withZone(ZoneOffset.UTC);
-            // Remove files older than earliest cycle
-            for (final File file : queueFiles) {
-                final String fileName = file.getName();
-                final var fileDate = Long.parseLong(fileName.substring(0, 8));
-                final String cycleStr = fileName.replace("F.cq4", "");
-                final long millis = LocalDateTime.parse(cycleStr, formatter).toInstant(ZoneOffset.UTC).toEpochMilli();
-                final long fileCycle = millis / rollCycleLength;
+        final RollCycle rollCycle = queue.rollCycle();
+        final var rollCycleLength = rollCycle.lengthInMillis();
+        final long tailerCycle = earliestCycle.get();
+        final Instant earliestInstant = Instant.ofEpochMilli(tailerCycle * rollCycleLength);
+        Logger.info("Queue cleanup. Earliest tailer cycle = {} ({} UTC)", tailerCycle, earliestInstant);
+        // Keep previous day's files
+        final var bufferToKeep = Long.parseLong(LocalDate.now(ZoneOffset.UTC).minusDays(1)
+                .format(DateTimeFormatter.ofPattern("yyyyMMdd")));
+        final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd-HH").withZone(ZoneOffset.UTC);
+        // Remove files older than earliest cycle
+        for (final File file : queueFiles) {
+            final String fileName = file.getName();
+            final var fileDate = Long.parseLong(fileName.substring(0, 8));
+            final String cycleStr = fileName.replace("F.cq4", "");
+            final long millis = LocalDateTime.parse(cycleStr, formatter).toInstant(ZoneOffset.UTC).toEpochMilli();
+            final long fileCycle = millis / rollCycleLength;
 
-                if (fileCycle < tailerCycle && fileDate < bufferToKeep) {
-                    Logger.info("Deleting queue file [{}].", fileName);
-                    Files.deleteIfExists(file.toPath());
-                } else {
-                    Logger.info("File [{}] left intact, within tailer cycle.", fileName);
-                }
+            if (fileCycle < tailerCycle && fileDate < bufferToKeep) {
+                Logger.info("Deleting queue file [{}].", fileName);
+                Files.deleteIfExists(file.toPath());
+            } else {
+                Logger.info("File [{}] left intact, within tailer cycle.", fileName);
             }
-        }, "Queue Cleanup"));
+        }
     }
 
     private boolean markProcessed(final String tailerName, final ExcerptTailer tailer) {
