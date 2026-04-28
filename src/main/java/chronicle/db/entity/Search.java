@@ -73,7 +73,52 @@ public record Search(String field, SearchType searchType, Object searchTerm, int
         NOT_IN,
 
         /** Value is between two values (inclusive) */
-        BETWEEN
+        BETWEEN,
+
+        /**
+         * String length is within an inclusive range.
+         * <p>
+         * Search term must be a 2-element {@code int[]{min, max}} (inclusive).
+         * Only meaningful for {@code String} fields; for any other type or
+         * {@code null} the predicate is {@code false}.
+         * </p>
+         */
+        LENGTH_BETWEEN,
+
+        /**
+         * String length equals the supplied {@link Integer}. Only meaningful
+         * for {@code String} fields; non-strings and {@code null} return
+         * {@code false}.
+         */
+        LENGTH_EQUAL,
+
+        /**
+         * String length is strictly greater than the supplied {@link Integer}.
+         * Only meaningful for {@code String} fields; non-strings and
+         * {@code null} return {@code false}.
+         */
+        LENGTH_GREATER,
+
+        /**
+         * String length is strictly less than the supplied {@link Integer}.
+         * Only meaningful for {@code String} fields; non-strings and
+         * {@code null} return {@code false}.
+         */
+        LENGTH_LESS,
+
+        /**
+         * String length is greater than or equal to the supplied
+         * {@link Integer}. Only meaningful for {@code String} fields;
+         * non-strings and {@code null} return {@code false}.
+         */
+        LENGTH_GREATER_OR_EQUAL,
+
+        /**
+         * String length is less than or equal to the supplied {@link Integer}.
+         * Only meaningful for {@code String} fields; non-strings and
+         * {@code null} return {@code false}.
+         */
+        LENGTH_LESS_OR_EQUAL
     }
 
     /**

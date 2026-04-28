@@ -26,6 +26,8 @@ import org.mapdb.HTreeMap;
 import org.mapdb.Serializer;
 import org.tinylog.Logger;
 
+import chronicle.db.entity.Search;
+
 /**
  * Service for managing MapDB-based key mappings and secondary indexes for
  * ChronicleDao.
@@ -826,6 +828,129 @@ public final class MapDb {
         };
 
         return new SearchResult(iterable);
+    }
+
+    /**
+     * Single-pass index walker that applies a list of same-field filters in
+     * one iteration of the index. Used as the same-field multi-search
+     * optimisation: when several searches all target the indexed field, all
+     * predicates are evaluated against the indexValue per entry and a hash is
+     * emitted only if every predicate matches.
+     * <p>
+     * Each filter is evaluated via
+     * {@link ChronicleUtils#indexValueMatches(Search, String)}, so any
+     * SearchType that operates on a scalar field is supported. Forces a full
+     * scan even when the primary operator (e.g. EQUAL/BETWEEN) could otherwise
+     * use {@code subSet} — the trade-off accepted in exchange for a single
+     * walk and no per-record fetches.
+     *
+     * @param index   the index NavigableSet (composite keys
+     *                {@code [value][0x1F][hash]})
+     * @param filters all predicates to apply (typically the primary
+     *                indexedSearch concatenated with same-field filters)
+     * @param limit   max emitted hashes, {@code -1} for unlimited
+     * @return matching hashes
+     */
+    public SearchResult getMultiFilterIndexSearch(final NavigableSet<byte[]> index, final List<Search> filters,
+            final int limit) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            private final Iterator<byte[]> it = index.iterator();
+            private byte[] nextMatch = null;
+            private int returned = 0;
+
+            @Override
+            public boolean hasNext() {
+                if (limit != -1 && returned >= limit)
+                    return false;
+
+                if (nextMatch != null) {
+                    return true;
+                }
+
+                while (it.hasNext()) {
+                    final var indexValueAndKey = extractIndexValueAndKey(it.next());
+                    final var value = (String) indexValueAndKey[0];
+                    if (allFiltersMatch(filters, value)) {
+                        nextMatch = (byte[]) indexValueAndKey[1];
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            @Override
+            public byte[] next() {
+                if (nextMatch == null && !hasNext())
+                    throw new NoSuchElementException();
+                returned++;
+                final var result = nextMatch;
+                nextMatch = null;
+                return result;
+            }
+        };
+
+        return new SearchResult(iterable);
+    }
+
+    /**
+     * Same as {@link #getMultiFilterIndexSearch(NavigableSet, List, int)} but
+     * skips entries whose hash is in {@code excludedKeyHashes}.
+     */
+    public SearchResult getMultiFilterIndexSearch(final NavigableSet<byte[]> index, final List<Search> filters,
+            final int limit, final Set<ByteBuffer> excludedKeyHashes) {
+        final Iterable<byte[]> iterable = () -> new Iterator<>() {
+            private final Iterator<byte[]> it = index.iterator();
+            private byte[] nextMatch = null;
+            private int returned = 0;
+
+            @Override
+            public boolean hasNext() {
+                if (limit != -1 && returned >= limit)
+                    return false;
+
+                if (nextMatch != null) {
+                    return true;
+                }
+
+                while (it.hasNext()) {
+                    final var indexValueAndKey = extractIndexValueAndKey(it.next());
+                    final byte[] keyHash = (byte[]) indexValueAndKey[1];
+
+                    if (excludedKeyHashes.contains(ByteBuffer.wrap(keyHash)))
+                        continue;
+
+                    final var value = (String) indexValueAndKey[0];
+                    if (allFiltersMatch(filters, value)) {
+                        nextMatch = keyHash;
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            @Override
+            public byte[] next() {
+                if (nextMatch == null && !hasNext())
+                    throw new NoSuchElementException();
+                returned++;
+                final var result = nextMatch;
+                nextMatch = null;
+                return result;
+            }
+        };
+
+        return new SearchResult(iterable);
+    }
+
+    private boolean allFiltersMatch(final List<Search> filters, final String value) {
+        for (final var filter : filters) {
+            if (!CHRONICLE_UTILS.indexValueMatches(filter, value)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public SearchResult getNotLikeIndexSearch(final NavigableSet<byte[]> index, final String searchTerm,

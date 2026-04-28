@@ -29,6 +29,7 @@ dependencies {
     testImplementation 'org.apache.logging.log4j:log4j-1.2-api:2.23.1'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:6.0.2'
     testImplementation 'org.junit.jupiter:junit-jupiter:6.0.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 application {
@@ -64,6 +65,24 @@ publishing {
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
     options.release = 25
+}
+
+test {
+    useJUnitPlatform()
+    jvmArgs(
+        "--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED",
+        "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+        "--add-opens=jdk.compiler/com.sun.tools.javac=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.util=ALL-UNNAMED",
+        "--enable-native-access=ALL-UNNAMED",
+        "--sun-misc-unsafe-memory-access=allow"
+    )
 }
 
 tasks.withType(Javadoc) {

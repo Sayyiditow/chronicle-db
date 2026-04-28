@@ -5973,6 +5973,13 @@ public interface ChronicleDao<V> {
             case NOT_IN -> MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit());
             case BETWEEN -> MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
                     searchTermBetween.get(1).toString(), search.limit());
+            // Length-based predicates have no useful index ordering — they
+            // require a full scan, so route them through the generic
+            // multi-filter walker (with a single-element filter list) and
+            // reuse ChronicleUtils.indexValueMatches for the predicate.
+            case LENGTH_BETWEEN, LENGTH_EQUAL, LENGTH_GREATER, LENGTH_LESS, LENGTH_GREATER_OR_EQUAL,
+                    LENGTH_LESS_OR_EQUAL ->
+                MAP_DB.getMultiFilterIndexSearch(index, List.of(search), search.limit());
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
         };
     }
@@ -6029,6 +6036,9 @@ public interface ChronicleDao<V> {
             case NOT_IN -> MAP_DB.getNotInIndexSearch(index, searchTermSet, search.limit(), excludedHashes);
             case BETWEEN -> MAP_DB.getBetweenIndexSearch(index, searchTermBetween.get(0).toString(),
                     searchTermBetween.get(1).toString(), search.limit(), excludedHashes);
+            case LENGTH_BETWEEN, LENGTH_EQUAL, LENGTH_GREATER, LENGTH_LESS, LENGTH_GREATER_OR_EQUAL,
+                    LENGTH_LESS_OR_EQUAL ->
+                MAP_DB.getMultiFilterIndexSearch(index, List.of(search), search.limit(), excludedHashes);
             default -> throw new UnsupportedOperationException("Search type not supported: " + searchType);
         };
     }
@@ -6041,6 +6051,53 @@ public interface ChronicleDao<V> {
      */
     private <T> boolean isResultEmpty(final Iterable<T> result) {
         return result == null || !result.iterator().hasNext();
+    }
+
+    /**
+     * Same-field multi-search optimisation entry point used by every
+     * {@code multi*} routing site. If any of {@code remainingSearches}
+     * targets the same field as {@code indexedSearch}, those predicates are
+     * peeled out of the list and applied during a single index walk via
+     * {@link MapDb#getMultiFilterIndexSearch} — they never reach the
+     * per-record fetch path. Otherwise the existing single-predicate walker
+     * runs unchanged (preserving its {@code subSet} optimisations).
+     * <p>
+     * {@code remainingSearches} is mutated in place: same-field entries are
+     * removed, leaving only filters on other fields for the caller's
+     * subsequent per-record evaluation step.
+     *
+     * @param indexedSearch     the primary predicate elected for indexed
+     *                          execution
+     * @param remainingSearches the remaining searches; same-field entries are
+     *                          consumed and removed
+     * @param index             the opened index NavigableSet
+     * @param excludedHashes    optional hashes to skip; {@code null} for the
+     *                          non-excluded path
+     * @return the result of the indexed walk
+     */
+    default SearchResult runIndexedSearchWithSameFieldFilters(final Search indexedSearch,
+            final List<Search> remainingSearches, final NavigableSet<byte[]> index,
+            final Set<ByteBuffer> excludedHashes) {
+        final var sameField = new ArrayList<Search>();
+        final var iter = remainingSearches.iterator();
+        while (iter.hasNext()) {
+            final var r = iter.next();
+            if (r.field().equals(indexedSearch.field())) {
+                sameField.add(r);
+                iter.remove();
+            }
+        }
+        if (sameField.isEmpty()) {
+            return excludedHashes == null
+                    ? indexedSearch(indexedSearch, index)
+                    : indexedSearch(indexedSearch, index, excludedHashes);
+        }
+        final var combined = new ArrayList<Search>(1 + sameField.size());
+        combined.add(indexedSearch);
+        combined.addAll(sameField);
+        return excludedHashes == null
+                ? MAP_DB.getMultiFilterIndexSearch(index, combined, indexedSearch.limit())
+                : MAP_DB.getMultiFilterIndexSearch(index, combined, indexedSearch.limit(), excludedHashes);
     }
 
     /**
@@ -6432,7 +6489,8 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, null);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return Collections.emptyMap();
@@ -6522,7 +6580,8 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, null);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return CsvObject.empty();
@@ -6625,7 +6684,8 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, null);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return Collections.emptyMap();
@@ -6716,7 +6776,8 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, null);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return CsvObject.empty();
@@ -6798,7 +6859,8 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, null);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return Collections.emptySet();
@@ -6869,7 +6931,9 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, null);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return Collections.emptyList();
@@ -6954,7 +7018,8 @@ public interface ChronicleDao<V> {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
             final Set<ByteBuffer> excludedHashes = preCalculateExcludedHashes(excludedKeys);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, excludedHashes);
 
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
@@ -7048,7 +7113,8 @@ public interface ChronicleDao<V> {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
             final Set<ByteBuffer> excludedHashes = preCalculateExcludedHashes(excludedKeys);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return CsvObject.empty();
@@ -7144,7 +7210,8 @@ public interface ChronicleDao<V> {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
             final Set<ByteBuffer> excludedHashes = preCalculateExcludedHashes(excludedKeys);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return Collections.emptyMap();
@@ -7239,7 +7306,8 @@ public interface ChronicleDao<V> {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
             final Set<ByteBuffer> excludedHashes = preCalculateExcludedHashes(excludedKeys);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index, excludedHashes);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, excludedHashes);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return CsvObject.empty();
@@ -7408,7 +7476,8 @@ public interface ChronicleDao<V> {
         if (indexedSearch != null) {
             indexPath = getIndexPath(indexedSearch.field());
             sharedIndexSet = MAP_DB.openIndex(indexPath);
-            searchResult = indexedSearch(indexedSearch, sharedIndexSet.index);
+            searchResult = runIndexedSearchWithSameFieldFilters(indexedSearch, remainingSearches,
+                    sharedIndexSet.index, null);
             if (isResultEmpty(searchResult.results())) {
                 sharedIndexSet.close();
                 return 0;

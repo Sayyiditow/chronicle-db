@@ -474,8 +474,100 @@ public final class ChronicleUtils {
             case NOT_IN -> !searchTermSet.contains(currentValue);
             case BETWEEN -> compare(currentValue, searchTermBetween.get(0)) >= 0
                     && compare(currentValue, searchTermBetween.get(1)) <= 0;
+            case LENGTH_BETWEEN -> matchesLengthBetween(currentValue, searchTerm);
+            case LENGTH_EQUAL, LENGTH_GREATER, LENGTH_LESS, LENGTH_GREATER_OR_EQUAL, LENGTH_LESS_OR_EQUAL ->
+                matchesLengthOp(currentValue, searchTerm, searchType);
             default -> false;
         };
+    }
+
+    /**
+     * Evaluates the scalar length comparison operators against {@code currentValue}.
+     * Returns {@code false} for non-string values or non-integer search terms.
+     */
+    private boolean matchesLengthOp(final Object currentValue, final Object searchTerm, final SearchType op) {
+        if (!(currentValue instanceof final String s) || !(searchTerm instanceof final Integer n)) {
+            return false;
+        }
+        final int len = s.length();
+        return switch (op) {
+            case LENGTH_EQUAL -> len == n;
+            case LENGTH_GREATER -> len > n;
+            case LENGTH_LESS -> len < n;
+            case LENGTH_GREATER_OR_EQUAL -> len >= n;
+            case LENGTH_LESS_OR_EQUAL -> len <= n;
+            default -> false;
+        };
+    }
+
+    /**
+     * Evaluates a {@link Search} against a single string value drawn from an
+     * index entry — i.e. without opening the underlying record. This is the
+     * fast path used by same-field multi-search optimisation: when a search's
+     * predicate can be answered from the index value alone (which is true for
+     * every {@link SearchType} that operates on a scalar field), we can run
+     * it during the index walk and skip the per-record fetch.
+     * <p>
+     * Operators whose semantics require the typed record value (CONTAINS /
+     * NOT_CONTAINS work on array fields) return {@code false}.
+     *
+     * @param search     the predicate to evaluate
+     * @param indexValue the indexed string value (non-null expected; null
+     *                   returns {@code false})
+     * @return {@code true} iff the predicate is satisfied
+     */
+    public boolean indexValueMatches(final Search search, final String indexValue) {
+        if (indexValue == null) {
+            return false;
+        }
+        final var term = search.searchTerm();
+        return switch (search.searchType()) {
+            case EQUAL -> Objects.equals(indexValue, term);
+            case NOT_EQUAL -> !Objects.equals(indexValue, term);
+            case LESS -> compare(indexValue, term) < 0;
+            case LESS_OR_EQUAL -> compare(indexValue, term) <= 0;
+            case GREATER -> compare(indexValue, term) > 0;
+            case GREATER_OR_EQUAL -> compare(indexValue, term) >= 0;
+            case LIKE -> containsIgnoreCase(indexValue, term);
+            case NOT_LIKE -> !containsIgnoreCase(indexValue, term);
+            case STARTS_WITH -> startsWithIgnoreCase(indexValue, term);
+            case ENDS_WITH -> endsWithIgnoreCase(indexValue, term);
+            case IN, IN_FULL_SCAN -> term instanceof final Collection<?> c && c.contains(indexValue);
+            case NOT_IN -> !(term instanceof final Collection<?> c) || !c.contains(indexValue);
+            case BETWEEN -> {
+                if (!(term instanceof final List<?> b) || b.size() != 2) {
+                    yield false;
+                }
+                yield compare(indexValue, b.get(0)) >= 0 && compare(indexValue, b.get(1)) <= 0;
+            }
+            case LENGTH_BETWEEN -> {
+                if (!(term instanceof final int[] b) || b.length != 2) {
+                    yield false;
+                }
+                final int len = indexValue.length();
+                yield len >= b[0] && len <= b[1];
+            }
+            case LENGTH_EQUAL -> term instanceof final Integer i && indexValue.length() == i;
+            case LENGTH_GREATER -> term instanceof final Integer i && indexValue.length() > i;
+            case LENGTH_LESS -> term instanceof final Integer i && indexValue.length() < i;
+            case LENGTH_GREATER_OR_EQUAL -> term instanceof final Integer i && indexValue.length() >= i;
+            case LENGTH_LESS_OR_EQUAL -> term instanceof final Integer i && indexValue.length() <= i;
+            case CONTAINS, NOT_CONTAINS -> false;
+        };
+    }
+
+    /**
+     * Returns true if {@code currentValue} is a non-null {@link String} whose
+     * length falls within the inclusive {@code [min, max]} range supplied as a
+     * 2-element {@code int[]} search term.
+     */
+    private boolean matchesLengthBetween(final Object currentValue, final Object searchTerm) {
+        if (!(currentValue instanceof final String s) || !(searchTerm instanceof final int[] bounds)
+                || bounds.length != 2) {
+            return false;
+        }
+        final int len = s.length();
+        return len >= bounds[0] && len <= bounds[1];
     }
 
     private void appendValue(final StringBuilder sb, final Object objVal) {
