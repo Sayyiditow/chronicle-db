@@ -54,6 +54,7 @@ import chronicle.db.service.TaskLoader;
 import chronicle.db.service.VacuumService;
 import chronicle.db.utils.JsonUtils;
 import chronicle.db.utils.SafeSupplier;
+import jdk.net.ExtendedSocketOptions;
 
 @SuppressWarnings("unchecked")
 public class Server {
@@ -724,7 +725,8 @@ public class Server {
             responseData = ForySerializer.serialize(responseMap);
         } catch (final Throwable e) {
             Logger.error("Failed to serialize response (likely too large): {}", e.getMessage());
-            // Send a small error response so the client gets a clean failure instead of a dead socket
+            // Send a small error response so the client gets a clean failure instead of a
+            // dead socket
             final byte[] errorData = ForySerializer.serialize(Map.of("status", "500",
                     "error", "Response serialization failed: " + e.getClass().getSimpleName() + " - "
                             + e.getMessage()));
@@ -903,6 +905,20 @@ public class Server {
                     socket.setKeepAlive(true);
                     // Disable timeout for standby DBs to avoid idle disconnection
                     socket.setSoTimeout(isPrimary ? 600000 : 0);
+                    // Tighten kernel keep-alive so a disappeared client (the
+                    // far end goes silent without a clean FIN) is detected at
+                    // the TCP layer in ~90s instead of the 2-hour default.
+                    // Without this, server-side virtual threads stuck in
+                    // executeRequest() keep their socket FD alive long after
+                    // the client gave up — that's how orphan accumulation
+                    // builds. Linux-only via jdk.net; failures are ignored
+                    // so the rest of the world still works.
+                    try {
+                        socket.setOption(ExtendedSocketOptions.TCP_KEEPIDLE, 60);
+                        socket.setOption(ExtendedSocketOptions.TCP_KEEPINTERVAL, 10);
+                        socket.setOption(ExtendedSocketOptions.TCP_KEEPCOUNT, 3);
+                    } catch (final UnsupportedOperationException | IOException ignored) {
+                    }
 
                     final var thread = Thread.ofVirtual().unstarted(() -> {
                         try {

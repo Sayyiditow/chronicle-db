@@ -20,6 +20,7 @@ import org.tinylog.Logger;
 import chronicle.db.config.ForySerializer;
 import chronicle.db.config.QueryMode;
 import chronicle.db.entity.Search;
+import jdk.net.ExtendedSocketOptions;
 
 public class ClientSocketService {
     public static final class PooledSocket {
@@ -106,9 +107,7 @@ public class ClientSocketService {
     private void createAndAddSocket(final int i) {
         try {
             final Socket socket = new Socket(dbUrl, dbPort);
-            socket.setKeepAlive(true);
-            socket.setTcpNoDelay(true);
-            socket.setSoTimeout(socketTimeout);
+            configureSocket(socket);
             final PooledSocket ps = new PooledSocket(i, socket);
             if (!connections.offer(ps)) {
                 closeSocketResources(ps);
@@ -116,6 +115,30 @@ public class ClientSocketService {
         } catch (final IOException e) {
             Logger.warn("Failed to initialize pool: {}. Retrying in {}s...", e.getMessage(), waitTimeout / 1000);
             retryCreateSocket(i);
+        }
+    }
+
+    /**
+     * Applies socket options. {@code SO_KEEPALIVE} alone uses the kernel's
+     * default 2-hour idle timer; we tighten it via {@code TCP_KEEPIDLE} (start
+     * probing after 60s idle), {@code TCP_KEEPINTERVAL} (10s between probes),
+     * and {@code TCP_KEEPCOUNT} (3 probes) so a dead peer is detected at the
+     * TCP layer in ~90s. Without this, an orphaned server-side socket whose
+     * client has gone away can linger long enough for orphans to pile up
+     * before the application-level read timeout fires. Extended options come
+     * from the {@code jdk.net} module — only effective on Linux; failures
+     * are logged and ignored so dev on macOS/Windows still works.
+     */
+    private void configureSocket(final Socket socket) throws IOException {
+        socket.setKeepAlive(true);
+        socket.setTcpNoDelay(true);
+        socket.setSoTimeout(socketTimeout);
+        try {
+            socket.setOption(ExtendedSocketOptions.TCP_KEEPIDLE, 60);
+            socket.setOption(ExtendedSocketOptions.TCP_KEEPINTERVAL, 10);
+            socket.setOption(ExtendedSocketOptions.TCP_KEEPCOUNT, 3);
+        } catch (final UnsupportedOperationException | IOException e) {
+            Logger.debug("TCP keep-alive tuning not supported: {}", e.getMessage());
         }
     }
 
@@ -142,9 +165,7 @@ public class ClientSocketService {
         while (true) {
             try {
                 final Socket socket = new Socket(dbUrl, dbPort);
-                socket.setKeepAlive(true);
-                socket.setTcpNoDelay(true);
-                socket.setSoTimeout(socketTimeout);
+                configureSocket(socket);
                 return new PooledSocket(index, socket);
             } catch (final IOException e) {
                 Logger.warn("Socket creation failed: {}. Retrying in {}s...", e.getMessage(), waitTimeout / 1000);
@@ -408,115 +429,204 @@ public class ClientSocketService {
         queryMap.put("paths", paths);
     }
 
+    /**
+     * Builds a short identifier of the query for log lines so a failed
+     * connection error tells us *which* operation failed (mode + DAO + tenant)
+     * without dumping the full payload.
+     */
+    private static String summarize(final Map<String, Object> queryMap) {
+        if (queryMap == null) {
+            return "<null>";
+        }
+        final var sb = new StringBuilder();
+        sb.append("mode=").append(queryMap.get("mode"));
+        final var fqn = queryMap.get("fqn");
+        if (fqn != null) {
+            final var s = fqn.toString();
+            final var idx = s.lastIndexOf('.');
+            sb.append(" dao=").append(idx >= 0 ? s.substring(idx + 1) : s);
+        }
+        final var dbDir = queryMap.get("dbDir");
+        if (dbDir != null) {
+            sb.append(" tenant=").append(dbDir);
+        }
+        final var taskClass = queryMap.get("taskClass");
+        if (taskClass != null) {
+            sb.append(" task=").append(taskClass);
+        }
+        return sb.toString();
+    }
+
     public Object execute(final Map<String, Object> queryMap) throws InterruptedException {
+        // Lifecycle invariant: each return / catch branch handles `pooledSocket`
+        // exactly once via returnSocket() or renewSocket(). No `finally`
+        // returnSocket — a finally that fires after a catch already handled the
+        // socket would re-process the stale reference, see it invalid, and
+        // create a duplicate connection on every error path.
+        //
+        // Retry policy: once the request has been flushed to the server we
+        // assume the server has it and is processing. Retrying after that
+        // would duplicate the work — and for a slow query under load that
+        // cascade can pile multiple copies of the same expensive operation
+        // onto the server. So `requestSent` gates retry: only re-issue when
+        // the failure happened before flush (the request never reached the
+        // wire), otherwise log and return null and let the caller decide.
         final var pooledSocket = borrowSocket();
+        boolean requestSent = false;
         try {
             final var data = ForySerializer.serialize(queryMap);
-            // Send the query to the server
-            pooledSocket.dos.writeInt(data.length); // Send length first
+            pooledSocket.dos.writeInt(data.length);
             pooledSocket.dos.write(data);
             pooledSocket.dos.flush();
+            requestSent = true;
 
-            final int length = pooledSocket.dis.readInt(); // Read length
+            final int length = pooledSocket.dis.readInt();
             final byte[] disData = new byte[length];
-            pooledSocket.dis.readFully(disData); // Read exactly 'length' bytes
+            pooledSocket.dis.readFully(disData);
             final var responseMap = (Map<String, Object>) ForySerializer.deserialize(disData);
 
             if (responseMap == null) {
+                returnSocket(pooledSocket);
                 return null;
             }
 
             final var status = responseMap.get("status").toString();
             if ("200".equals(status)) {
+                returnSocket(pooledSocket);
                 return responseMap.get("response");
             } else if ("400".equals(status)) {
                 Logger.error("DB returned 400 (bad request). Error: {}", responseMap.get("error"));
-                return null; // Don't retry - bad request is a code issue
+                returnSocket(pooledSocket);
+                return null;
             } else if ("500".equals(status)) {
                 Logger.error("DB returned 500 (server error). Error: {}", responseMap.get("error"));
-                return null; // Don't retry - server had internal error
+                returnSocket(pooledSocket);
+                return null;
             } else if ("503".equals(status)) {
                 Logger.info("DB is upgrading. Reconnecting...");
-                Thread.sleep(waitTimeout);
                 returnSocket(pooledSocket);
-                return execute(queryMap); // retry
+                Thread.sleep(waitTimeout);
+                return execute(queryMap);
             } else {
                 Logger.warn("DB returned unexpected status [{}]. Not retrying.", status);
+                returnSocket(pooledSocket);
                 return null;
             }
         } catch (final EOFException eofException) {
-            renewSocket(pooledSocket); // immediately
-            Logger.info("Server [{}:{}] closed idle connection (EOF). Renewing socket...", dbUrl, dbPort);
-            return execute(queryMap); // Retry with fresh socket
+            renewSocket(pooledSocket);
+            if (requestSent) {
+                Logger.warn("Server [{}:{}] closed connection after request was sent — not retrying to avoid "
+                        + "duplicate work. Query: [{}]", dbUrl, dbPort, summarize(queryMap));
+                return null;
+            }
+            Logger.info("Server [{}:{}] closed idle connection (EOF). Renewing socket and retrying. Query: [{}]",
+                    dbUrl, dbPort, summarize(queryMap));
+            return execute(queryMap);
         } catch (final SocketTimeoutException e) {
-            renewSocket(pooledSocket); // immediately
-            Logger.warn("SocketTimeoutException: {}. Renewing socket...", e.getMessage());
+            Logger.warn("SocketTimeoutException: {}. Renewing socket. Query: [{}]", e.getMessage(),
+                    summarize(queryMap));
+            renewSocket(pooledSocket);
             return null;
         } catch (final SocketException e) {
-            Logger.warn("SocketException: {}. Renewing socket...", e.getMessage());
-            renewSocket(pooledSocket); // immediately
-            return execute(queryMap); // Retry with fresh socket
+            renewSocket(pooledSocket);
+            if (requestSent) {
+                Logger.warn("SocketException after request was sent: {}. Not retrying — request may already be "
+                        + "processing on the server. Query: [{}]", e.getMessage(), summarize(queryMap));
+                return null;
+            }
+            Logger.warn("SocketException before request was sent: {}. Renewing socket and retrying. Query: [{}]",
+                    e.getMessage(), summarize(queryMap));
+            return execute(queryMap);
         } catch (final IOException e) {
-            Logger.error("Socket IOException: {}. Renewing socket...", e.getMessage());
-            returnSocket(pooledSocket);
-            return execute(queryMap); // retry
-        } finally {
-            returnSocket(pooledSocket);
+            renewSocket(pooledSocket);
+            if (requestSent) {
+                Logger.error("IOException after request was sent: {}. Not retrying. Query: [{}]", e.getMessage(),
+                        summarize(queryMap));
+                return null;
+            }
+            Logger.error("IOException before request was sent: {}. Renewing socket and retrying. Query: [{}]",
+                    e.getMessage(), summarize(queryMap));
+            return execute(queryMap);
         }
     }
 
     public Object execute(final byte[] data) throws InterruptedException {
+        // See execute(Map) for the lifecycle and retry invariants — same rules apply here.
         final var pooledSocket = borrowSocket();
+        boolean requestSent = false;
         try {
-            pooledSocket.dos.writeInt(data.length); // Send length first
+            pooledSocket.dos.writeInt(data.length);
             pooledSocket.dos.write(data);
             pooledSocket.dos.flush();
+            requestSent = true;
 
-            final int length = pooledSocket.dis.readInt(); // Read length
+            final int length = pooledSocket.dis.readInt();
             final byte[] disData = new byte[length];
-            pooledSocket.dis.readFully(disData); // Read exactly 'length' bytes
+            pooledSocket.dis.readFully(disData);
             final var responseMap = (Map<String, Object>) ForySerializer.deserialize(disData);
 
             if (responseMap == null) {
+                returnSocket(pooledSocket);
                 return null;
             }
 
             final var status = responseMap.get("status").toString();
             if ("200".equals(status)) {
+                returnSocket(pooledSocket);
                 return responseMap.get("response");
             } else if ("400".equals(status)) {
                 Logger.error("DB returned 400 (bad request). Error: {}", responseMap.get("error"));
-                return null; // Don't retry - bad request is a code issue
+                returnSocket(pooledSocket);
+                return null;
             } else if ("500".equals(status)) {
                 Logger.error("DB returned 500 (server error). Error: {}", responseMap.get("error"));
-                return null; // Don't retry - server had internal error
+                returnSocket(pooledSocket);
+                return null;
             } else if ("503".equals(status)) {
                 Logger.info("DB is upgrading. Reconnecting...");
-                Thread.sleep(waitTimeout);
                 returnSocket(pooledSocket);
-                return execute(data); // retry
+                Thread.sleep(waitTimeout);
+                return execute(data);
             } else {
                 Logger.warn("DB returned unexpected status [{}]. Not retrying.", status);
+                returnSocket(pooledSocket);
                 return null;
             }
         } catch (final EOFException eofException) {
-            renewSocket(pooledSocket); // immediately
-            Logger.info("Server [{}:{}] closed idle connection (EOF). Renewing socket...", dbUrl, dbPort);
-            return execute(data); // Retry with fresh socket
+            renewSocket(pooledSocket);
+            if (requestSent) {
+                Logger.warn("Server [{}:{}] closed connection after request was sent — not retrying to avoid "
+                        + "duplicate work. Payload: [{} bytes]", dbUrl, dbPort, data.length);
+                return null;
+            }
+            Logger.info("Server [{}:{}] closed idle connection (EOF). Renewing socket and retrying. "
+                    + "Payload: [{} bytes]", dbUrl, dbPort, data.length);
+            return execute(data);
         } catch (final SocketTimeoutException e) {
-            renewSocket(pooledSocket); // immediately
-            Logger.warn("SocketTimeoutException: {}. Renewing socket...", e.getMessage());
+            Logger.warn("SocketTimeoutException: {}. Renewing socket. Payload: [{} bytes]", e.getMessage(),
+                    data.length);
+            renewSocket(pooledSocket);
             return null;
         } catch (final SocketException e) {
-            Logger.warn("SocketException: {}. Renewing socket...", e.getMessage());
-            renewSocket(pooledSocket); // immediately
-            return execute(data); // Retry with fresh socket
+            renewSocket(pooledSocket);
+            if (requestSent) {
+                Logger.warn("SocketException after request was sent: {}. Not retrying — request may already be "
+                        + "processing on the server. Payload: [{} bytes]", e.getMessage(), data.length);
+                return null;
+            }
+            Logger.warn("SocketException before request was sent: {}. Renewing socket and retrying. "
+                    + "Payload: [{} bytes]", e.getMessage(), data.length);
+            return execute(data);
         } catch (final IOException e) {
-            Logger.error("Socket IOException: {}. Renewing socket...", e.getMessage());
-            returnSocket(pooledSocket);
-            return execute(data); // retry
-        } finally {
-            returnSocket(pooledSocket);
+            renewSocket(pooledSocket);
+            if (requestSent) {
+                Logger.error("IOException after request was sent: {}. Not retrying. Payload: [{} bytes]",
+                        e.getMessage(), data.length);
+                return null;
+            }
+            Logger.error("IOException before request was sent: {}. Renewing socket and retrying. "
+                    + "Payload: [{} bytes]", e.getMessage(), data.length);
+            return execute(data);
         }
     }
 }
