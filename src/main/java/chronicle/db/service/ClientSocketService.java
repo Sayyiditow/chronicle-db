@@ -534,7 +534,7 @@ public class ClientSocketService {
                         + "processing on the server. Query: [{}]", e.getMessage(), summarize(queryMap));
                 return null;
             }
-            Logger.warn("SocketException before request was sent: {}. Renewing socket and retrying. Query: [{}]",
+            Logger.warn("SocketException: {}. Renewing socket and retrying. Query: [{}]",
                     e.getMessage(), summarize(queryMap));
             return execute(queryMap);
         } catch (final IOException e) {
@@ -544,14 +544,15 @@ public class ClientSocketService {
                         summarize(queryMap));
                 return null;
             }
-            Logger.error("IOException before request was sent: {}. Renewing socket and retrying. Query: [{}]",
+            Logger.error("IOException: {}. Renewing socket and retrying. Query: [{}]",
                     e.getMessage(), summarize(queryMap));
             return execute(queryMap);
         }
     }
 
     public Object execute(final byte[] data) throws InterruptedException {
-        // See execute(Map) for the lifecycle and retry invariants — same rules apply here.
+        // See execute(Map) for the lifecycle and retry invariants — same rules apply
+        // here.
         final var pooledSocket = borrowSocket();
         boolean requestSent = false;
         try {
@@ -614,7 +615,7 @@ public class ClientSocketService {
                         + "processing on the server. Payload: [{} bytes]", e.getMessage(), data.length);
                 return null;
             }
-            Logger.warn("SocketException before request was sent: {}. Renewing socket and retrying. "
+            Logger.warn("SocketException: {}. Renewing socket and retrying. "
                     + "Payload: [{} bytes]", e.getMessage(), data.length);
             return execute(data);
         } catch (final IOException e) {
@@ -624,7 +625,7 @@ public class ClientSocketService {
                         e.getMessage(), data.length);
                 return null;
             }
-            Logger.error("IOException before request was sent: {}. Renewing socket and retrying. "
+            Logger.error("IOException: {}. Renewing socket and retrying. "
                     + "Payload: [{} bytes]", e.getMessage(), data.length);
             return execute(data);
         }
