@@ -8,6 +8,8 @@ import java.nio.file.Path;
 import com.jsoniter.JsonIterator;
 import com.jsoniter.any.Any;
 import com.jsoniter.output.JsonStream;
+import com.jsoniter.spi.Encoder;
+import com.jsoniter.spi.JsoniterSpi;
 import com.jsoniter.spi.TypeLiteral;
 
 /**
@@ -20,6 +22,29 @@ import com.jsoniter.spi.TypeLiteral;
  */
 public final class JsonUtils {
     private static final int flushSize = 5_242_880;
+
+    static {
+        // Jsoniter's default writeDouble/writeFloat hard-codes precision = 6, silently truncating
+        // values like 1.1234567891234 to 1.123457 on the way out. Override with full IEEE-754
+        // round-trip representation; Double/Float.toString omits trailing zeros (1.0 -> "1.0").
+        final Encoder.DoubleEncoder doubleEncoder = new Encoder.DoubleEncoder() {
+            @Override
+            public void encodeDouble(final double obj, final JsonStream stream) throws IOException {
+                stream.writeRaw(Double.toString(obj));
+            }
+        };
+        JsoniterSpi.registerTypeEncoder(double.class, doubleEncoder);
+        JsoniterSpi.registerTypeEncoder(Double.class, doubleEncoder);
+
+        final Encoder.FloatEncoder floatEncoder = new Encoder.FloatEncoder() {
+            @Override
+            public void encodeFloat(final float obj, final JsonStream stream) throws IOException {
+                stream.writeRaw(Float.toString(obj));
+            }
+        };
+        JsoniterSpi.registerTypeEncoder(float.class, floatEncoder);
+        JsoniterSpi.registerTypeEncoder(Float.class, floatEncoder);
+    }
 
     private JsonUtils() {
     }
