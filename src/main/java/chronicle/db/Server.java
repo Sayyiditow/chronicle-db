@@ -21,7 +21,6 @@ import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -54,10 +53,6 @@ import com.codahale.metrics.jvm.MemoryUsageGaugeSet;
 import com.codahale.metrics.jvm.ThreadStatesGaugeSet;
 import com.sun.net.httpserver.HttpServer;
 
-import io.prometheus.client.CollectorRegistry;
-import io.prometheus.client.dropwizard.DropwizardExports;
-import io.prometheus.client.exporter.common.TextFormat;
-
 import chronicle.db.config.ForySerializer;
 import chronicle.db.config.QueryMode;
 import chronicle.db.dao.ChronicleDao;
@@ -74,6 +69,9 @@ import chronicle.db.service.TaskLoader;
 import chronicle.db.service.VacuumService;
 import chronicle.db.utils.JsonUtils;
 import chronicle.db.utils.SafeSupplier;
+import io.prometheus.client.CollectorRegistry;
+import io.prometheus.client.dropwizard.DropwizardExports;
+import io.prometheus.client.exporter.common.TextFormat;
 import jdk.net.ExtendedSocketOptions;
 
 @SuppressWarnings("unchecked")
@@ -127,9 +125,7 @@ public class Server {
             dbArchPath = properties.getProperty("dbArchPath");
             queueSize = Integer.parseInt(properties.getProperty("queueSize", "512"));
             metricsPort = Integer.parseInt(properties.getProperty("metricsPort", "0"));
-            metricsAllowedIps = Arrays.stream(properties.getProperty("metricsAllowedIps", "").split(","))
-                    .map(String::trim).filter(s -> !s.isEmpty())
-                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            metricsAllowedIps = Set.of(properties.getProperty("metricsAllowedIps", "").split(","));
             final var env = properties.getProperty("env");
             final var primary = properties.getProperty("primary");
             isHosted = !env.equals("dev");
@@ -866,7 +862,8 @@ public class Server {
         // Write procId to disk
         CHRONICLE_UTILS.logProcessId(processId);
 
-        // Start the metrics endpoint early so JVM stats are available before heavy init.
+        // Start the metrics endpoint early so JVM stats are available before heavy
+        // init.
         startMetricsServer();
 
         // Process any leftover writes from previous run synchronously
