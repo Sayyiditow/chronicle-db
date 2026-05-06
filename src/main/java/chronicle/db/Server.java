@@ -204,6 +204,17 @@ public class Server {
                     (Gauge<Integer>) activeThreads::size);
             metricRegistry.register("chronicle.inflight.writes",
                     (Gauge<Integer>) ChronicleDao.IN_FLIGHT_WRITES::get);
+            metricRegistry.register("process.cpuLoad", (Gauge<Double>) () -> {
+                final var bean = ManagementFactory.getOperatingSystemMXBean();
+                return bean instanceof com.sun.management.OperatingSystemMXBean sun
+                        ? sun.getProcessCpuLoad()
+                        : -1.0;
+            });
+            // Deadlock detector — non-zero means actual JVM deadlock (page-someone alert).
+            metricRegistry.register("jvm.threads.deadlocked", (Gauge<Integer>) () -> {
+                final long[] ids = ManagementFactory.getThreadMXBean().findDeadlockedThreads();
+                return ids == null ? 0 : ids.length;
+            });
 
             CollectorRegistry.defaultRegistry.register(new DropwizardExports(metricRegistry));
 
