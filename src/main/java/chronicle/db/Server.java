@@ -184,6 +184,37 @@ public class Server {
         return metricsAllowedIps.contains(ip);
     }
 
+    /**
+     * End-to-end liveness check: opens a fresh socket to our own DB port, sends a
+     * HEARTBEAT request, and verifies the response. Catches accept-loop death,
+     * Fory deserialization stalls, dispatch deadlocks — anything that would make
+     * a real client hang. Returns false on any failure or timeout.
+     */
+    private static boolean doHeartbeat() {
+        try (final var socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", port), 2000);
+            socket.setSoTimeout(2000);
+            final var dos = new DataOutputStream(socket.getOutputStream());
+            final var dis = new DataInputStream(socket.getInputStream());
+
+            final byte[] req = ForySerializer.serialize(Map.of("mode", QueryMode.HEARTBEAT));
+            dos.writeInt(req.length);
+            dos.write(req);
+            dos.flush();
+
+            final int len = dis.readInt();
+            if (len <= 0 || len > 1_048_576) {
+                return false;
+            }
+            final byte[] resp = new byte[len];
+            dis.readFully(resp);
+            final var respMap = (Map<String, Object>) ForySerializer.deserialize(resp);
+            return "200".equals(respMap.get("status"));
+        } catch (final IOException e) {
+            return false;
+        }
+    }
+
     private static void startMetricsServer() {
         if (metricsPort <= 0) {
             Logger.info("Metrics endpoint disabled (metricsPort=0).");
@@ -219,6 +250,21 @@ public class Server {
             CollectorRegistry.defaultRegistry.register(new DropwizardExports(metricRegistry));
 
             final var http = HttpServer.create(new InetSocketAddress(metricsPort), 0);
+            http.createContext("/healthz", exchange -> {
+                final var ip = exchange.getRemoteAddress().getAddress().getHostAddress();
+                if (!isAllowedMetricsIp(ip)) {
+                    exchange.sendResponseHeaders(403, -1);
+                    exchange.close();
+                    return;
+                }
+                final boolean alive = doHeartbeat();
+                final byte[] body = (alive ? "OK" : "DB heartbeat failed").getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+                exchange.sendResponseHeaders(alive ? 200 : 503, body.length);
+                try (var os = exchange.getResponseBody()) {
+                    os.write(body);
+                }
+            });
             http.createContext("/metrics", exchange -> {
                 final var ip = exchange.getRemoteAddress().getAddress().getHostAddress();
                 if (!isAllowedMetricsIp(ip)) {
@@ -786,6 +832,7 @@ public class Server {
             }
             // misc
             case DB_COUNT -> FailOver.getDbCounts((Map<String, List<String>>) params.get("fqnMap"));
+            case HEARTBEAT -> "ok";
             case CONSISTENCY_CHECK -> FailOver.checkConsistency((Map<String, List<String>>) params.get("fqnMap"),
                     (Map<String, Integer>) params.get("standbyMap"));
             case FAIL_OVER -> isAllSafeToFailOver((Map<String, List<String>>) params.get("fqnMap"));
