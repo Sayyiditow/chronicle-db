@@ -11,12 +11,17 @@ import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.StringWriter;
+import java.lang.management.ManagementFactory;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -37,6 +42,21 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.tinylog.Logger;
+
+import com.codahale.metrics.Gauge;
+import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.jvm.BufferPoolMetricSet;
+import com.codahale.metrics.jvm.ClassLoadingGaugeSet;
+import com.codahale.metrics.jvm.FileDescriptorRatioGauge;
+import com.codahale.metrics.jvm.GarbageCollectorMetricSet;
+import com.codahale.metrics.jvm.JvmAttributeGaugeSet;
+import com.codahale.metrics.jvm.MemoryUsageGaugeSet;
+import com.codahale.metrics.jvm.ThreadStatesGaugeSet;
+import com.sun.net.httpserver.HttpServer;
+
+import io.prometheus.client.CollectorRegistry;
+import io.prometheus.client.dropwizard.DropwizardExports;
+import io.prometheus.client.exporter.common.TextFormat;
 
 import chronicle.db.config.ForySerializer;
 import chronicle.db.config.QueryMode;
@@ -88,6 +108,8 @@ public class Server {
     private static String dbPath;
     private static String dbArchPath;
     private static int port;
+    private static int metricsPort = 0;
+    private static Set<String> metricsAllowedIps = Set.of();
     private static int queueSize = 512;
     private static boolean upgrading = false;
     public static boolean replicationEnabled = false;
@@ -104,6 +126,10 @@ public class Server {
             dbPath = properties.getProperty("dbPath");
             dbArchPath = properties.getProperty("dbArchPath");
             queueSize = Integer.parseInt(properties.getProperty("queueSize", "512"));
+            metricsPort = Integer.parseInt(properties.getProperty("metricsPort", "0"));
+            metricsAllowedIps = Arrays.stream(properties.getProperty("metricsAllowedIps", "").split(","))
+                    .map(String::trim).filter(s -> !s.isEmpty())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
             final var env = properties.getProperty("env");
             final var primary = properties.getProperty("primary");
             isHosted = !env.equals("dev");
@@ -153,6 +179,60 @@ public class Server {
     }
 
     private Server() {
+    }
+
+    private static boolean isAllowedMetricsIp(final String ip) {
+        if ("127.0.0.1".equals(ip) || "::1".equals(ip) || "0:0:0:0:0:0:0:1".equals(ip)) {
+            return true;
+        }
+        return metricsAllowedIps.contains(ip);
+    }
+
+    private static void startMetricsServer() {
+        if (metricsPort <= 0) {
+            Logger.info("Metrics endpoint disabled (metricsPort=0).");
+            return;
+        }
+        try {
+            final var metricRegistry = new MetricRegistry();
+            metricRegistry.register("memory", new MemoryUsageGaugeSet());
+            metricRegistry.register("threads", new ThreadStatesGaugeSet());
+            metricRegistry.register("gc", new GarbageCollectorMetricSet());
+            metricRegistry.register("classloader", new ClassLoadingGaugeSet());
+            metricRegistry.register("buffers",
+                    new BufferPoolMetricSet(ManagementFactory.getPlatformMBeanServer()));
+            metricRegistry.register("fd_ratio", new FileDescriptorRatioGauge());
+            metricRegistry.register("jvm", new JvmAttributeGaugeSet());
+            // Chronicle-db specific
+            metricRegistry.register("chronicle.connections.active",
+                    (Gauge<Integer>) activeThreads::size);
+            metricRegistry.register("chronicle.inflight.writes",
+                    (Gauge<Integer>) ChronicleDao.IN_FLIGHT_WRITES::get);
+
+            CollectorRegistry.defaultRegistry.register(new DropwizardExports(metricRegistry));
+
+            final var http = HttpServer.create(new InetSocketAddress(metricsPort), 0);
+            http.createContext("/metrics", exchange -> {
+                final var ip = exchange.getRemoteAddress().getAddress().getHostAddress();
+                if (!isAllowedMetricsIp(ip)) {
+                    exchange.sendResponseHeaders(403, -1);
+                    exchange.close();
+                    return;
+                }
+                final var writer = new StringWriter();
+                TextFormat.write004(writer, CollectorRegistry.defaultRegistry.metricFamilySamples());
+                final byte[] body = writer.toString().getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", TextFormat.CONTENT_TYPE_004);
+                exchange.sendResponseHeaders(200, body.length);
+                try (var os = exchange.getResponseBody()) {
+                    os.write(body);
+                }
+            });
+            http.start();
+            Logger.info("Metrics endpoint listening on port [{}] at /metrics.", metricsPort);
+        } catch (final IOException e) {
+            Logger.error(e, "Failed to start metrics endpoint on port [{}].", metricsPort);
+        }
     }
 
     public static int getQueueSize() {
@@ -785,6 +865,9 @@ public class Server {
     public static void main(final String[] args) throws Throwable {
         // Write procId to disk
         CHRONICLE_UTILS.logProcessId(processId);
+
+        // Start the metrics endpoint early so JVM stats are available before heavy init.
+        startMetricsServer();
 
         // Process any leftover writes from previous run synchronously
         if (replicationQueue != null) {
