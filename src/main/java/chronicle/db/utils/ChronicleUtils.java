@@ -40,6 +40,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
@@ -96,10 +97,26 @@ import net.openhft.chronicle.algo.hashing.LongHashFunction;
 public final class ChronicleUtils {
     public static final ChronicleUtils CHRONICLE_UTILS = new ChronicleUtils();
     private static final int processors = Runtime.getRuntime().availableProcessors();
-    private static final ExecutorService sharedExecutor = Executors.newFixedThreadPool(
-            Integer.getInteger("chronicle.shared.pool.size", Math.max(processors / 3, 2)));
-    private static final ExecutorService iterableExecutor = Executors.newFixedThreadPool(
-            Integer.getInteger("chronicle.iterable.pool.size", Math.max(processors / 3, 2)));
+    /**
+     * Single virtual-thread executor for all parallel sub-task work
+     * (processInParallel, parallelIterable). Replaces the previous pair of
+     * fixed thread pools. Virtual threads cost ~1KB of heap each and unmount
+     * on blocking I/O, so the natural ceiling for concurrent work is the
+     * carrier pool (≈ availableProcessors), not a hard slot count.
+     */
+    private static final ExecutorService parallelExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    /**
+     * Circuit breaker for runaway top-level concurrency. Counts only
+     * <i>outermost</i> {@code processInParallel} / {@code parallelIterable}
+     * calls — nested calls inherit the parent's permit (see
+     * {@link #INSIDE_PARALLEL}) and don't acquire their own. This guarantees
+     * the cap can never deadlock the cascade pattern. Tune via
+     * {@code -Dchronicle.parallel.maxConcurrentOperations=N}; default 1000
+     * is wildly above realistic concurrent operation counts.
+     */
+    private static final Semaphore outerGate = new Semaphore(
+            Integer.getInteger("chronicle.parallel.maxConcurrentOperations", 1000));
+    private static final ThreadLocal<Boolean> INSIDE_PARALLEL = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final String logDateFormat = "yyyy-MM-dd HH:mm:ss";
     private static final DateTimeFormatter logDateTimeFormatter = DateTimeFormatter.ofPattern(logDateFormat);
     private static final int indexChunkSize = Integer.getInteger("chronicle.indexes.chunkSize", 10000);
@@ -1633,7 +1650,7 @@ public final class ChronicleUtils {
         final var futures = new ArrayList<Future<?>>(consumerThreads);
 
         for (int i = 0; i < consumerThreads; i++) {
-            futures.add(iterableExecutor.submit(() -> {
+            futures.add(parallelExecutor.submit(() -> {
                 final var batch = new ArrayList<T>(batchSize);
 
                 while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
@@ -1723,7 +1740,7 @@ public final class ChronicleUtils {
         final var futures = new ArrayList<Future<?>>(consumerThreads);
 
         for (int i = 0; i < consumerThreads; i++) {
-            futures.add(iterableExecutor.submit(() -> {
+            futures.add(parallelExecutor.submit(() -> {
                 final var batch = new ArrayList<T>(batchSize);
                 while (matchCounter.get() < limit && !Thread.currentThread().isInterrupted()) {
 
@@ -1816,7 +1833,9 @@ public final class ChronicleUtils {
     }
 
     /**
-     * Executes a list of Runnable tasks in parallel using sharedExecutor.
+     * Executes a list of Runnable tasks in parallel on the shared virtual-thread
+     * executor. Top-level (non-nested) calls acquire one permit from
+     * {@link #outerGate}; nested calls inherit the parent's permit.
      *
      * @param tasks The list of tasks to execute.
      */
@@ -1824,17 +1843,36 @@ public final class ChronicleUtils {
         if (tasks == null || tasks.isEmpty()) {
             return;
         }
-        final List<Future<?>> futures = new ArrayList<>(tasks.size());
-        for (final Runnable task : tasks) {
-            if (task != null) {
-                futures.add(sharedExecutor.submit(task));
-            }
+        final boolean alreadyInside = INSIDE_PARALLEL.get();
+        if (!alreadyInside) {
+            outerGate.acquireUninterruptibly();
         }
-        for (final Future<?> future : futures) {
-            try {
-                future.get();
-            } catch (final Exception e) {
-                Logger.error(e);
+        INSIDE_PARALLEL.set(Boolean.TRUE);
+        try {
+            final List<Future<?>> futures = new ArrayList<>(tasks.size());
+            for (final Runnable task : tasks) {
+                if (task != null) {
+                    futures.add(parallelExecutor.submit(() -> {
+                        INSIDE_PARALLEL.set(Boolean.TRUE);
+                        try {
+                            task.run();
+                        } finally {
+                            INSIDE_PARALLEL.remove();
+                        }
+                    }));
+                }
+            }
+            for (final Future<?> future : futures) {
+                try {
+                    future.get();
+                } catch (final Exception e) {
+                    Logger.error(e);
+                }
+            }
+        } finally {
+            if (!alreadyInside) {
+                INSIDE_PARALLEL.remove();
+                outerGate.release();
             }
         }
     }
@@ -1842,15 +1880,34 @@ public final class ChronicleUtils {
     public <T> void processInParallel(final Collection<T> items, final Consumer<T> action) {
         if (items == null || items.isEmpty())
             return;
-        final List<Future<?>> futures = new ArrayList<>(items.size());
-        for (final T item : items) {
-            futures.add(sharedExecutor.submit(() -> action.accept(item)));
+        final boolean alreadyInside = INSIDE_PARALLEL.get();
+        if (!alreadyInside) {
+            outerGate.acquireUninterruptibly();
         }
-        for (final Future<?> future : futures) {
-            try {
-                future.get();
-            } catch (final Exception e) {
-                Logger.error(e);
+        INSIDE_PARALLEL.set(Boolean.TRUE);
+        try {
+            final List<Future<?>> futures = new ArrayList<>(items.size());
+            for (final T item : items) {
+                futures.add(parallelExecutor.submit(() -> {
+                    INSIDE_PARALLEL.set(Boolean.TRUE);
+                    try {
+                        action.accept(item);
+                    } finally {
+                        INSIDE_PARALLEL.remove();
+                    }
+                }));
+            }
+            for (final Future<?> future : futures) {
+                try {
+                    future.get();
+                } catch (final Exception e) {
+                    Logger.error(e);
+                }
+            }
+        } finally {
+            if (!alreadyInside) {
+                INSIDE_PARALLEL.remove();
+                outerGate.release();
             }
         }
     }
