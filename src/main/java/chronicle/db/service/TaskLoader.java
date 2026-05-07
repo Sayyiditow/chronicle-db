@@ -6,6 +6,7 @@ import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.tinylog.Logger;
 
@@ -15,7 +16,11 @@ import org.tinylog.Logger;
  */
 public final class TaskLoader {
     private static final Path TASK_PLUGIN_DIR = Path.of(System.getProperty("chronicle.tasks.dir", "../lib/tasks"));
-    private static URLClassLoader taskClassLoader;
+    private static volatile URLClassLoader taskClassLoader;
+    // Replaces synchronized on refresh() — same single-writer guarantee but
+    // explicit, interruptible if needed, and consistent with how the rest of
+    // chronicle-db expresses critical sections.
+    private static final ReentrantLock refreshLock = new ReentrantLock();
 
     private TaskLoader() {}
 
@@ -23,44 +28,48 @@ public final class TaskLoader {
      * Refreshes the task classloader by scanning the plugin directory for JARs.
      * Call this to pick up new or updated task JARs without restarting.
      */
-    public static synchronized void refresh() throws IOException {
-        if (taskClassLoader != null) {
-            try {
-                taskClassLoader.close();
-            } catch (final IOException e) {
-                Logger.warn("Failed to close previous task classloader: {}", e.getMessage());
+    public static void refresh() throws IOException {
+        refreshLock.lock();
+        try {
+            if (taskClassLoader != null) {
+                try {
+                    taskClassLoader.close();
+                } catch (final IOException e) {
+                    Logger.warn("Failed to close previous task classloader: {}", e.getMessage());
+                }
+                taskClassLoader = null;
             }
-            taskClassLoader = null;
-        }
 
-        if (!Files.exists(TASK_PLUGIN_DIR)) {
-            Logger.info("Task plugin directory [{}] does not exist, using system classloader.", TASK_PLUGIN_DIR);
-            return;
-        }
+            if (!Files.exists(TASK_PLUGIN_DIR)) {
+                Logger.info("Task plugin directory [{}] does not exist, using system classloader.", TASK_PLUGIN_DIR);
+                return;
+            }
 
-        final var urls = new ArrayList<URL>();
+            final var urls = new ArrayList<URL>();
 
-        // Add all JAR files in the plugin directory
-        try (var stream = Files.list(TASK_PLUGIN_DIR)) {
-            stream.filter(p -> p.toString().endsWith(".jar"))
-                  .forEach(p -> {
-                      try {
-                          urls.add(p.toUri().toURL());
-                          Logger.info("Loaded task JAR: {}", p.getFileName());
-                      } catch (final Exception e) {
-                          Logger.error("Failed to load task JAR [{}]: {}", p, e.getMessage());
-                      }
-                  });
-        }
+            // Add all JAR files in the plugin directory
+            try (var stream = Files.list(TASK_PLUGIN_DIR)) {
+                stream.filter(p -> p.toString().endsWith(".jar"))
+                        .forEach(p -> {
+                            try {
+                                urls.add(p.toUri().toURL());
+                                Logger.info("Loaded task JAR: {}", p.getFileName());
+                            } catch (final Exception e) {
+                                Logger.error("Failed to load task JAR [{}]: {}", p, e.getMessage());
+                            }
+                        });
+            }
 
-        if (!urls.isEmpty()) {
-            taskClassLoader = new URLClassLoader(
-                urls.toArray(new URL[0]),
-                TaskLoader.class.getClassLoader()
-            );
-            Logger.info("Task classloader refreshed with [{}] JAR(s) from [{}]", urls.size(), TASK_PLUGIN_DIR);
-        } else {
-            Logger.info("No task JARs found in [{}]", TASK_PLUGIN_DIR);
+            if (!urls.isEmpty()) {
+                taskClassLoader = new URLClassLoader(
+                        urls.toArray(new URL[0]),
+                        TaskLoader.class.getClassLoader());
+                Logger.info("Task classloader refreshed with [{}] JAR(s) from [{}]", urls.size(), TASK_PLUGIN_DIR);
+            } else {
+                Logger.info("No task JARs found in [{}]", TASK_PLUGIN_DIR);
+            }
+        } finally {
+            refreshLock.unlock();
         }
     }
 

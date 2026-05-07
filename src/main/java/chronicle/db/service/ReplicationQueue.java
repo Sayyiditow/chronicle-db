@@ -51,6 +51,20 @@ public class ReplicationQueue {
     private static final String primaryTailerName = "localhost_9099";
     private final ChronicleQueue queue;
     private final ReentrantLock queueLock = new ReentrantLock();
+    /**
+     * Lock-ordering invariant — DO NOT VIOLATE.
+     * <p>
+     * When both a per-tailer lock ({@link #tailerLocks}) and this lock are
+     * needed in the same call path, the per-tailer lock MUST be acquired
+     * <b>first</b>, then this lock. Reversing the order recreates the original
+     * tailer-creation deadlock that this class previously suffered from.
+     * </p>
+     * <p>
+     * Audited callers that hold both: {@code cleanupQueue}, {@code processPending},
+     * {@code markPrimaryProcessed}, {@code isEmpty}, {@code resetAllTailersToLastWrittenCycle}.
+     * All currently observe the correct order.
+     * </p>
+     */
     private final ReentrantLock tailerCreationLock = new ReentrantLock();
     private final ConcurrentMap<String, ConcurrentSkipListSet<Long>> completionSets = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, ReentrantLock> tailerLocks = new ConcurrentHashMap<>();

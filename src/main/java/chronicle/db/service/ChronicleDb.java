@@ -37,7 +37,8 @@ import net.openhft.chronicle.map.MapEntry;
  * <b>Key Features:</b>
  * <ul>
  * <li>Reference-counted shared map instances</li>
- * <li>Automatic deadlock detection and recovery via {@link SharedChronicleMap}</li>
+ * <li>Automatic deadlock detection and recovery via
+ * {@link SharedChronicleMap}</li>
  * <li>Thread-safe concurrent access</li>
  * <li>Support for ChronicleDao reflective operations</li>
  * </ul>
@@ -66,8 +67,12 @@ import net.openhft.chronicle.map.MapEntry;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public final class ChronicleDb {
     public static final ChronicleDb CHRONICLE_DB = new ChronicleDb();
-    private static final ConcurrentMap<String, SharedChronicleMap> mapCache = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>();
+    // Initial bin count for the cache — see MapDb for rationale. Override via
+    // -Dchronicle.cache.initialCapacity=N to match deployment file count.
+    private static final ConcurrentMap<String, SharedChronicleMap> mapCache = new ConcurrentHashMap<>(
+            Integer.getInteger("chronicle.cache.initialCapacity", 1024));
+    private static final ConcurrentMap<String, MethodHandle> constructors = new ConcurrentHashMap<>(
+            Integer.getInteger("chronicle.constructorCache.initialCapacity", 256));
 
     private ChronicleDb() {
     }
@@ -399,40 +404,53 @@ public final class ChronicleDb {
      */
     public <V> SharedChronicleMap<String, V> open(final String name, final long entries,
             final int averageKeySize, final V averageValue, final String filePath, final double maxBloatFactor) {
-        final SharedChronicleMap<String, V> entry = mapCache.compute(filePath, (k, existingEntry) -> {
-            if (existingEntry != null) {
-                return existingEntry.retain();
-            }
+        // Fast path: cached entry — retain under the per-bucket lock and return.
+        final SharedChronicleMap<String, V> cached = (SharedChronicleMap<String, V>) mapCache
+                .computeIfPresent(filePath, (k, e) -> e.retain());
+        if (cached != null) {
+            return cached;
+        }
 
-            // Create a new entry
-            try {
-                final File file = new File(filePath);
-                final Class<V> valueClass = (Class<V>) averageValue.getClass();
-                final ChronicleMapBuilder<String, V> builder = ChronicleMapBuilder.of(String.class, valueClass)
-                        .maxBloatFactor(maxBloatFactor);
-                if (!file.exists()) {
-                    builder.name(name).entries(entries).averageKeySize(averageKeySize).averageValue(averageValue);
-                }
-                final ChronicleMap<String, V> map = builder.createPersistedTo(file);
-                return new SharedChronicleMap<>(map, filePath, name, entries, averageKeySize, averageValue,
-                        maxBloatFactor);
-            } catch (final InterProcessDeadLockException e) {
+        // Slow path: build outside compute() to avoid holding the per-bucket
+        // lock during ChronicleMap.createPersistedTo() (mmap + bloat-factor
+        // sizing). See MapDb.openMap for the same pattern and rationale.
+        final SharedChronicleMap<String, V> fresh;
+        try {
+            final File file = new File(filePath);
+            final Class<V> valueClass = (Class<V>) averageValue.getClass();
+            final ChronicleMapBuilder<String, V> builder = ChronicleMapBuilder.of(String.class, valueClass)
+                    .maxBloatFactor(maxBloatFactor);
+            if (!file.exists()) {
+                builder.name(name).entries(entries).averageKeySize(averageKeySize).averageValue(averageValue);
+            }
+            final ChronicleMap<String, V> map = builder.createPersistedTo(file);
+            fresh = new SharedChronicleMap<>(map, filePath, name, entries, averageKeySize, averageValue,
+                    maxBloatFactor);
+        } catch (final InterProcessDeadLockException e) {
+            Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
+            return recoverFromDeadlock(name, entries, averageKeySize, averageValue, filePath, maxBloatFactor);
+        } catch (final IOException e) {
+            Logger.error("Failed to open ChronicleMap at [{}]", filePath);
+            throw new UncheckedIOException(e);
+        } catch (final RuntimeException e) {
+            if (hasDeadlockCause(e)) {
                 Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
                 return recoverFromDeadlock(name, entries, averageKeySize, averageValue, filePath, maxBloatFactor);
-            } catch (final IOException e) {
-                Logger.error("Failed to open ChronicleMap at [{}]", filePath);
-                throw new UncheckedIOException(e);
-            } catch (final RuntimeException e) {
-                // Check if wrapped exception is InterProcessDeadLockException
-                if (hasDeadlockCause(e)) {
-                    Logger.warn("InterProcessDeadLockException detected for [{}]. Attempting recovery...", filePath);
-                    return recoverFromDeadlock(name, entries, averageKeySize, averageValue, filePath, maxBloatFactor);
-                }
-                throw e;
             }
-        });
+            throw e;
+        }
 
-        return entry;
+        final SharedChronicleMap<String, V> winner = (SharedChronicleMap<String, V>) mapCache
+                .computeIfAbsent(filePath, k -> fresh);
+        if (winner != fresh) {
+            // Another thread put first — discard ours and retain the winner.
+            try {
+                fresh.map.close();
+            } catch (final Exception ignored) {
+            }
+            return winner.retain();
+        }
+        return fresh;
     }
 
     /**

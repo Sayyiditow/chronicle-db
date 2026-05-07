@@ -27,6 +27,7 @@ import org.mapdb.Serializer;
 import org.tinylog.Logger;
 
 import chronicle.db.entity.Search;
+import chronicle.db.utils.ChronicleUtils;
 
 /**
  * Service for managing MapDB-based key mappings and secondary indexes for
@@ -76,8 +77,14 @@ import chronicle.db.entity.Search;
  */
 public final class MapDb {
     public static final MapDb MAP_DB = new MapDb();
-    private static final ConcurrentMap<String, SharedKeyMap> mapCache = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, SharedIndexSet> treeCache = new ConcurrentHashMap<>();
+    // Initial bin count for the cache. KeiL opens many files; oversizing keeps
+    // hash-bucket collisions during compute*() calls statistically negligible.
+    // Override via -Dchronicle.cache.initialCapacity=N if your deployment opens
+    // significantly more or fewer files.
+    private static final int CACHE_INITIAL_CAPACITY = Integer.getInteger("chronicle.cache.initialCapacity", 1024);
+    private static final ConcurrentMap<String, SharedKeyMap> mapCache = new ConcurrentHashMap<>(CACHE_INITIAL_CAPACITY);
+    private static final ConcurrentMap<String, SharedIndexSet> treeCache = new ConcurrentHashMap<>(
+            CACHE_INITIAL_CAPACITY);
     private static final byte indexSep = 0x1F;
     private static final byte upperByte = (byte) 0xFF;
 
@@ -274,41 +281,55 @@ public final class MapDb {
         final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : minSize;
         final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
 
-        final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
-            if (existingEntry != null) {
-                return existingEntry.retain();
-            }
+        // Fast path: cached entry — retain under the per-bucket lock and return.
+        final SharedKeyMap cached = mapCache.computeIfPresent(filePath, (k, e) -> e.retain());
+        if (cached != null) {
+            return cached;
+        }
 
-            // Create a new entry
+        // Slow path: build the MapDB instance OUTSIDE the per-bucket lock. The
+        // mmap allocation can be multi-hundred-MB; holding compute() during it
+        // serializes unrelated openings on the same hash bucket and is the same
+        // structural shape as the historical ReplicationQueue.tailerCreationLock
+        // bug. Race is resolved with putIfAbsent — if another thread won, we
+        // close our just-built map and retain theirs.
+        final HTreeMap<byte[], KeyMapValue> map;
+        try {
+            map = DBMaker.fileDB(filePath)
+                    .allocateStartSize(allocSize)
+                    .allocateIncrement(allocSize)
+                    .closeOnJvmShutdown()
+                    .fileLockDisable()
+                    .fileMmapEnableIfSupported()
+                    .fileMmapPreclearDisable()
+                    .cleanerHackEnable()
+                    .concurrencyScale(Integer.getInteger("chronicle.keyMap.concurrencyScale", 16))
+                    .make()
+                    .hashMap("map")
+                    .keySerializer(Serializer.BYTE_ARRAY)
+                    .valueSerializer(KeyMapValue.KEY_MAP_VALUE_SERIALIZER)
+                    .createOrOpen();
+        } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
+                | DBException.WrongFormat | InternalError e) {
+            CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reinit
+            Logger.error("Reinitializing KeyMap at [{}]", filePath);
+            throw new RuntimeException(e);
+        } catch (final Exception e) {
+            Logger.error("Failed to open KeyMap at [{}]", filePath);
+            throw new RuntimeException(e);
+        }
+
+        final SharedKeyMap fresh = new SharedKeyMap(map, filePath);
+        final SharedKeyMap winner = mapCache.computeIfAbsent(filePath, k -> fresh);
+        if (winner != fresh) {
+            // Another thread put first — discard ours, retain the winner.
             try {
-                final HTreeMap<byte[], KeyMapValue> map = DBMaker.fileDB(filePath)
-                        .allocateStartSize(allocSize)
-                        .allocateIncrement(allocSize)
-                        .closeOnJvmShutdown()
-                        .fileLockDisable()
-                        .fileMmapEnableIfSupported()
-                        .fileMmapPreclearDisable()
-                        .cleanerHackEnable()
-                        .concurrencyScale(Integer.getInteger("chronicle.keyMap.concurrencyScale", 16))
-                        .make()
-                        .hashMap("map")
-                        .keySerializer(Serializer.BYTE_ARRAY)
-                        .valueSerializer(KeyMapValue.KEY_MAP_VALUE_SERIALIZER)
-                        .createOrOpen();
-
-                return new SharedKeyMap(map, filePath);
-            } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
-                    | DBException.WrongFormat | InternalError e) {
-                CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reinit
-                Logger.error("Reinitializing KeyMap at [{}]", filePath);
-                throw new RuntimeException(e);
-            } catch (final Exception e) {
-                Logger.error("Failed to open KeyMap at [{}]", filePath);
-                throw new RuntimeException(e);
+                map.close();
+            } catch (final Exception ignored) {
             }
-        });
-
-        return entry;
+            return winner.retain();
+        }
+        return fresh;
     }
 
     /**
@@ -360,41 +381,52 @@ public final class MapDb {
         final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : 512L * 1024 * 1024;
         final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
 
-        final var entry = treeCache.compute(filePath, (k, existingEntry) -> {
-            if (existingEntry != null) {
-                return existingEntry.retain();
-            }
+        // Fast path: cached entry — retain under the per-bucket lock and return.
+        final SharedIndexSet cached = treeCache.computeIfPresent(filePath, (k, e) -> e.retain());
+        if (cached != null) {
+            return cached;
+        }
 
-            // Create a new entry
+        // Slow path: build outside compute() — see openMap for rationale. mmap
+        // allocation here can be up to 1 GB; holding the per-bucket lock during
+        // that starves unrelated index openings on the same hash bucket.
+        final DB db;
+        final NavigableSet<byte[]> tree;
+        try {
+            db = DBMaker.fileDB(filePath)
+                    .allocateStartSize(allocSize)
+                    .allocateIncrement(allocSize)
+                    .closeOnJvmShutdown()
+                    .fileLockDisable()
+                    .fileMmapEnableIfSupported()
+                    .fileMmapPreclearDisable()
+                    .cleanerHackEnable()
+                    .concurrencyScale(Integer.getInteger("chronicle.indexes.concurrencyScale", 16))
+                    .make();
+            tree = db.treeSet("index")
+                    .serializer(Serializer.BYTE_ARRAY_DELTA)
+                    .maxNodeSize(Integer.getInteger("chronicle.indexes.nodeSize", 32))
+                    .createOrOpen();
+        } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
+                | DBException.WrongFormat | InternalError e) {
+            CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
+            Logger.error("Reinitializing Index at [{}]", filePath);
+            throw new RuntimeException(e);
+        } catch (final Exception e) {
+            Logger.error("Failed to open Index at [{}]", filePath);
+            throw new RuntimeException(e);
+        }
+
+        final SharedIndexSet fresh = new SharedIndexSet(db, tree, filePath);
+        final SharedIndexSet winner = treeCache.computeIfAbsent(filePath, k -> fresh);
+        if (winner != fresh) {
             try {
-                final var db = DBMaker.fileDB(filePath)
-                        .allocateStartSize(allocSize)
-                        .allocateIncrement(allocSize)
-                        .closeOnJvmShutdown()
-                        .fileLockDisable()
-                        .fileMmapEnableIfSupported()
-                        .fileMmapPreclearDisable()
-                        .cleanerHackEnable()
-                        .concurrencyScale(Integer.getInteger("chronicle.indexes.concurrencyScale", 16))
-                        .make();
-                final var tree = db.treeSet("index")
-                        .serializer(Serializer.BYTE_ARRAY_DELTA)
-                        .maxNodeSize(Integer.getInteger("chronicle.indexes.nodeSize", 32))
-                        .createOrOpen();
-
-                return new SharedIndexSet(db, tree, filePath);
-            } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
-                    | DBException.WrongFormat | InternalError e) {
-                CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
-                Logger.error("Reinitializing Index at [{}]", filePath);
-                throw new RuntimeException(e);
-            } catch (final Exception e) {
-                Logger.error("Failed to open Index at [{}]", filePath);
-                throw new RuntimeException(e);
+                db.close();
+            } catch (final Exception ignored) {
             }
-        });
-
-        return entry;
+            return winner.retain();
+        }
+        return fresh;
     }
 
     /**
