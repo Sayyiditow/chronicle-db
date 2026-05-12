@@ -443,14 +443,15 @@ public final class ChronicleDb {
         final SharedChronicleMap<String, V> winner = (SharedChronicleMap<String, V>) mapCache
                 .computeIfAbsent(filePath, k -> fresh);
         if (winner != fresh) {
-            // Another thread put first — discard ours and retain the winner.
-            try {
-                fresh.map.close();
-            } catch (final Exception ignored) {
-            }
+            // We lost. fresh is not stored. Let it get GC'd.
+            // MapDB shares the underlying instance so we can't close fresh.map.
+            // winner is in cache with refCount=1, retain for caller.
             return winner.retain();
         }
-        return fresh;
+
+        // We won. fresh is in cache with refCount=1.
+        // The cache holds 1 reference, the caller needs 1 too.
+        return fresh; // caller will close() when done
     }
 
     /**

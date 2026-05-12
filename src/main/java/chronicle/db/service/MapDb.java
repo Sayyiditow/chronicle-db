@@ -321,15 +321,17 @@ public final class MapDb {
 
         final SharedKeyMap fresh = new SharedKeyMap(map, filePath);
         final SharedKeyMap winner = mapCache.computeIfAbsent(filePath, k -> fresh);
+
         if (winner != fresh) {
-            // Another thread put first — discard ours, retain the winner.
-            try {
-                map.close();
-            } catch (final Exception ignored) {
-            }
+            // We lost. fresh is not stored. Let it get GC'd.
+            // MapDB shares the underlying instance so we can't close fresh.map.
+            // winner is in cache with refCount=1, retain for caller.
             return winner.retain();
         }
-        return fresh;
+
+        // We won. fresh is in cache with refCount=1.
+        // The cache holds 1 reference, the caller needs 1 too.
+        return fresh; // caller will close() when done
     }
 
     /**
@@ -419,14 +421,17 @@ public final class MapDb {
 
         final SharedIndexSet fresh = new SharedIndexSet(db, tree, filePath);
         final SharedIndexSet winner = treeCache.computeIfAbsent(filePath, k -> fresh);
+
         if (winner != fresh) {
-            try {
-                db.close();
-            } catch (final Exception ignored) {
-            }
+            // We lost. fresh is not stored. Let it get GC'd.
+            // MapDB shares the underlying instance so we can't close fresh.map.
+            // winner is in cache with refCount=1, retain for caller.
             return winner.retain();
         }
-        return fresh;
+
+        // We won. fresh is in cache with refCount=1.
+        // The cache holds 1 reference, the caller needs 1 too.
+        return fresh; // caller will close() when done
     }
 
     /**
