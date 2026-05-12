@@ -2,10 +2,8 @@ package chronicle.db.service;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
-import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.Collection;
 import java.util.HashMap;
@@ -477,13 +475,11 @@ public class ClientSocketService {
         // repeated reconnects must not grow the stack indefinitely.
         while (true) {
             final var pooledSocket = borrowSocket();
-            boolean requestSent = false;
             try {
                 final var data = ForySerializer.serialize(queryMap);
                 pooledSocket.dos.writeInt(data.length);
                 pooledSocket.dos.write(data);
                 pooledSocket.dos.flush();
-                requestSent = true;
 
                 final int length = pooledSocket.dis.readInt();
                 final byte[] disData = new byte[length];
@@ -517,41 +513,16 @@ public class ClientSocketService {
                     returnSocket(pooledSocket);
                     return null;
                 }
-            } catch (final EOFException eofException) {
-                renewSocket(pooledSocket);
-                if (requestSent) {
-                    Logger.warn("Server [{}:{}] closed connection after request was sent — not retrying to avoid "
-                            + "duplicate work. Query: [{}]", dbUrl, dbPort, summarize(queryMap));
-                    return null;
-                }
-                Logger.info("Server [{}:{}] closed idle connection (EOF). Renewing socket and retrying. Query: [{}]",
-                        dbUrl, dbPort, summarize(queryMap));
-                continue;
             } catch (final SocketTimeoutException e) {
-                Logger.warn("SocketTimeoutException: {}. Renewing socket. Query: [{}]", e.getMessage(),
-                        summarize(queryMap));
+                Logger.warn("SocketTimeoutException. Renewing socket. Query: [{}]", summarize(queryMap));
+                Logger.error(e);
                 renewSocket(pooledSocket);
                 return null;
-            } catch (final SocketException e) {
-                renewSocket(pooledSocket);
-                if (requestSent) {
-                    Logger.warn("SocketException after request was sent: {}. Not retrying — request may already be "
-                            + "processing on the server. Query: [{}]", e.getMessage(), summarize(queryMap));
-                    return null;
-                }
-                Logger.warn("SocketException: {}. Renewing socket and retrying. Query: [{}]",
-                        e.getMessage(), summarize(queryMap));
-                continue;
             } catch (final IOException e) {
+                Logger.warn("Connection broken. Refreshing pool and retrying. Query: [{}]", summarize(queryMap));
+                Logger.error(e);
                 renewSocket(pooledSocket);
-                if (requestSent) {
-                    Logger.error("IOException after request was sent: {}. Not retrying. Query: [{}]", e.getMessage(),
-                            summarize(queryMap));
-                    return null;
-                }
-                Logger.error("IOException: {}. Renewing socket and retrying. Query: [{}]",
-                        e.getMessage(), summarize(queryMap));
-                continue;
+                continue; // Server might have died — retry
             }
         }
     }
@@ -562,12 +533,10 @@ public class ClientSocketService {
         // and reconnect bursts must not grow the stack.
         while (true) {
             final var pooledSocket = borrowSocket();
-            boolean requestSent = false;
             try {
                 pooledSocket.dos.writeInt(data.length);
                 pooledSocket.dos.write(data);
                 pooledSocket.dos.flush();
-                requestSent = true;
 
                 final int length = pooledSocket.dis.readInt();
                 final byte[] disData = new byte[length];
@@ -601,40 +570,15 @@ public class ClientSocketService {
                     returnSocket(pooledSocket);
                     return null;
                 }
-            } catch (final EOFException eofException) {
-                renewSocket(pooledSocket);
-                if (requestSent) {
-                    Logger.warn("Server [{}:{}] closed connection after request was sent — not retrying to avoid "
-                            + "duplicate work. Payload: [{} bytes]", dbUrl, dbPort, data.length);
-                    return null;
-                }
-                Logger.info("Server [{}:{}] closed idle connection (EOF). Renewing socket and retrying. "
-                        + "Payload: [{} bytes]", dbUrl, dbPort, data.length);
-                continue;
             } catch (final SocketTimeoutException e) {
-                Logger.warn("SocketTimeoutException: {}. Renewing socket. Payload: [{} bytes]", e.getMessage(),
-                        data.length);
+                Logger.warn("SocketTimeoutException. Renewing socket. Payload: [{} bytes]", data.length);
+                Logger.error(e);
                 renewSocket(pooledSocket);
                 return null;
-            } catch (final SocketException e) {
-                renewSocket(pooledSocket);
-                if (requestSent) {
-                    Logger.warn("SocketException after request was sent: {}. Not retrying — request may already be "
-                            + "processing on the server. Payload: [{} bytes]", e.getMessage(), data.length);
-                    return null;
-                }
-                Logger.warn("SocketException: {}. Renewing socket and retrying. "
-                        + "Payload: [{} bytes]", e.getMessage(), data.length);
-                continue;
             } catch (final IOException e) {
+                Logger.error("IOException. Renewing socket and retrying. Payload: [{} bytes]", data.length);
+                Logger.error(e);
                 renewSocket(pooledSocket);
-                if (requestSent) {
-                    Logger.error("IOException after request was sent: {}. Not retrying. Payload: [{} bytes]",
-                            e.getMessage(), data.length);
-                    return null;
-                }
-                Logger.error("IOException: {}. Renewing socket and retrying. "
-                        + "Payload: [{} bytes]", e.getMessage(), data.length);
                 continue;
             }
         }
