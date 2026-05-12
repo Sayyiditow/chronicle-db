@@ -519,7 +519,7 @@ public class ClientSocketService {
                 renewSocket(pooledSocket);
                 return null;
             } catch (final IOException e) {
-                Logger.warn("Connection broken. Refreshing pool and retrying. Query: [{}]", summarize(queryMap));
+                Logger.warn("IOException. Refreshing pool and retrying. Query: [{}]", summarize(queryMap));
                 Logger.error(e);
                 renewSocket(pooledSocket);
                 continue; // Server might have died — retry
