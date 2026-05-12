@@ -281,57 +281,41 @@ public final class MapDb {
         final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : minSize;
         final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
 
-        // Fast path: cached entry — retain under the per-bucket lock and return.
-        final SharedKeyMap cached = mapCache.computeIfPresent(filePath, (k, e) -> e.retain());
-        if (cached != null) {
-            return cached;
-        }
+        final var entry = mapCache.compute(filePath, (k, existingEntry) -> {
+            if (existingEntry != null) {
+                return existingEntry.retain();
+            }
 
-        // Slow path: build the MapDB instance OUTSIDE the per-bucket lock. The
-        // mmap allocation can be multi-hundred-MB; holding compute() during it
-        // serializes unrelated openings on the same hash bucket and is the same
-        // structural shape as the historical ReplicationQueue.tailerCreationLock
-        // bug. Race is resolved with putIfAbsent — if another thread won, we
-        // close our just-built map and retain theirs.
-        final HTreeMap<byte[], KeyMapValue> map;
-        try {
-            map = DBMaker.fileDB(filePath)
-                    .allocateStartSize(allocSize)
-                    .allocateIncrement(allocSize)
-                    .closeOnJvmShutdown()
-                    .fileLockDisable()
-                    .fileMmapEnableIfSupported()
-                    .fileMmapPreclearDisable()
-                    .cleanerHackEnable()
-                    .concurrencyScale(Integer.getInteger("chronicle.keyMap.concurrencyScale", 16))
-                    .make()
-                    .hashMap("map")
-                    .keySerializer(Serializer.BYTE_ARRAY)
-                    .valueSerializer(KeyMapValue.KEY_MAP_VALUE_SERIALIZER)
-                    .createOrOpen();
-        } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
-                | DBException.WrongFormat | InternalError e) {
-            CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reinit
-            Logger.error("Reinitializing KeyMap at [{}]", filePath);
-            throw new RuntimeException(e);
-        } catch (final Exception e) {
-            Logger.error("Failed to open KeyMap at [{}]", filePath);
-            throw new RuntimeException(e);
-        }
+            // Create a new entry
+            try {
+                final HTreeMap<byte[], KeyMapValue> map = DBMaker.fileDB(filePath)
+                        .allocateStartSize(allocSize)
+                        .allocateIncrement(allocSize)
+                        .closeOnJvmShutdown()
+                        .fileLockDisable()
+                        .fileMmapEnableIfSupported()
+                        .fileMmapPreclearDisable()
+                        .cleanerHackEnable()
+                        .concurrencyScale(Integer.getInteger("chronicle.keyMap.concurrencyScale", 16))
+                        .make()
+                        .hashMap("map")
+                        .keySerializer(Serializer.BYTE_ARRAY)
+                        .valueSerializer(KeyMapValue.KEY_MAP_VALUE_SERIALIZER)
+                        .createOrOpen();
 
-        final SharedKeyMap fresh = new SharedKeyMap(map, filePath);
-        final SharedKeyMap winner = mapCache.computeIfAbsent(filePath, k -> fresh);
+                return new SharedKeyMap(map, filePath);
+            } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
+                    | DBException.WrongFormat | InternalError e) {
+                CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reinit
+                Logger.error("Reinitializing KeyMap at [{}]", filePath);
+                throw new RuntimeException(e);
+            } catch (final Exception e) {
+                Logger.error("Failed to open KeyMap at [{}]", filePath);
+                throw new RuntimeException(e);
+            }
+        });
 
-        if (winner != fresh) {
-            // We lost. fresh is not stored. Let it get GC'd.
-            // MapDB shares the underlying instance so we can't close fresh.map.
-            // winner is in cache with refCount=1, retain for caller.
-            return winner.retain();
-        }
-
-        // We won. fresh is in cache with refCount=1.
-        // The cache holds 1 reference, the caller needs 1 too.
-        return fresh; // caller will close() when done
+        return entry;
     }
 
     /**
@@ -383,55 +367,41 @@ public final class MapDb {
         final long calculatedSize = expectedEntries > 0 ? expectedEntries * bytesPerEntry : 512L * 1024 * 1024;
         final long allocSize = Math.max(minSize, Math.min(maxSize, calculatedSize));
 
-        // Fast path: cached entry — retain under the per-bucket lock and return.
-        final SharedIndexSet cached = treeCache.computeIfPresent(filePath, (k, e) -> e.retain());
-        if (cached != null) {
-            return cached;
-        }
+        final var entry = treeCache.compute(filePath, (k, existingEntry) -> {
+            if (existingEntry != null) {
+                return existingEntry.retain();
+            }
 
-        // Slow path: build outside compute() — see openMap for rationale. mmap
-        // allocation here can be up to 1 GB; holding the per-bucket lock during
-        // that starves unrelated index openings on the same hash bucket.
-        final DB db;
-        final NavigableSet<byte[]> tree;
-        try {
-            db = DBMaker.fileDB(filePath)
-                    .allocateStartSize(allocSize)
-                    .allocateIncrement(allocSize)
-                    .closeOnJvmShutdown()
-                    .fileLockDisable()
-                    .fileMmapEnableIfSupported()
-                    .fileMmapPreclearDisable()
-                    .cleanerHackEnable()
-                    .concurrencyScale(Integer.getInteger("chronicle.indexes.concurrencyScale", 16))
-                    .make();
-            tree = db.treeSet("index")
-                    .serializer(Serializer.BYTE_ARRAY_DELTA)
-                    .maxNodeSize(Integer.getInteger("chronicle.indexes.nodeSize", 32))
-                    .createOrOpen();
-        } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
-                | DBException.WrongFormat | InternalError e) {
-            CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
-            Logger.error("Reinitializing Index at [{}]", filePath);
-            throw new RuntimeException(e);
-        } catch (final Exception e) {
-            Logger.error("Failed to open Index at [{}]", filePath);
-            throw new RuntimeException(e);
-        }
+            // Create a new entry
+            try {
+                final var db = DBMaker.fileDB(filePath)
+                        .allocateStartSize(allocSize)
+                        .allocateIncrement(allocSize)
+                        .closeOnJvmShutdown()
+                        .fileLockDisable()
+                        .fileMmapEnableIfSupported()
+                        .fileMmapPreclearDisable()
+                        .cleanerHackEnable()
+                        .concurrencyScale(Integer.getInteger("chronicle.indexes.concurrencyScale", 16))
+                        .make();
+                final var tree = db.treeSet("index")
+                        .serializer(Serializer.BYTE_ARRAY_DELTA)
+                        .maxNodeSize(Integer.getInteger("chronicle.indexes.nodeSize", 32))
+                        .createOrOpen();
 
-        final SharedIndexSet fresh = new SharedIndexSet(db, tree, filePath);
-        final SharedIndexSet winner = treeCache.computeIfAbsent(filePath, k -> fresh);
+                return new SharedIndexSet(db, tree, filePath);
+            } catch (final DBException.DataCorruption | DBException.VolumeEOF | NegativeArraySizeException
+                    | DBException.WrongFormat | InternalError e) {
+                CHRONICLE_UTILS.deleteFileIfExists(filePath); // let it reindex
+                Logger.error("Reinitializing Index at [{}]", filePath);
+                throw new RuntimeException(e);
+            } catch (final Exception e) {
+                Logger.error("Failed to open Index at [{}]", filePath);
+                throw new RuntimeException(e);
+            }
+        });
 
-        if (winner != fresh) {
-            // We lost. fresh is not stored. Let it get GC'd.
-            // MapDB shares the underlying instance so we can't close fresh.map.
-            // winner is in cache with refCount=1, retain for caller.
-            return winner.retain();
-        }
-
-        // We won. fresh is in cache with refCount=1.
-        // The cache holds 1 reference, the caller needs 1 too.
-        return fresh; // caller will close() when done
+        return entry;
     }
 
     /**
