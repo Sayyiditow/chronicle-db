@@ -515,12 +515,10 @@ public class ClientSocketService {
                 }
             } catch (final SocketTimeoutException e) {
                 Logger.warn("SocketTimeoutException. Renewing socket. Query: [{}]", summarize(queryMap));
-                Logger.error(e.getMessage());
                 renewSocket(pooledSocket);
                 return null;
             } catch (final IOException e) {
                 Logger.warn("IOException. Refreshing pool and retrying. Query: [{}]", summarize(queryMap));
-                Logger.error(e.getMessage());
                 renewSocket(pooledSocket);
                 continue; // Server might have died — retry
             }
@@ -572,12 +570,10 @@ public class ClientSocketService {
                 }
             } catch (final SocketTimeoutException e) {
                 Logger.warn("SocketTimeoutException. Renewing socket. Payload: [{} bytes]", data.length);
-                Logger.error(e.getMessage());
                 renewSocket(pooledSocket);
                 return null;
             } catch (final IOException e) {
                 Logger.error("IOException. Renewing socket and retrying. Payload: [{} bytes]", data.length);
-                Logger.error(e.getMessage());
                 renewSocket(pooledSocket);
                 continue;
             }
