@@ -237,7 +237,7 @@ public class Server {
                     (Gauge<Integer>) ChronicleDao.IN_FLIGHT_WRITES::get);
             metricRegistry.register("process.cpuLoad", (Gauge<Double>) () -> {
                 final var bean = ManagementFactory.getOperatingSystemMXBean();
-                return bean instanceof com.sun.management.OperatingSystemMXBean sun
+                return bean instanceof final com.sun.management.OperatingSystemMXBean sun
                         ? sun.getProcessCpuLoad()
                         : -1.0;
             });
@@ -979,7 +979,11 @@ public class Server {
             // block new requests at server level
             upgrading = true;
 
-            // wait for in-flight writes to complete
+            // Drain in-flight writes, but cap the wait. If the counter is
+            // stuck (e.g. a worker thread died before decrementing), an
+            // unbounded loop here makes the JVM ignore SIGTERM and forces
+            // the operator to SIGKILL.
+            final long drainDeadline = System.currentTimeMillis() + 30_000;
             int inFlight = ChronicleDao.IN_FLIGHT_WRITES.get();
             if (inFlight > 0) {
                 try {
@@ -987,13 +991,20 @@ public class Server {
                 } catch (final IOException e) {
                 }
             }
-            while (inFlight > 0) {
+            while (inFlight > 0 && System.currentTimeMillis() < drainDeadline) {
                 try {
                     Thread.sleep(50);
                 } catch (final InterruptedException e) {
                     break;
                 }
                 inFlight = ChronicleDao.IN_FLIGHT_WRITES.get();
+            }
+            if (inFlight > 0) {
+                try {
+                    Files.writeString(infoLogPath,
+                            "WARN: Shutdown drain timed out with [" + inFlight + "] in-flight writes pending.\n");
+                } catch (final IOException e) {
+                }
             }
 
             // close replication queue
@@ -1085,8 +1096,8 @@ public class Server {
 
                     activeThreads.add(thread);
                     thread.start();
-                } catch (final IOException e) {
-                    Logger.error("Error accepting connection: {}", e.getMessage());
+                } catch (final Throwable t) {
+                    Logger.error(t, "Error accepting/dispatching connection. Loop will continue.");
                 }
             }
         }
