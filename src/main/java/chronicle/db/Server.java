@@ -26,6 +26,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -36,7 +37,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -115,6 +118,43 @@ public class Server {
     private static final int batchSizeMedium = Integer.getInteger("chronicle.db.batchSizeMedium", 20_000);
     private static final int batchSizeLarge = Integer.getInteger("chronicle.db.batchSizeLarge", 50_000);
     private static final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
+    // Query modes that materialize result sets in heap. We gate these with a
+    // semaphore so concurrent heavy queries can't collectively OOM the JVM —
+    // each individual query is still bounded by HARD_LIMIT, but N concurrent
+    // copies of a fat result set are not. New requests beyond the cap queue
+    // up; if the wait exceeds the acquire timeout they fail fast with 503.
+    private static final EnumSet<QueryMode> HEAVY_QUERY_MODES = EnumSet.of(
+            QueryMode.GET_SUBSET, QueryMode.GET_SUBSET_JSON,
+            QueryMode.GET_ALL, QueryMode.GET_ALL_JSON,
+            QueryMode.GET_ALL_CSV, QueryMode.GET_ALL_CSV_JSON,
+            QueryMode.GET_ALL_SUBSET, QueryMode.GET_ALL_SUBSET_JSON,
+            QueryMode.GET_ALL_SUBSET_CSV, QueryMode.GET_ALL_SUBSET_CSV_JSON,
+            QueryMode.FETCH, QueryMode.FETCH_JSON,
+            QueryMode.FETCH_CSV, QueryMode.FETCH_CSV_JSON,
+            QueryMode.FETCH_SUBSET, QueryMode.FETCH_SUBSET_JSON,
+            QueryMode.FETCH_SUBSET_CSV, QueryMode.FETCH_SUBSET_CSV_JSON,
+            QueryMode.FETCH_KEYS, QueryMode.FETCH_KEYS_LIST,
+            QueryMode.SEARCH, QueryMode.SEARCH_JSON,
+            QueryMode.SEARCH_CSV, QueryMode.SEARCH_CSV_JSON,
+            QueryMode.SEARCH_KEYS, QueryMode.SEARCH_KEYS_LIST,
+            QueryMode.SEARCH_SUBSET, QueryMode.SEARCH_SUBSET_JSON,
+            QueryMode.SEARCH_SUBSET_CSV, QueryMode.SEARCH_SUBSET_CSV_JSON,
+            QueryMode.SEARCH_NON_INDEXED, QueryMode.SEARCH_NON_INDEXED_KEYS,
+            QueryMode.SEARCH_NON_INDEXED_KEYS_LIST,
+            QueryMode.SEARCH_INDEXED, QueryMode.SEARCH_INDEXED_KEYS,
+            QueryMode.SEARCH_INDEXED_KEYS_LIST,
+            QueryMode.GET_FILES);
+    // Scale with the box: nproc capped at [4, 32]. Floor of 4 keeps dev/small
+    // boxes responsive; ceiling of 32 prevents pathological concurrency on
+    // very wide hosts where the heap can't absorb that many concurrent
+    // materializations even if CPU could. Override with the system property
+    // when a deployment needs something specific.
+    private static final int HEAVY_QUERY_PERMITS = Integer.getInteger("chronicle.query.maxConcurrentHeavy",
+            Math.max(4, Math.min(Runtime.getRuntime().availableProcessors(), 32)));
+    private static final Semaphore HEAVY_QUERY_GATE = new Semaphore(HEAVY_QUERY_PERMITS, true);
+    private static final long HEAVY_QUERY_ACQUIRE_TIMEOUT_MS = Long.getLong("chronicle.query.acquireHeavyTimeoutMs",
+            30_000);
 
     static {
         final var properties = loadProperties();
@@ -532,6 +572,23 @@ public class Server {
     private static Object executeRequest(final Map<String, Object> params, final ReplicationQueue queue)
             throws Throwable {
         final var queryMode = (QueryMode) params.get("mode");
+        final boolean heavy = HEAVY_QUERY_MODES.contains(queryMode);
+        if (heavy && !HEAVY_QUERY_GATE.tryAcquire(HEAVY_QUERY_ACQUIRE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            throw new RejectedExecutionException(
+                    "Server busy: too many concurrent heavy queries (mode [" + queryMode
+                            + "], dbDir [" + params.get("dbDir") + "]). Retry shortly.");
+        }
+        try {
+            return dispatch(params, queue, queryMode);
+        } finally {
+            if (heavy) {
+                HEAVY_QUERY_GATE.release();
+            }
+        }
+    }
+
+    private static Object dispatch(final Map<String, Object> params, final ReplicationQueue queue,
+            final QueryMode queryMode) throws Throwable {
         return switch (queryMode) {
             // get
             case GET -> GetService.get(params);
@@ -907,6 +964,13 @@ public class Server {
             responseMap.put("status", "200");
             responseMap.put("response", response);
             respond(responseMap, dataSocket);
+        } catch (final RejectedExecutionException e) {
+            // Heavy-query gate timed out. Surface as 503 so ClientSocketService's
+            // 503 retry loop transparently waits for capacity instead of failing
+            // the caller with a hard 500.
+            Logger.warn("Heavy query rejected. Mode [{}], DB [{}]: {}",
+                    params.get("mode"), params.get("dbDir"), e.getMessage());
+            respond(Map.of("status", "503", "error", e.getMessage()), dataSocket);
         } catch (final Throwable e) {
             Logger.error("Error executing request. Mode [{}], DB [{}]",
                     params.get("mode"), params.get("dbDir"));
@@ -919,6 +983,9 @@ public class Server {
     public static void main(final String[] args) throws Throwable {
         // Write procId to disk
         CHRONICLE_UTILS.logProcessId(processId);
+
+        Logger.info("Heavy query gate: [{}] concurrent permits, [{}]ms acquire timeout.",
+                HEAVY_QUERY_PERMITS, HEAVY_QUERY_ACQUIRE_TIMEOUT_MS);
 
         // Start the metrics endpoint early so JVM stats are available before heavy
         // init.
