@@ -385,10 +385,18 @@ public final class ChronicleDb {
          */
         @Override
         public void close() {
-            if (refCount.decrementAndGet() == 0) {
-                map.close();
-                mapCache.computeIfPresent(filePath, (k, e) -> e == this ? null : e);
-            }
+            // Decrement under the cache lock for this key so it is atomic with
+            // open()/retain(): a concurrent opener must not be able to resurrect
+            // this entry between the count reaching 0 and the map being closed.
+            // Use compute (not computeIfPresent) so an already soft-evicted entry
+            // still closes when its last reference is released.
+            mapCache.compute(filePath, (k, e) -> {
+                if (refCount.decrementAndGet() == 0) {
+                    map.close();
+                    return e == this ? null : e;
+                }
+                return e;
+            });
         }
     }
 

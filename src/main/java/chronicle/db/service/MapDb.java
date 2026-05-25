@@ -203,10 +203,18 @@ public final class MapDb {
          */
         @Override
         public void close() {
-            if (refCount.decrementAndGet() == 0) {
-                map.close();
-                mapCache.computeIfPresent(filePath, (k, e) -> e == this ? null : e);
-            }
+            // Decrement under the cache lock for this key so it is atomic with
+            // open()/retain(): a concurrent opener must not be able to resurrect
+            // this entry between the count reaching 0 and the store being closed.
+            // Use compute (not computeIfPresent) so an already soft-evicted entry
+            // still closes when its last reference is released.
+            mapCache.compute(filePath, (k, e) -> {
+                if (refCount.decrementAndGet() == 0) {
+                    map.close();
+                    return e == this ? null : e;
+                }
+                return e;
+            });
         }
     }
 
@@ -258,12 +266,15 @@ public final class MapDb {
          */
         @Override
         public void close() {
-            treeCache.computeIfPresent(filePath, (k, entry) -> {
-                if (entry.refCount.decrementAndGet() == 0) {
-                    entry.db.close();
-                    return null;
+            // Operate on this instance's refCount under the cache lock so close is
+            // atomic with open()/retain() and survives a soft-evict (compute runs
+            // the remap even when the key is already absent).
+            treeCache.compute(filePath, (k, e) -> {
+                if (refCount.decrementAndGet() == 0) {
+                    db.close();
+                    return e == this ? null : e;
                 }
-                return entry; // Keep the entry
+                return e;
             });
         }
     }
