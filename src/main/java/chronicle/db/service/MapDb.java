@@ -193,16 +193,20 @@ public final class MapDb {
 
         /**
          * Decrements the reference count and closes the map if no references remain.
+         * <p>
+         * Operates on the instance's own {@code refCount} so it works correctly
+         * even after this entry has been soft-evicted from {@link MapDb#mapCache}.
+         * After closing, best-effort removes the cache entry if it still refers
+         * to this instance (a future soft-evict + later close would otherwise
+         * leave a stale entry referencing a closed map).
+         * </p>
          */
         @Override
         public void close() {
-            mapCache.computeIfPresent(filePath, (k, entry) -> {
-                if (entry.refCount.decrementAndGet() == 0) {
-                    entry.map.close();
-                    return null;
-                }
-                return entry; // Keep the entry
-            });
+            if (refCount.decrementAndGet() == 0) {
+                map.close();
+                mapCache.computeIfPresent(filePath, (k, e) -> e == this ? null : e);
+            }
         }
     }
 
@@ -334,6 +338,27 @@ public final class MapDb {
             Logger.debug("Closed KeyMap at [{}]", filePath);
             return null;
         });
+    }
+
+    /**
+     * Soft-evict: removes the cache entry without closing the underlying map.
+     * <p>
+     * Concurrent holders of {@link SharedKeyMap} references continue to operate
+     * against the existing map. When the last holder calls
+     * {@link SharedKeyMap#close()}
+     * the map closes naturally via reference counting. Subsequent
+     * {@link #openMap(String)} calls miss the cache and load the file at this
+     * path fresh from disk.
+     * </p>
+     * <p>
+     * Use when the file at this path is about to be replaced (e.g. via an atomic
+     * file rename) and new openers must see the new file. A destructive
+     * {@link #closeMap(String)} would break any concurrent reader mid-op.
+     * </p>
+     */
+    public void evict(final String filePath) {
+        mapCache.remove(filePath);
+        Logger.debug("Evicted KeyMap cache for [{}]", filePath);
     }
 
     /**

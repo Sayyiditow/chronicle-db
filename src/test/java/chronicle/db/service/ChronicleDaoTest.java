@@ -7,8 +7,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,6 +75,9 @@ public class ChronicleDaoTest {
     @Test
     @Order(2)
     void singleFile_size() {
+        // Ensure idempotent across runs: drop the key if it was inserted by a
+        // prior run, otherwise put() upserts and size stays unchanged.
+        singleFileDao.delete("single-size-test");
         final int initialSize = singleFileDao.size();
 
         singleFileDao.put("single-size-test", createLead("SizeTest", "size@test.com"));
@@ -366,6 +373,8 @@ public class ChronicleDaoTest {
     @Test
     @Order(28)
     void multiFile_size() {
+        // Ensure idempotent across runs (see singleFile_size).
+        multiFileDao.delete("multi-size-check");
         final int size = multiFileDao.size();
         assertTrue(size > 0);
 
@@ -710,5 +719,131 @@ public class ChronicleDaoTest {
 
         assertEquals(PutStatus.FAILED, result);
         assertNull(singleFileDao.get(key));
+    }
+
+    // ==================== VACUUM ====================
+
+    private static final String VACUUM_DAO = "chronicle.db.service.VacuumTestDao";
+    private static final String VACUUM_PATH = "src/test/.data/vacuum/";
+
+    private static void deleteDirRecursive(final Path path) throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+        try (final var stream = Files.walk(path)) {
+            stream.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.delete(p);
+                } catch (final IOException ignored) {
+                }
+            });
+        }
+    }
+
+    /**
+     * Vacuum scenario: 5 rotated files, then deletes half of data-2 (sparse),
+     * half of data-3 (sparse), and 5% of data-4 (dense). Verifies:
+     * <ul>
+     * <li>data-2 and data-3 records get repacked into one new file at slot 2
+     * (lowest sparse slot, since max-N=5 is dense and untouched)</li>
+     * <li>data-3 slot becomes a gap</li>
+     * <li>dense files (data, data-4, data-5) keep their original suffixes</li>
+     * <li>all surviving records remain retrievable by key</li>
+     * <li>deleted records stay deleted</li>
+     * <li>indexed search still finds moved records (indexes weren't rebuilt
+     * but remain valid because record values didn't change)</li>
+     * </ul>
+     */
+    @Test
+    @Order(90)
+    void vacuum_partialCompaction() throws Throwable {
+        // Fresh data dir so test is fully reproducible.
+        deleteDirRecursive(Path.of(VACUUM_PATH));
+
+        final ChronicleDao<Lead> dao = CHRONICLE_DB.getChronicleDao(VACUUM_DAO, VACUUM_PATH);
+
+        // Insert exactly 500 records (entries() = 100 → produces 5 rotated files).
+        // Batched so rotation happens during insert, like production traffic.
+        for (int batchStart = 0; batchStart < 500; batchStart += 50) {
+            final Map<String, Lead> batch = new HashMap<>();
+            for (int i = batchStart + 1; i <= batchStart + 50; i++) {
+                batch.put("vac-" + i, createLead("Vac" + i, "vac" + i + "@test.com"));
+            }
+            dao.put(batch);
+        }
+        assertEquals(500, dao.size());
+        final var preFiles = dao.getDataFileState().fileNames();
+        assertEquals(5, preFiles.size(), "Expected 5 rotated files; got " + preFiles);
+        assertTrue(preFiles.containsAll(Set.of("data", "data-2", "data-3", "data-4", "data-5")));
+
+        // Delete to produce: data unchanged (dense), data-2 50% (sparse),
+        // data-3 50% (sparse), data-4 95% (dense), data-5 unchanged (dense).
+        // Record-to-file mapping is deterministic because put(Map) inserts
+        // sequentially across the rotation boundary: vac-1..100 → data,
+        // vac-101..200 → data-2, vac-201..300 → data-3, vac-301..400 → data-4,
+        // vac-401..500 → data-5. We delete from each file's key range.
+        for (int i = 101; i <= 150; i++) {
+            dao.delete("vac-" + i);
+        }
+        for (int i = 201; i <= 250; i++) {
+            dao.delete("vac-" + i);
+        }
+        for (int i = 301; i <= 305; i++) {
+            dao.delete("vac-" + i);
+        }
+        assertEquals(500 - 50 - 50 - 5, dao.size());
+
+        // Run vacuum.
+        dao.vacuum();
+
+        // Post-vacuum: data (dense, untouched), data-2 (new packed of 100
+        // sparse survivors), data-4 (dense, untouched), data-5 (dense,
+        // untouched). data-3 slot becomes a gap. So 4 files total.
+        final var postFiles = dao.getDataFileState().fileNames();
+        assertEquals(4, postFiles.size(), "Expected 4 files after vacuum; got " + postFiles);
+        assertTrue(postFiles.contains("data"));
+        assertTrue(postFiles.contains("data-2"));
+        assertFalse(postFiles.contains("data-3"), "data-3 should be a gap");
+        assertTrue(postFiles.contains("data-4"));
+        assertTrue(postFiles.contains("data-5"));
+
+        // Total size unchanged after vacuum.
+        assertEquals(500 - 50 - 50 - 5, dao.size());
+
+        // All surviving records retrievable.
+        for (int i = 1; i <= 100; i++) {
+            assertNotNull(dao.get("vac-" + i), "vac-" + i + " should be retrievable (was in data)");
+        }
+        for (int i = 151; i <= 200; i++) {
+            assertNotNull(dao.get("vac-" + i), "vac-" + i + " should be retrievable (moved from data-2)");
+        }
+        for (int i = 251; i <= 300; i++) {
+            assertNotNull(dao.get("vac-" + i), "vac-" + i + " should be retrievable (moved from data-3)");
+        }
+        for (int i = 306; i <= 400; i++) {
+            assertNotNull(dao.get("vac-" + i), "vac-" + i + " should be retrievable (was in data-4)");
+        }
+        for (int i = 401; i <= 500; i++) {
+            assertNotNull(dao.get("vac-" + i), "vac-" + i + " should be retrievable (was in data-5)");
+        }
+
+        // Deleted records remain deleted.
+        for (int i = 101; i <= 150; i++) {
+            assertNull(dao.get("vac-" + i), "vac-" + i + " should still be deleted");
+        }
+        for (int i = 201; i <= 250; i++) {
+            assertNull(dao.get("vac-" + i), "vac-" + i + " should still be deleted");
+        }
+        for (int i = 301; i <= 305; i++) {
+            assertNull(dao.get("vac-" + i), "vac-" + i + " should still be deleted");
+        }
+
+        // Indexed search still works for a record that was moved across files
+        // (validates that the index entries — never rebuilt during vacuum —
+        // remain correct because the record value didn't change).
+        final var movedKeyResults = dao.multiSearch(
+                List.of(new Search("fullName", SearchType.EQUAL, "Vac180")));
+        assertTrue(movedKeyResults.containsKey("vac-180"),
+                "Indexed search should find moved record 'vac-180'");
     }
 }

@@ -14,6 +14,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -179,10 +180,59 @@ public interface ChronicleDao<V> {
             DATA_FILE = "data", LOCKED_FILE = "locked-", RECOVER_FILE = "recovery", ENTRY_SIZE_FILE = "entrySize",
             KEY_FILE = "keys";
     String[] DB_DIRS = { DATA_DIR, INDEX_DIR, FILES_DIR, BACKUP_DIR };
+
+    // Vacuum staging — transient. Created on-demand by vacuum(), cleaned up by
+    // it on completion. createDataDirs() also cleans residue from a crashed
+    // previous run on DAO startup.
+    String STAGING_DIR = "/staging/";
+    String STAGING_DATA_SUBDIR = "/staging/data/";
+    String STAGING_COMMITTED_MARKER = ".committed";
+    String STAGING_EVICTED_MANIFEST = "evicted.txt";
     int HARD_LIMIT = Integer.getInteger("chronicle.search.hardLimit", 100_000);
     String RECOVERY_MODE_PROPERTY = "chronicle.recovery.mode";
     boolean IN_RECOVERY = Boolean.getBoolean(RECOVERY_MODE_PROPERTY);
     AtomicInteger IN_FLIGHT_WRITES = new AtomicInteger(0);
+
+    /**
+     * Parses the numeric suffix of a data file name. The first file is named
+     * {@code "data"} (treated as suffix 1); subsequent files are
+     * {@code "data-2"}, {@code "data-3"}, etc. Used for gap-tolerant naming
+     * (vacuum may delete files from the middle of the sequence, so file count
+     * is unreliable as a proxy for max suffix).
+     */
+    private static int suffixOf(final String fileName) {
+        if (DATA_FILE.equals(fileName)) {
+            return 1;
+        }
+        final int dash = fileName.lastIndexOf('-');
+        return dash < 0 ? 1 : Integer.parseInt(fileName.substring(dash + 1));
+    }
+
+    /** Returns the highest data-file suffix in the given set, or 0 if empty. */
+    private static int maxSuffixOf(final Set<String> fileNames) {
+        return fileNames.stream().mapToInt(ChronicleDao::suffixOf).max().orElse(0);
+    }
+
+    /** Inverse of {@link #suffixOf}: suffix 1 → "data"; suffix N → "data-N". */
+    private static String nameForSuffix(final int suffix) {
+        return suffix <= 1 ? DATA_FILE : DATA_FILE + "-" + suffix;
+    }
+
+    /** Recursively deletes a directory and all its contents. No-op if missing. */
+    private static void deleteDirRecursive(final Path path) throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+        try (final var stream = Files.walk(path)) {
+            stream.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.delete(p);
+                } catch (final IOException e) {
+                    Logger.warn("Failed to delete [{}] during staging cleanup: {}", p, e.getMessage());
+                }
+            });
+        }
+    }
 
     /**
      * Returns the name of this DAO for logging and identification purposes.
@@ -506,6 +556,35 @@ public interface ChronicleDao<V> {
                 }
             }
 
+            // Finish any vacuum that crashed mid-commit. If the commit marker
+            // exists, the keymap atomic-rename succeeded before the crash, so
+            // any sparse files listed in the manifest are orphans that must
+            // be deleted from /data/. If the marker is missing, the crash
+            // happened before commit and the live state is still pre-vacuum;
+            // simply discarding staging/ is enough.
+            final Path stagingRoot = Path.of(dataPath() + STAGING_DIR);
+            if (Files.exists(stagingRoot)) {
+                final Path committedMarker = Path.of(dataPath() + STAGING_DIR + STAGING_COMMITTED_MARKER);
+                if (Files.exists(committedMarker)) {
+                    final Path manifest = Path.of(dataPath() + STAGING_DIR + STAGING_EVICTED_MANIFEST);
+                    if (Files.exists(manifest)) {
+                        try {
+                            for (final var orphan : Files.readAllLines(manifest)) {
+                                CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + orphan);
+                            }
+                            Logger.info("Finished crashed vacuum cleanup at [{}].", dataPath());
+                        } catch (final IOException e) {
+                            Logger.error(e, "Failed to read evicted manifest at [{}]; continuing.", manifest);
+                        }
+                    }
+                }
+                try {
+                    deleteDirRecursive(stagingRoot);
+                } catch (final IOException e) {
+                    Logger.error(e, "Failed to clean staging dir at [{}]; continuing.", stagingRoot);
+                }
+            }
+
             // Skip keymap initialization in recovery mode to avoid deadlocks
             if (IN_RECOVERY) {
                 return;
@@ -623,7 +702,9 @@ public interface ChronicleDao<V> {
      * </p>
      * <p>
      * File naming: {@code data} (first file), {@code data-2}, {@code data-3}, etc.
-     * The current file is always the highest numbered file.
+     * The current file is always the highest-numbered file. Gaps may exist
+     * after vacuum (sparse files removed from the middle of the sequence);
+     * rotation always allocates the next file at {@code max suffix + 1}.
      * </p>
      *
      * @return the {@link DataFileState} containing file names and current file
@@ -635,12 +716,12 @@ public interface ChronicleDao<V> {
                         .filter(file -> file.startsWith("data"))
                         .collect(Collectors.toCollection(HashSet::new));
 
-                final int size = dataFiles.size();
                 String currentFile = DATA_FILE;
-                if (size <= 1) {
+                if (dataFiles.isEmpty()) {
                     dataFiles.add(DATA_FILE);
                 } else {
-                    currentFile = DATA_FILE + "-" + size;
+                    final int maxSuffix = maxSuffixOf(dataFiles);
+                    currentFile = maxSuffix <= 1 ? DATA_FILE : DATA_FILE + "-" + maxSuffix;
                 }
 
                 return new DataFileState(dataFiles, currentFile);
@@ -1315,25 +1396,56 @@ public interface ChronicleDao<V> {
     }
 
     /**
-     * Reclaims disk space by consolidating multiple data files into a single file.
+     * Reclaims disk space by repacking sparse data files (those less than 90%
+     * full) into compact new files, while leaving dense files untouched.
      * <p>
-     * This operation backs up all existing data files, deletes them, and re-inserts
-     * all records from the backup. This eliminates fragmentation and removes
-     * deleted
-     * record space.
+     * <b>Algorithm:</b>
+     * <ol>
+     * <li>Classify each data file as dense (≥90% of {@link #entries()}) or
+     * sparse.</li>
+     * <li>Compact all sparse-file records into J = ⌈total / entries()⌉ new
+     * packed files in {@code /staging/data/}.</li>
+     * <li>Build a new keymap in {@code /staging/keys} by copying the live
+     * keymap and overwriting entries for moved records with their new file
+     * names.</li>
+     * <li>Atomically move new packed files into {@code /data/}; atomically
+     * replace the live keymap with the staging keymap; then delete the old
+     * sparse data files.</li>
+     * </ol>
      * </p>
      * <p>
-     * <b>Thread Safety:</b> This method acquires a write lock on the entire
-     * database.
-     * Note that {@code insert()} is called within the locked section, which will
-     * re-acquire the same lock (reentrant behavior). This is safe because
-     * ReentrantLock
-     * allows the same thread to acquire a lock it already holds.
+     * <b>Placement rule</b> (preserves the "current file = max-suffix" invariant
+     * so rotation stays simple):
      * </p>
-     *
+     * <ul>
+     * <li>If max-suffix was sparse: full packed files (each exactly {@code entries()}
+     * records) go to the lowest sparse slots; the partial file goes to the
+     * max-suffix slot last so writes can keep appending there without immediate
+     * rotation.</li>
+     * <li>If max-suffix was dense: it's left untouched. All packed files go to
+     * the lowest sparse slots.</li>
+     * </ul>
+     * <p>
+     * <b>Indexes are not touched.</b> Each index entry is {@code (fieldValue + keyHash)} —
+     * file-independent. Records keep the same key and value during vacuum, so
+     * existing entries remain valid.
+     * </p>
+     * <p>
+     * <b>Crash safety:</b> the keymap atomic-rename is the commit moment. A
+     * {@code .committed} marker is written immediately after; if a later step
+     * crashes (e.g. mid-deletion of sparse files), {@link #createDataDirs}
+     * detects the marker on next startup and finishes the cleanup using the
+     * {@code evicted.txt} manifest. Crashes before the marker leave the live
+     * state untouched.
+     * </p>
+     * <p>
+     * <b>Thread Safety:</b> acquires the per-dataPath write lock for the entire
+     * operation. Reads are not locked, so concurrent full-table scans may briefly
+     * see duplicate visibility between the new-packed-file move and the sparse
+     * file deletion (microseconds). Key lookups always return the correct file.
+     * </p>
      */
     default void vacuum() {
-        // backup all files then read from these files and insert afresh
         if (getDataFileState().fileNames().size() <= 1) {
             Logger.info("Vacuuming not required at [{}]", dataPath());
             return;
@@ -1343,26 +1455,168 @@ public interface ChronicleDao<V> {
         try {
             Logger.info("Vacuuming database at [{}]", dataPath());
             CHRONICLE_UTILS.doWithLock(WRITE_LOCKS, dataPath(), new SafeRunnable(() -> {
-                backup();
-                deleteDataFiles();
-                deleteIndexes();
-                CHRONICLE_UTILS.deleteFileIfExists(getKeyMapPath());
-                DATA_FILE_CACHE.remove(dataPath());
-
-                // Re-insert all records from backup files
-                // Note: insert() will re-acquire the same lock (reentrant lock behavior)
-                for (final String file : CHRONICLE_UTILS.getFileList(dataPath() + BACKUP_DIR)) {
-                    if (file.startsWith("data")) {
-                        try (final var shared = openDb(BACKUP_DIR, file)) {
-                            // Copy to HashMap for thread-safe parallel processing in updateIndex()
-                            insert(new HashMap<>(shared.toHashMap()));
-                        }
-                    }
-                }
+                doVacuum();
             }, "Vacuum DB - " + dataPath()));
         } finally {
             IN_FLIGHT_WRITES.decrementAndGet();
         }
+    }
+
+    private void doVacuum() throws IOException {
+        final long perFileEntries = entries();
+        final Set<String> fileNamesSnapshot = new HashSet<>(getDataFileState().fileNames());
+
+        // Phase A.1 — classify
+        final List<String> sparse = new ArrayList<>();
+        long totalSparseRecords = 0;
+        for (final var file : fileNamesSnapshot) {
+            try (final var shared = openDb(file)) {
+                if ((double) shared.size() / perFileEntries < 0.90) {
+                    sparse.add(file);
+                    totalSparseRecords += shared.size();
+                }
+            }
+        }
+        if (sparse.isEmpty()) {
+            Logger.info("All files dense at [{}], vacuum skipped.", dataPath());
+            return;
+        }
+
+        // Edge case: sparse files with zero records — just drop them.
+        if (totalSparseRecords == 0) {
+            for (final var file : sparse) {
+                CHRONICLE_DB.evict(dataPath() + DATA_DIR + file);
+                CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
+            }
+            DATA_FILE_CACHE.remove(dataPath());
+            Logger.info("Vacuum complete at [{}]: dropped {} empty sparse files.", dataPath(), sparse.size());
+            return;
+        }
+
+        // Phase A.2 — plan placement
+        sparse.sort(Comparator.comparingInt(ChronicleDao::suffixOf));
+        final int maxN = maxSuffixOf(fileNamesSnapshot);
+        final boolean maxWasSparse = suffixOf(sparse.get(sparse.size() - 1)) == maxN;
+        final int J = (int) ((totalSparseRecords + perFileEntries - 1) / perFileEntries);
+        final List<Integer> sparseSlots = sparse.stream().map(ChronicleDao::suffixOf).toList();
+
+        final List<Integer> targets = new ArrayList<>(J);
+        if (maxWasSparse) {
+            // J-1 full files go to the lowest sparse slots; partial goes to maxN last
+            for (int i = 0; i < J - 1; i++) {
+                targets.add(sparseSlots.get(i));
+            }
+            targets.add(maxN);
+        } else {
+            // All J packed files go to the lowest sparse slots
+            for (int i = 0; i < J; i++) {
+                targets.add(sparseSlots.get(i));
+            }
+        }
+        final Set<Integer> reusedSlots = new HashSet<>(targets);
+        final List<String> evictedSparse = sparse.stream()
+                .filter(f -> !reusedSlots.contains(suffixOf(f)))
+                .collect(Collectors.toList());
+
+        // Phase A.3 — set up staging
+        final Path stagingRoot = Path.of(dataPath() + STAGING_DIR);
+        deleteDirRecursive(stagingRoot);
+        Files.createDirectories(Path.of(dataPath() + STAGING_DATA_SUBDIR));
+
+        // Pre-compute file sets for keymap and index rebuilds (FINAL post-vacuum state).
+        final Set<String> newPackedNames = targets.stream().map(ChronicleDao::nameForSuffix)
+                .collect(Collectors.toCollection(HashSet::new));
+        final Set<String> denseFileNames = new HashSet<>(fileNamesSnapshot);
+        denseFileNames.removeAll(sparse);
+
+        // Phase A.4 — pack sparse-file records into new files in staging.
+        // Records stream one-at-a-time, advancing to the next target slot when
+        // the current packed file reaches entries() capacity. We also track
+        // primaryKey → new file name for the keymap update below; indexes are
+        // not touched because their entries are (fieldValue + keyHash) — file
+        // independent — and record values are unchanged here, so existing
+        // index entries remain valid.
+        final Map<String, String> primaryKeyToNewFile = new HashMap<>();
+        final Iterator<Integer> targetIter = targets.iterator();
+        final String[] currentName = { nameForSuffix(targetIter.next()) };
+        final SharedChronicleMap<String, V>[] currentPacked = new SharedChronicleMap[] {
+                openDb(STAGING_DATA_SUBDIR, currentName[0], perFileEntries) };
+        final long[] currentCount = { 0L };
+
+        try {
+            for (final var sparseFile : sparse) {
+                try (final var sparseDb = openDb(sparseFile)) {
+                    sparseDb.forEachEntry(entry -> {
+                        if (currentCount[0] >= perFileEntries && targetIter.hasNext()) {
+                            currentPacked[0].close();
+                            currentName[0] = nameForSuffix(targetIter.next());
+                            currentPacked[0] = openDb(STAGING_DATA_SUBDIR, currentName[0], perFileEntries);
+                            currentCount[0] = 0;
+                        }
+                        final var key = entry.key().get();
+                        currentPacked[0].put(key, entry.value().get());
+                        primaryKeyToNewFile.put(key, currentName[0]);
+                        currentCount[0]++;
+                    });
+                }
+            }
+        } finally {
+            currentPacked[0].close();
+        }
+
+        // Phase A.5 — build new keymap in staging via file copy + targeted
+        // upsert for moved records. Files.copy preserves any existing bloat
+        // from past deletes — that's intentional; operators who want a fully
+        // compact keymap can run REFRESH_KEY_MAP separately (it rebuilds
+        // from data files). Keeping vacuum focused on data files only.
+        final boolean keymapNeeded = hasKeyMap();
+        final String stagingKeyMapPath = stagingRoot + "/" + KEY_FILE;
+        if (keymapNeeded) {
+            Files.copy(Path.of(getKeyMapPath()), Path.of(stagingKeyMapPath), REPLACE_EXISTING);
+            try (final var stagingKeyMap = MAP_DB.openMap(stagingKeyMapPath, perFileEntries)) {
+                for (final var entry : primaryKeyToNewFile.entrySet()) {
+                    final byte[] hash = CHRONICLE_UTILS.to128BitHash(entry.getKey());
+                    stagingKeyMap.put(hash, new KeyMapValue(entry.getKey(), entry.getValue()));
+                }
+            }
+        }
+
+        // Phase A.6 — write the evicted-files manifest so crash recovery can finish
+        Files.write(Path.of(stagingRoot + "/" + STAGING_EVICTED_MANIFEST), evictedSparse);
+
+        // Phase B.1 — move new packed files into data/ (each evict-then-move)
+        for (final var name : newPackedNames) {
+            final String src = dataPath() + STAGING_DATA_SUBDIR + name;
+            final String dst = dataPath() + DATA_DIR + name;
+            CHRONICLE_DB.evict(dst);
+            Files.move(Path.of(src), Path.of(dst), StandardCopyOption.ATOMIC_MOVE);
+        }
+
+        // Phase B.2 — atomic keymap swap (the commit moment)
+        if (keymapNeeded) {
+            MAP_DB.evict(getKeyMapPath());
+            Files.move(Path.of(stagingKeyMapPath), Path.of(getKeyMapPath()),
+                    StandardCopyOption.ATOMIC_MOVE, REPLACE_EXISTING);
+        }
+
+        // Phase B.3 — commit marker. Past this point, sparse files are orphans
+        // and must be cleaned up (either now, or on next startup via createDataDirs).
+        Files.createFile(Path.of(stagingRoot + "/" + STAGING_COMMITTED_MARKER));
+
+        // Phase B.4 — delete evicted sparse files
+        for (final var file : evictedSparse) {
+            CHRONICLE_DB.evict(dataPath() + DATA_DIR + file);
+            CHRONICLE_UTILS.deleteFileIfExists(dataPath() + DATA_DIR + file);
+        }
+
+        // Phase B.5 — invalidate file-listing cache so getDataFileState rescans
+        DATA_FILE_CACHE.remove(dataPath());
+
+        // Phase C — clean up staging
+        deleteDirRecursive(stagingRoot);
+
+        Logger.info("Vacuum complete at [{}]: kept {} dense, repacked {} sparse into {} file(s).",
+                dataPath(), denseFileNames.size(), sparse.size(), J);
     }
 
     /**
@@ -2995,7 +3249,10 @@ public interface ChronicleDao<V> {
     private SharedChronicleMap<String, V> checkAndRotate(final SharedChronicleMap<String, V> shared) {
         if (shared.size() >= entries()) {
             final var dataFileState = getDataFileState();
-            final String newFile = "data-" + (dataFileState.fileNames().size() + 1);
+            // Gap-tolerant: allocate next slot at max-suffix + 1, not at count + 1.
+            // Vacuum may have removed sparse files from the middle of the sequence,
+            // in which case count is smaller than max suffix and would collide.
+            final String newFile = DATA_FILE + "-" + (maxSuffixOf(dataFileState.fileNames()) + 1);
             // Update key map using the provided ChronicleMap
             try (final var sharedKeyMap = MAP_DB.openMap(getKeyMapPath(), entries())) {
                 shared.forEachEntry(entry -> {
@@ -3032,7 +3289,8 @@ public interface ChronicleDao<V> {
             final Map<String, String> keyMapUpdate, final Map<String, byte[]> keyHashMap) {
         if (shared.size() >= entries()) {
             final var dataFileState = getDataFileState();
-            final String newFile = "data-" + (dataFileState.fileNames().size() + 1);
+            // Gap-tolerant: max-suffix + 1 (see single-arg checkAndRotate for rationale).
+            final String newFile = DATA_FILE + "-" + (maxSuffixOf(dataFileState.fileNames()) + 1);
             // add the new keys to map
             addAllToKeyMap(keyMapUpdate, keyHashMap);
             shared.close();

@@ -376,16 +376,19 @@ public final class ChronicleDb {
          * This method is thread-safe and ensures the underlying ChronicleMap is
          * only closed when the last reference is released.
          * </p>
+         * <p>
+         * Operates on the instance's own {@code refCount} so it works correctly
+         * even after this entry has been soft-evicted from {@link ChronicleDb#mapCache}.
+         * After closing, best-effort removes the cache entry if it still refers
+         * to this instance.
+         * </p>
          */
         @Override
         public void close() {
-            mapCache.computeIfPresent(filePath, (k, entry) -> {
-                if (entry.refCount.decrementAndGet() == 0) {
-                    entry.map.close();
-                    return null;
-                }
-                return entry;
-            });
+            if (refCount.decrementAndGet() == 0) {
+                map.close();
+                mapCache.computeIfPresent(filePath, (k, e) -> e == this ? null : e);
+            }
         }
     }
 
@@ -449,6 +452,27 @@ public final class ChronicleDb {
             Logger.debug("Closed ChronicleMap at [{}]", filePath);
             return null;
         });
+    }
+
+    /**
+     * Soft-evict: removes the cache entry without closing the underlying map.
+     * <p>
+     * Concurrent holders of {@link SharedChronicleMap} references continue to
+     * operate against the existing map. When the last holder calls
+     * {@link SharedChronicleMap#close()} the map closes naturally via reference
+     * counting. Subsequent {@link #open} calls on this path miss the cache and
+     * load the file fresh from disk.
+     * </p>
+     * <p>
+     * Use when the file at this path is about to be replaced (e.g. via an atomic
+     * file rename during vacuum) and new openers must see the new file. A
+     * destructive {@link #close(String)} would break any concurrent reader
+     * mid-op.
+     * </p>
+     */
+    public void evict(final String filePath) {
+        mapCache.remove(filePath);
+        Logger.debug("Evicted ChronicleMap cache for [{}]", filePath);
     }
 
     /**
